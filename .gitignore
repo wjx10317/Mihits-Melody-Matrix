@@ -3,6 +3,10 @@ build*/
 cmake-build-*/
 out/
 
+# Tests & Scripts (not part of repo source)
+tests/
+scripts/
+
 # IDE
 .vs/
 .vscode/
