@@ -1,0 +1,44 @@
+#include "gameplay/score_manager.h"
+
+#include <cmath>
+#include <algorithm>
+
+namespace melody_matrix::gameplay {
+
+int32_t ScoreManager::scoreForHit(JudgmentResult result, int32_t combo) {
+    float acc = 0.0f;
+    switch (result) {
+    case JudgmentResult::Perfect: acc = 1.0f;    break;
+    case JudgmentResult::Good:    acc = 0.6667f; break;
+    case JudgmentResult::Miss:    acc = 0.3333f; break;
+    default: return 0;
+    }
+
+    const float mult = 1.0f + std::log2f(static_cast<float>(combo + 1)) * 0.2f;
+    return static_cast<int32_t>(BASE_SCORE * acc * mult);
+}
+
+void ScoreManager::addScore(JudgmentResult result, int32_t combo) {
+    if (result == JudgmentResult::Ignored) return;
+
+    m_totalScore += scoreForHit(result, combo);
+    ++m_hitNotes;
+}
+
+float ScoreManager::accuracy() const {
+    if (m_totalNotes == 0) return 1.0f;
+    return static_cast<float>(m_hitNotes) / static_cast<float>(m_totalNotes);
+}
+
+void ScoreManager::recordNoteAvailable() {
+    ++m_totalNotes;
+}
+
+void ScoreManager::reset() {
+    m_totalScore  = 0;
+    m_maxPossible = 0;
+    m_totalNotes  = 0;
+    m_hitNotes    = 0;
+}
+
+} // namespace melody_matrix::gameplay

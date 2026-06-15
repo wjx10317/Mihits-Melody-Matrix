@@ -1,0 +1,44 @@
+# Build
+build*/
+cmake-build-*/
+out/
+
+# IDE
+.vs/
+.vscode/
+*.user
+*.suo
+*.sln
+*.vcxproj*
+.idea/
+*.swp
+*~
+
+# Compiled binaries (root & build dirs)
+*.exe
+*.dll
+*.pdb
+*.ilk
+*.lib
+*.a
+*.so
+*.dylib
+*.obj
+*.o
+
+# Generated
+generated/
+
+# Runtime
+logs/
+temp/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# WorkBuddy (local data, not project data)
+.workbuddy/
+
+# Dependencies (vendored, keep them — comment out if you want them out)
+# third_party/ is kept in-repo by design
