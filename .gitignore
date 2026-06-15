@@ -18,9 +18,7 @@ scripts/
 *.swp
 *~
 
-# Compiled binaries (root & build dirs)
-*.exe
-*.dll
+# Compiled binaries (keep SDL2.dll and melody_matrix.exe — committed as release)
 *.pdb
 *.ilk
 *.lib
@@ -40,6 +38,9 @@ temp/
 # OS
 .DS_Store
 Thumbs.db
+
+# Design documents (kept locally only)
+*设计文档*.md
 
 # WorkBuddy (local data, not project data)
 .workbuddy/
