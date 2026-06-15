@@ -15,11 +15,22 @@
 
 #include <SDL.h>
 #include <SDL_main.h>
+#include <filesystem>
 #include <iostream>
 #include <exception>
 
 int main(int argc, char* argv[]) {
     using namespace melody_matrix;
+
+    // ── 将工作目录固定为可执行文件所在目录 ──
+    // 确保所有相对路径（assets/beatmaps 等）始终相对于可执行文件位置解析，
+    // 而不依赖于进程启动时的 CWD（从 IDE、快捷方式等启动时 CWD 可能不同）
+    {
+        std::string exeDir = std::filesystem::path(argv[0]).parent_path().string();
+        if (!exeDir.empty()) {
+            std::filesystem::current_path(exeDir);
+        }
+    }
 
     // ── 初始化日志器 ──
     util::Logger::init("logs/melody_matrix.log", util::Level::DEBUG);

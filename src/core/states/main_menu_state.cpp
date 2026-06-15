@@ -1,6 +1,7 @@
 #include "main_menu_state.h"
 #include "core/kernel.h"
 #include "core/states/song_select_state.h"
+#include "renderer/texture_cache.h"
 #include "ui/theme.h"
 #include "util/logger.h"
 #include "util/hash.h"
@@ -252,6 +253,28 @@ util::Result<void> MainMenuState::validateAndImportOsz(const std::string& oszPat
         auto* songSelect = Kernel::instance().stateManager().getStateAs<SongSelectState>(GameState::SongSelect);
         if (songSelect) {
             songSelect->markNeedsRescan();
+        }
+
+        // 即时缓存新导入的背景图到全局纹理缓存
+        {
+            namespace fs = std::filesystem;
+            fs::path beatmapsDir = fs::absolute("assets/beatmaps");
+            if (fs::exists(beatmapsDir) && fs::is_directory(beatmapsDir)) {
+                for (const auto& entry : fs::directory_iterator(beatmapsDir)) {
+                    if (!entry.is_directory()) continue;
+                    // 查找目录中的 background.* 文件
+                    for (const auto& f : fs::directory_iterator(entry.path())) {
+                        std::string ext = f.path().extension().string();
+                        for (char& c : ext) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+                        if (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".webp") {
+                            std::string name = f.path().stem().string();
+                            if (name == "background") {
+                                renderer::TextureCache::instance().load(fs::absolute(f.path()).string(), false);
+                            }
+                        }
+                    }
+                }
+            }
         }
     } else if (skippedCount > 0) {
         // 全部已导入 = 静默跳过

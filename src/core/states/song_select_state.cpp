@@ -59,6 +59,8 @@ void SongSelectState::onEnter() {
 
     if (!m_scanDone) {
         scanBeatmaps();
+        // 补加载新图片到全局缓存（已缓存的无开销）
+        scanAndPreload();
     }
 
     // 加载头像
@@ -218,7 +220,7 @@ void SongSelectState::scanBeatmaps() {
 
             if (ext != ".mma" && ext != ".osu") continue;
 
-            std::string filePath = entry.path().string();
+            std::string filePath = std::filesystem::absolute(entry.path()).string();
 
             try {
                 auto readResult = platform::FileSystem::readFile(filePath);
@@ -254,21 +256,21 @@ void SongSelectState::scanBeatmaps() {
                 e.previewTime = beatmap.meta.previewTime;
                 // 音频文件路径：meta.audioFile 是相对于铺面文件所在目录的路径
                 if (!beatmap.meta.audioFile.empty()) {
-                    std::string dirStr = entry.path().parent_path().string();
-                    e.audioFilePath = dirStr + "/" + beatmap.meta.audioFile;
+                    auto audioPath = entry.path().parent_path() / beatmap.meta.audioFile;
+                    e.audioFilePath = std::filesystem::absolute(audioPath).string();
                 }
 
                 // 背景图查找
-                std::string dirStr = entry.path().parent_path().string();
+                auto bgDir = entry.path().parent_path();
                 for (const char* bgName : {"background.jpg", "background.png", "bg.jpg", "bg.png"}) {
-                    std::string bgPath = dirStr + "/" + bgName;
-                    if (platform::FileSystem::fileExists(bgPath)) {
-                        e.imagePath = bgPath;
+                    auto bgPath = bgDir / bgName;
+                    if (platform::FileSystem::fileExists(bgPath.string())) {
+                        e.imagePath = std::filesystem::absolute(bgPath).string();
                         break;
                     }
                 }
                 if (e.imagePath.empty()) {
-                    e.imagePath = "assets/textures/menu-bg.jpg";
+                    e.imagePath = std::filesystem::absolute("assets/textures/menu-bg.jpg").string();
                 }
 
                 entries.push_back(e);

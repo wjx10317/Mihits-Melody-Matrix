@@ -38,6 +38,9 @@ public:
     /// 扫描铺面并预加载图片到全局纹理缓存（供 BootState 调用）
     void scanAndPreload();
 
+    /// 扫描铺面目录，构建分组列表（仅文件 I/O + 解析，无需 GL 上下文，可安全在后台线程调用）
+    void scanBeatmaps();
+
     /// 获取所有分组的图片路径列表（与 m_groups 一一对应）
     std::vector<std::string> getGroupImagePaths() const;
 
@@ -45,7 +48,6 @@ public:
     void tryPlayPreview();
 
 private:
-    void scanBeatmaps();
     void renderImGuiPanel();
     void renderLeftPanel(float panelWidth, float panelHeight);
     void renderRightPanel(float panelX, float panelWidth, float panelHeight);
