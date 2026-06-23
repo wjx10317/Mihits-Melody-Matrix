@@ -15,6 +15,12 @@ typedef void* SDL_GLContext;
 
 namespace melody_matrix::core {
 
+/// 帧级按键事件（由 Kernel 收集，供各状态消费）
+struct FrameKeyEvent {
+    int32_t key;     ///< SDL_Keycode 值
+    bool pressed;    ///< true=按下, false=释放
+};
+
 /// 支持的分辨率条目
 struct Resolution {
     int width;
@@ -68,6 +74,10 @@ public:
     ui::UIManager& uiManager() { return m_uiManager; }
     SDL_Window* window() const { return m_window; }
 
+    // ── 帧级按键事件 ──
+    /// 获取当前帧收集的按键事件（由 pumpInputEvents 填充）
+    const std::vector<FrameKeyEvent>& frameKeyEvents() const { return m_frameKeyEvents; }
+
 private:
     Kernel() = default;
     ~Kernel() = default;
@@ -100,6 +110,9 @@ private:
 
     bool m_running = false;
     bool m_initialized = false;
+
+    // ── 帧级按键事件队列 ──
+    std::vector<FrameKeyEvent> m_frameKeyEvents;
 };
 
 } // namespace melody_matrix::core

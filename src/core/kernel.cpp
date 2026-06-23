@@ -109,7 +109,7 @@ void Kernel::applyWindowMode() {
         + (needsBorderless ? " (borderless)" : " (bordered)"));
 }
 
-bool Kernel::init(const std::string& title, int width, int height) {
+bool Kernel::init(const std::string& title, int /*width*/, int /*height*/) {
     MM_LOG_INFO("Kernel", "Initializing Melody Matrix...");
 
     // ── Set Per-Monitor V2 DPI awareness BEFORE SDL_Init ──
@@ -359,6 +359,9 @@ void Kernel::setFullscreen(bool fullscreen) {
 }
 
 void Kernel::pumpInputEvents() {
+    // 每帧开始时清空上一帧的按键事件
+    m_frameKeyEvents.clear();
+
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
         m_uiManager.processEvent(&event);
@@ -368,7 +371,11 @@ void Kernel::pumpInputEvents() {
             m_running = false;
             break;
         case SDL_KEYDOWN:
-            if (event.key.keysym.sym == SDLK_ESCAPE && !event.key.repeat) {
+            if (!event.key.repeat) {
+                m_frameKeyEvents.push_back({static_cast<int32_t>(event.key.keysym.sym), true});
+            }
+            // ESC 特殊处理：状态转换
+            if (event.key.keysym.sym == SDLK_ESCAPE) {
                 auto current = m_stateManager.currentState();
                 if (current == GameState::MainMenu) {
                     m_running = false;
@@ -377,7 +384,6 @@ void Kernel::pumpInputEvents() {
                 } else if (current == GameState::Paused) {
                     m_stateManager.transitionTo(GameState::Playing);
                 } else if (current == GameState::SongSelect) {
-                    // 如果选歌界面有弹窗打开，ESC 只关闭弹窗而非返回上级
                     auto* ss = m_stateManager.getStateAs<SongSelectState>(GameState::SongSelect);
                     if (ss && ss->shouldConsumeEscape()) {
                         // ESC 由 SongSelect 消费（关闭弹窗），不执行状态转换
@@ -387,11 +393,14 @@ void Kernel::pumpInputEvents() {
                 }
             }
             break;
+        case SDL_KEYUP:
+            // 收集按键释放事件到帧队列
+            m_frameKeyEvents.push_back({static_cast<int32_t>(event.key.keysym.sym), false});
+            break;
         case SDL_WINDOWEVENT:
             if (event.window.event == SDL_WINDOWEVENT_CLOSE) {
                 m_running = false;
             } else if (event.window.event == SDL_WINDOWEVENT_RESIZED) {
-                // With DPI awareness, data1/data2 are physical pixels
                 if (!m_fullscreen) {
                     m_windowWidth = event.window.data1;
                     m_windowHeight = event.window.data2;

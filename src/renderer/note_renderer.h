@@ -19,14 +19,18 @@ public:
 
     bool init();
     void render(const std::vector<beatmap::Note>& notes, int64_t timeMs,
-                int rows, int cols, float ar);
+                int rows, int cols, float ar,
+                int32_t activeStartCol, int32_t activeEndCol,
+                const std::array<size_t, 8>& colHeads, int32_t colHeadCount);
     void shutdown();
 
 private:
     void buildNoteVertices(const std::vector<beatmap::Note>& notes, int64_t timeMs,
                            int rows, int cols, float ar,
-                           std::vector<float>& quads,  // 每个实例的位置 + 大小
-                           std::vector<float>& colors); // 每个实例的颜色
+                           int32_t activeStartCol, int32_t activeEndCol,
+                           const std::array<size_t, 8>& colHeads, int32_t colHeadCount,
+                           std::vector<float>& quads,
+                           std::vector<float>& colors);
 
     bool m_initialized = false;
     uint32_t m_vao = 0;

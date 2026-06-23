@@ -22,16 +22,23 @@ void ScoreManager::addScore(JudgmentResult result, int32_t combo) {
     if (result == JudgmentResult::Ignored) return;
 
     m_totalScore += scoreForHit(result, combo);
-    ++m_hitNotes;
+
+    // Miss 不计入 hitNotes
+    if (result != JudgmentResult::Miss) {
+        ++m_hitNotes;
+    }
+    ++m_totalNotes;
 }
 
 float ScoreManager::accuracy() const {
     if (m_totalNotes == 0) return 1.0f;
-    return static_cast<float>(m_hitNotes) / static_cast<float>(m_totalNotes);
+    // 加权准确度公式：totalScore / (totalNotes * BASE_SCORE)
+    return static_cast<float>(m_totalNotes * BASE_SCORE) > 0 ?
+        static_cast<float>(m_totalScore) / static_cast<float>(m_totalNotes * BASE_SCORE) : 1.0f;
 }
 
 void ScoreManager::recordNoteAvailable() {
-    ++m_totalNotes;
+    // 不再使用 — m_totalNotes 在 addScore() 中维护
 }
 
 void ScoreManager::reset() {

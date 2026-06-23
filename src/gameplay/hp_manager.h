@@ -16,7 +16,7 @@ public:
     virtual bool isDead(float hp) const { return hp <= 0.0f; }
 
     /// 覆盖 HP 变化量。默认：返回不变的量
-    virtual float modifyChange(float amount, JudgmentResult result) const { return amount; }
+    virtual float modifyChange(float amount, JudgmentResult /*result*/) const { return amount; }
 };
 
 /// HP 管理器 — 跟踪玩家生命值（归一化 0~1）。

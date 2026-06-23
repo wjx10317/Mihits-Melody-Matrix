@@ -33,7 +33,7 @@ private:
     static constexpr float M_DRAW_DURATION = 1.2f;   ///< "M" 路径绘制时长
     static constexpr float I_STEM_DURATION = 0.4f;    ///< "i" 竖线绘制时长
     static constexpr float I_DOT_DURATION = 0.2f;     ///< "i" 点绘制时长
-    static constexpr float HITS_SLIDE_DURATION = 0.5f;///< "hits" 滑入时长
+    static constexpr float HITS_SLIDE_DURATION = 0.8f;///< "hits" 滑入时长
     static constexpr float MINIMUM_DURATION = M_DRAW_DURATION + I_STEM_DURATION + I_DOT_DURATION + HITS_SLIDE_DURATION;
 };
 

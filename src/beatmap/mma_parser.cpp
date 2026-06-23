@@ -228,6 +228,18 @@ util::Result<void> MmaParser::parseFormations(const std::vector<std::string>& li
             continue;
         }
 
+        // 可选字段：transitionType (parts[3]) 和 transitionDurationMs (parts[4])
+        if (parts.size() >= 4) {
+            int32_t tt = 0;
+            if (parseInt32(parts[3], tt)) {
+                tt = std::clamp(tt, 0, 2);
+                f.transitionType = static_cast<TransitionType>(tt);
+            }
+        }
+        if (parts.size() >= 5) {
+            parseInt64(parts[4], f.transitionDurationMs);
+        }
+
         builder.addFormation(f);
     }
     return util::success();

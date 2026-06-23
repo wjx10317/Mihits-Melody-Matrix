@@ -32,6 +32,9 @@ public:
     /// 获取当前活动阵型
     const beatmap::Formation& current() const { return m_formations[m_currentIndex]; }
 
+    /// 获取当前阵型的列数（便捷方法）
+    int32_t currentCols() const;
+
     /// 获取当前阵型索引
     size_t currentIndex() const { return m_currentIndex; }
 

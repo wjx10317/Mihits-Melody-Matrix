@@ -21,22 +21,16 @@ static float mm_clamp(float v, float lo, float hi) {
 static int64_t mm_clamp_i64(int64_t v, int64_t lo, int64_t hi) {
     return v < lo ? lo : (v > hi ? hi : v);
 }
-
-// ============================================================
 // seek 辅助函数 —— 秒 → PCM帧（miniaudio 无 set_cursor_in_seconds）
-// ============================================================
 static void seekSoundToSeconds(ma_sound* sound, float seconds) {
     if (!sound) return;
-    const ma_engine* engine = ma_sound_get_engine(sound);
+    const ma_engine* engine = ma_sound_get_engine(sound);//获取当前音乐的引擎指针，每个音乐初始化时必须绑定一个engine
     if (!engine) return;
-    ma_uint32 sampleRate = ma_engine_get_sample_rate(engine);
-    ma_uint64 frameIdx = static_cast<ma_uint64>(seconds * static_cast<float>(sampleRate));
+    ma_uint32 sampleRate = ma_engine_get_sample_rate(engine);//得到采样率
+    ma_uint64 frameIdx = static_cast<ma_uint64>(seconds * static_cast<float>(sampleRate));//类型转换为float与second相乘得到音频定位再转换为参数里面的数字类型
     ma_sound_seek_to_pcm_frame(sound, frameIdx);
 }
-
-// ============================================================
 // ActiveSound::release —— 释放 ma_sound（需 miniaudio.h，故放 .cpp）
-// ============================================================
 void ActiveSound::release() {
     if (sound) {
         ma_sound_stop(sound);
@@ -46,11 +40,11 @@ void ActiveSound::release() {
     }
 }
 
-// ============================================================
+
 // init / shutdown
-// ============================================================
+
 bool AudioEngine::init() {
-    if (m_initialized) return true;
+    if (m_initialized) return true;//防止多重初始化
 
     MM_LOG_INFO("Audio", "Initializing audio engine...");
 
@@ -58,7 +52,7 @@ bool AudioEngine::init() {
     if (!m_engine) return false;
     std::memset(m_engine, 0, sizeof(ma_engine));
 
-    ma_result result = ma_engine_init(nullptr, m_engine);
+    ma_result result = ma_engine_init(nullptr, m_engine);//第一个参数传空，采用默认参数
     if (result != MA_SUCCESS) {
         MM_LOG_ERROR("Audio", "Failed to init miniaudio engine: " + std::to_string(result));
         ma_free(m_engine, nullptr);
@@ -86,9 +80,7 @@ void AudioEngine::shutdown() {
     MM_LOG_INFO("Audio", "Audio engine shut down");
 }
 
-// ============================================================
 // createSound / destroySound
-// ============================================================
 ma_sound* AudioEngine::createSound(const std::string& filePath, bool streaming) {
     if (!m_initialized || !m_engine) return nullptr;
 
@@ -116,9 +108,7 @@ void AudioEngine::destroySound(ma_sound* sound) {
     ma_free(sound, nullptr);
 }
 
-// ============================================================
 // playSong（兼容原有接口，游戏内播放，单路）
-// ============================================================
 bool AudioEngine::playSong(const std::string& filePath) {
     if (!m_initialized) return false;
 
@@ -158,7 +148,7 @@ void AudioEngine::stop() {
 }
 
 void AudioEngine::setVolume(float volume) {
-    m_volume = mm_clamp(volume, 0.0f, 1.0f);
+    m_volume = mm_clamp(volume, 0.0f, 1.0f);//限制全局音量在这个范围
     // 更新所有活动声音的实际音量
     for (auto& snd : m_activeSounds) {
         if (snd.sound) {
@@ -166,10 +156,7 @@ void AudioEngine::setVolume(float volume) {
         }
     }
 }
-
-// ============================================================
 // playPreview —— 选歌界面预览播放
-// ============================================================
 void AudioEngine::playPreview(const std::string& filePath,
                               int64_t startTimeMs,
                               float   fadeInDurationS,
@@ -292,20 +279,20 @@ void AudioEngine::update(float dt) {
     if (!m_initialized) return;
 
     for (size_t i = 0; i < m_activeSounds.size(); ) {
-        auto& snd = m_activeSounds[i];
+        auto& snd = m_activeSounds[i];//引用
 
         if (!snd.sound) {
             // 声音已被释放，移除槽位
-            snd = std::move(m_activeSounds.back());
+            snd = std::move(m_activeSounds.back());//o(1)删除，把末尾元素移动到当前位置，然后直接移除末尾元素
             m_activeSounds.pop_back();
             continue;
         }
 
         // ---- 淡入处理 ----
         if (snd.isFadingIn && snd.fadeDuration > 0.0f) {
-            snd.fadeTimer += dt;
-            float t = mm_min(snd.fadeTimer / snd.fadeDuration, 1.0f);
-            float vol = snd.fadeStartVol + (snd.fadeTargetVol - snd.fadeStartVol) * t;
+            snd.fadeTimer += dt;//当前已经淡入的时间
+            float t = mm_min(snd.fadeTimer / snd.fadeDuration, 1.0f);//插值计算，是否达到了淡入最大时间
+            float vol = snd.fadeStartVol + (snd.fadeTargetVol - snd.fadeStartVol) * t;//平滑音量计算
             ma_sound_set_volume(snd.sound, vol);
             if (snd.fadeTimer >= snd.fadeDuration) {
                 snd.isFadingIn = false;
@@ -320,7 +307,7 @@ void AudioEngine::update(float dt) {
             ma_sound_set_volume(snd.sound, vol);
             if (snd.fadeTimer >= snd.fadeDuration) {
                 // 淡出完成，释放
-                ActiveSound tmp;
+                ActiveSound tmp;//中转元素负责资源释放，snd值负责遍历，代码逻辑解耦
                 tmp.sound = snd.sound;
                 snd.sound = nullptr;
                 tmp.release();
@@ -383,6 +370,17 @@ int64_t AudioEngine::durationMs() const {
         }
     }
     return 0;
+}
+
+void AudioEngine::seekTo(int64_t positionMs) {
+    for (auto& snd : m_activeSounds) {
+        if (snd.sound && !snd.isFadingOut) {
+            ma_uint64 frameIndex = static_cast<ma_uint64>(
+                positionMs * ma_engine_get_sample_rate(m_engine) / 1000);//采样率
+            ma_sound_seek_to_pcm_frame(snd.sound, frameIndex);
+            return;
+        }
+    }
 }
 
 // ============================================================

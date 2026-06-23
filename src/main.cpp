@@ -19,7 +19,7 @@
 #include <iostream>
 #include <exception>
 
-int main(int argc, char* argv[]) {
+int main(int /*argc*/, char* argv[]) {
     using namespace melody_matrix;
 
     // ── 将工作目录固定为可执行文件所在目录 ──

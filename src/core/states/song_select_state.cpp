@@ -88,6 +88,9 @@ void SongSelectState::onExit() {
     m_audio.shutdown();
     m_lastPreviewAudioPath.clear();
 
+    // 恢复 Renderer 默认背景
+    Kernel::instance().renderer().setBackgroundPath("");
+
     // 不再清空纹理缓存 — 图片保留在 TextureCache 中，下次进入时无需重新加载
     m_bgImageGroup = -1;
 }
@@ -102,6 +105,10 @@ GameState SongSelectState::update(float dt) {
         if (playing) {
             playing->setBeatmapFile(m_selectedBeatmap);
             playing->markNeedsReinit();
+            // 传递背景图路径
+            if (m_selectedGroup >= 0 && m_selectedGroup < static_cast<int>(m_groups.size())) {
+                playing->setBackgroundImage(m_groups[m_selectedGroup].imagePath);
+            }
         }
         return GameState::Playing;
     }
@@ -110,6 +117,17 @@ GameState SongSelectState::update(float dt) {
     if (m_selectedGroup >= 0 && m_bgImageGroup != m_selectedGroup) {
         tryLoadGroupImage(m_selectedGroup);
         m_bgImageGroup = m_selectedGroup;
+        // 同步 Renderer 背景图：有谱面背景时使用谱面背景，否则用默认
+        auto& renderer = Kernel::instance().renderer();
+        if (m_selectedGroup >= 0 && m_selectedGroup < static_cast<int>(m_groups.size())) {
+            const auto& group = m_groups[m_selectedGroup];
+            // 只有当背景图不是默认的 menu-bg.jpg 时才设置
+            if (group.imagePath.find("menu-bg.jpg") == std::string::npos) {
+                renderer.setBackgroundPath(group.imagePath);
+            } else {
+                renderer.setBackgroundPath("");
+            }
+        }
     }
 
     return m_nextState;
@@ -399,97 +417,64 @@ void SongSelectState::renderImGuiPanel() {
 
     ImGui::Begin("##SongSelect", nullptr, flags);
 
-    // ── 全屏背景图 ──
+    // ── 全屏背景图已由 Renderer::renderBackground() 绘制，此处不再重复渲染 ──
+
+    // ── 顶部实心遮罩（左面板区域 + 弧形过渡区）──
     {
-        if (m_selectedGroup >= 0 && m_selectedGroup < static_cast<int>(m_groups.size())) {
-            const auto& selGroup = m_groups[m_selectedGroup];
-            auto* tex = renderer::TextureCache::instance().get(selGroup.imagePath);
-            if (tex && tex->valid()) {
-                ImDrawList* bgDl = ImGui::GetWindowDrawList();
+        ImDrawList* bgDl = ImGui::GetWindowDrawList();
+        float maskR = W;
+        float topInfoH = m_ly.topInfoH;
+        float thinH = topInfoH * 0.20f;
 
-                float imgW = static_cast<float>(tex->width());
-                float imgH = static_cast<float>(tex->height());
-                float imgAspect = imgW / imgH;
-                float winAspect = W / H;
+        float seg1End   = W * 0.25f;
+        float arcWidth  = W * 0.20f;
+        float seg3Start = seg1End + arcWidth;
 
-                float drawW, drawH;
-                if (winAspect > imgAspect) {
-                    drawW = W;
-                    drawH = W / imgAspect;
-                } else {
-                    drawH = H;
-                    drawW = H * imgAspect;
-                }
+        const int ARC_N = 32;
+        const float PI = 3.14159265f;
 
-                float offsetX = (W - drawW) * 0.5f;
-                float offsetY = (H - drawH) * 0.5f;
+        auto arcY = [&](float t) -> float {
+            return thinH + (topInfoH - thinH) * (1.0f + cosf(PI * t)) / 2.0f;
+        };
 
-                bgDl->AddImage(
-                    (ImTextureID)(intptr_t)tex->textureId(),
-                    ImVec2(offsetX, offsetY),
-                    ImVec2(offsetX + drawW, offsetY + drawH),
-                    ImVec2(0, 1), ImVec2(1, 0),
-                    IM_COL32(255, 255, 255, 80)
-                );
-
-                // 顶部实心遮罩（左面板区域 + 弧形过渡区，与右侧 ForegroundDrawList 衔接）
-                {
-                    float maskR = W;
-                    float topInfoH = m_ly.topInfoH;
-                    float thinH = topInfoH * 0.20f;
-
-                    float seg1End   = W * 0.25f;
-                    float arcWidth  = W * 0.20f;
-                    float seg3Start = seg1End + arcWidth;
-
-                    const int ARC_N = 32;
-                    const float PI = 3.14159265f;
-
-                    auto arcY = [&](float t) -> float {
-                        return thinH + (topInfoH - thinH) * (1.0f + cosf(PI * t)) / 2.0f;
-                    };
-
-                    // ── 填充多边形 ──
-                    ImVec2 pts[4 + ARC_N + 2];
-                    int n = 0;
-                    pts[n++] = ImVec2(0, 0);
-                    pts[n++] = ImVec2(maskR, 0);
-                    pts[n++] = ImVec2(maskR, thinH);
-                    pts[n++] = ImVec2(seg3Start, thinH);
-                    for (int i = ARC_N - 1; i >= 0; --i) {
-                        float t = static_cast<float>(i) / ARC_N;
-                        pts[n++] = ImVec2(seg1End + arcWidth * t, arcY(t));
-                    }
-                    pts[n++] = ImVec2(0, topInfoH);
-                    bgDl->AddConvexPolyFilled(pts, n, IM_COL32(13, 13, 23, 255));
-
-                    // ── 底部轮廓白色描边（左→右）──
-                    ImVec2 edgePts[2 + ARC_N + 2];
-                    int en = 0;
-                    edgePts[en++] = ImVec2(0, topInfoH);
-                    edgePts[en++] = ImVec2(seg1End, topInfoH);
-                    for (int i = 1; i <= ARC_N; ++i) {
-                        float t = static_cast<float>(i) / ARC_N;
-                        edgePts[en++] = ImVec2(seg1End + arcWidth * t, arcY(t));
-                    }
-                    edgePts[en++] = ImVec2(maskR, thinH);
-                    bgDl->AddPolyline(edgePts, en, IM_COL32(255, 255, 255, 200), false, m_ly.scale * 2.0f);
-
-                    // ── 蓝色内侧描边（向上偏移bOff）──
-                    float bOff = m_ly.scale * 5.0f;
-                    ImVec2 bluePts[2 + ARC_N + 2];
-                    int bn = 0;
-                    bluePts[bn++] = ImVec2(0, topInfoH - bOff);
-                    bluePts[bn++] = ImVec2(seg1End, topInfoH - bOff);
-                    for (int i = 1; i <= ARC_N; ++i) {
-                        float t = static_cast<float>(i) / ARC_N;
-                        bluePts[bn++] = ImVec2(seg1End + arcWidth * t, arcY(t) - bOff);
-                    }
-                    bluePts[bn++] = ImVec2(maskR, thinH - bOff);
-                    bgDl->AddPolyline(bluePts, bn, IM_COL32(0, 150, 255, 180), false, m_ly.scale * 1.5f);
-                }
-            }
+        // ── 填充多边形 ──
+        ImVec2 pts[4 + ARC_N + 2];
+        int n = 0;
+        pts[n++] = ImVec2(0, 0);
+        pts[n++] = ImVec2(maskR, 0);
+        pts[n++] = ImVec2(maskR, thinH);
+        pts[n++] = ImVec2(seg3Start, thinH);
+        for (int i = ARC_N - 1; i >= 0; --i) {
+            float t = static_cast<float>(i) / ARC_N;
+            pts[n++] = ImVec2(seg1End + arcWidth * t, arcY(t));
         }
+        pts[n++] = ImVec2(0, topInfoH);
+        bgDl->AddConvexPolyFilled(pts, n, IM_COL32(13, 13, 23, 255));
+
+        // ── 底部轮廓白色描边（左→右）──
+        ImVec2 edgePts[2 + ARC_N + 2];
+        int en = 0;
+        edgePts[en++] = ImVec2(0, topInfoH);
+        edgePts[en++] = ImVec2(seg1End, topInfoH);
+        for (int i = 1; i <= ARC_N; ++i) {
+            float t = static_cast<float>(i) / ARC_N;
+            edgePts[en++] = ImVec2(seg1End + arcWidth * t, arcY(t));
+        }
+        edgePts[en++] = ImVec2(maskR, thinH);
+        bgDl->AddPolyline(edgePts, en, IM_COL32(255, 255, 255, 200), false, m_ly.scale * 2.0f);
+
+        // ── 蓝色内侧描边（向上偏移bOff）──
+        float bOff = m_ly.scale * 5.0f;
+        ImVec2 bluePts[2 + ARC_N + 2];
+        int bn = 0;
+        bluePts[bn++] = ImVec2(0, topInfoH - bOff);
+        bluePts[bn++] = ImVec2(seg1End, topInfoH - bOff);
+        for (int i = 1; i <= ARC_N; ++i) {
+            float t = static_cast<float>(i) / ARC_N;
+            bluePts[bn++] = ImVec2(seg1End + arcWidth * t, arcY(t) - bOff);
+        }
+        bluePts[bn++] = ImVec2(maskR, thinH - bOff);
+        bgDl->AddPolyline(bluePts, bn, IM_COL32(0, 150, 255, 180), false, m_ly.scale * 1.5f);
     }
 
     renderLeftPanel(m_ly.leftWidth, H);

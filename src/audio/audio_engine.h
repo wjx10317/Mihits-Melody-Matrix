@@ -11,9 +11,7 @@ struct ma_sound;
 
 namespace melody_matrix::audio {
 
-// ============================================================
 // 音频类型枚举 —— 为未来多种音频类型共存和音量分组预留
-// ============================================================
 enum class SoundType : int {
     Preview = 0,   // 选歌预览
     BGM     = 1,   // 菜单背景音乐
@@ -122,8 +120,11 @@ public:
 
     // 查询
     bool isPlaying() const { return !m_activeSounds.empty(); }
-    int64_t positionMs() const;
-    int64_t durationMs() const;
+    int64_t positionMs() const;//当前位置
+    int64_t durationMs() const;//总时长
+
+    // Seek 到指定位置（毫秒）
+    void seekTo(int64_t positionMs);
 
     // ---- 音量分组控制（未来扩展）----
     void setTypeVolume(SoundType type, float volume);
@@ -154,3 +155,4 @@ private:
 };
 
 } // namespace melody_matrix::audio
+

@@ -5,7 +5,6 @@
 #include "renderer/note_renderer.h"
 #include "beatmap/note.h"
 
-#include <array>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -15,16 +14,6 @@ namespace melody_matrix::renderer {
 
 /// 渲染层顺序（从后到前）
 enum class RenderLayer { Background = 0, Grid = 1, Notes = 2, Border = 3, Effect = 4 };
-
-/// 阵型过渡渲染状态
-struct FormationTransition {
-    int32_t prevRows = 0;
-    int32_t prevCols = 0;
-    int32_t nextRows = 0;
-    int32_t nextCols = 0;
-    float progress = 0.0f;     ///< 0.0 = 旧阵型, 1.0 = 新阵型
-    bool active = false;
-};
 
 } // namespace melody_matrix::renderer
 
@@ -41,17 +30,8 @@ public:
     void setGameplayRendering(bool enabled);
     void setBackgroundPath(const std::string& path);
     void setFormation(int32_t rows, int32_t cols);
-    void beginFormationTransition(int32_t prevRows, int32_t prevCols,
-                                   int32_t nextRows, int32_t nextCols);
-    void updateFormationTransition(float progress);
     void setNotes(const std::vector<beatmap::Note>& notes, float ar);
-    void setScrollState(int32_t activeStartCol, int32_t activeEndCol);
-    /// 更新各列判定头指针（用于跳过已判定的音符）
-    void setColumnHeads(const std::array<size_t, 8>& heads, int32_t columnCount);
     void shutdown();
-
-    /// 设置背景遮罩透明度（0.0=无遮罩, 1.0=完全遮盖）
-    void setBgDim(float dim);
 
 private:
     void renderBackground();
@@ -64,6 +44,7 @@ private:
     uint32_t m_gridVao = 0;
     uint32_t m_gridVbo = 0;
     Shader m_gridShader;
+    Shader m_fallbackShader;
 
     Texture2D m_bgTexture;
     Shader m_bgShader;
@@ -78,18 +59,6 @@ private:
 
     int32_t m_gridRows = 3;
     int32_t m_gridCols = 4;
-
-    FormationTransition m_transition;
-
-    float m_bgDim = 0.67f;  ///< 背景遮罩透明度（默认67%）
-
-    // ── 列活跃状态 ──
-    int32_t m_activeStartCol = 0;
-    int32_t m_activeEndCol = 3;
-
-    // ── 列判定头指针 ──
-    std::array<size_t, 8> m_colHeads = {};
-    int32_t m_colHeadCount = 0;
 };
 
 } // namespace melody_matrix::renderer

@@ -46,12 +46,14 @@ public:
 
 private:
     // ── Validation helpers ──
-    bool validateSections() const;       ///< 规则 6：必需段落存在
+    bool validateVersion() const;        ///< 规则 1：版本字符串检查（由解析器完成）
+    bool validateAudioFile() const;      ///< 规则 2：音频文件路径非空
+    bool validateNoteBounds() const;     ///< 规则 3：音符坐标在阵型边界内
     bool validateFormations() const;     ///< 规则 4：行数≥1 且列数≥1
     bool validateTimeOrder() const;      ///< 规则 5：阵型和音符按时间排序
-    bool validateNoteBounds() const;     ///< 规则 3：音符坐标在阵型边界内
-    bool validateAudioFile() const;      ///< 规则 2：音频文件路径非空
-    bool validateVersion() const;        ///< 规则 1：版本字符串检查（由解析器完成）
+    bool validateSections() const;       ///< 规则 6：必需段落存在
+    bool validateHoldTapOverlap();       ///< 规则 7：同列 Hold+Tap 禁止重叠（软验证：丢弃冲突音符）
+    bool validateFormationBuffer();      ///< 规则 8：阵型变化前 500ms 无即将判定的音符（软验证：丢弃冲突音符）
 
     // ── Builder state ──
     Meta                   m_meta;

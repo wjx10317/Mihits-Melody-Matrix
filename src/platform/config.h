@@ -35,6 +35,7 @@ public:
     static constexpr const char* KEY_RESOLUTION_H  = "video.height";
     static constexpr const char* KEY_FULLSCREEN    = "video.fullscreen";
     static constexpr const char* KEY_EFFECTS_LEVEL = "video.effects_level";
+    static constexpr const char* KEY_BG_DIM        = "video.bg_dim";
 
 private:
     static inline std::unordered_map<std::string, std::string> s_data;

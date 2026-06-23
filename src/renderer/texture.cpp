@@ -55,7 +55,7 @@ bool Texture2D::loadFromFile(const std::string& path, bool genMipmap) {
     release();
 
     // stb_image loads images with origin at top-left by default.
-    // OpenGL expects origin at bottom-left, so flip vertically.
+    // OpenGL expects origin at bottom-left, so flip vertically for correct texel alignment.
     stbi_set_flip_vertically_on_load(1);
 
     int width = 0, height = 0, channels = 0;

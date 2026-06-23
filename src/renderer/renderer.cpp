@@ -1,4 +1,6 @@
 #include "renderer.h"
+#include "note_renderer.h"
+#include "beatmap/note.h"
 #include "util/logger.h"
 
 #include <glad.h>
@@ -78,16 +80,17 @@ bool Renderer::init() {
     }
 
     // ── Create fullscreen quad VAO/VBO for background ──
-    // Vertices: position (x,y) + texcoord (u,v)
-    // Covers the full logical 1920×1080 area
+    // Projection is Y-down (top=0, bottom=1080). With stb_flip_on_load=1,
+    // OpenGL texture v=0 is image bottom, v=1 is image top.
+    // So screen top (Y=0) needs v=1, screen bottom (Y=1080) needs v=0.
     float quadVertices[] = {
         // pos              // texcoord
-        0.0f,    0.0f,      0.0f, 0.0f,   // top-left
-        1920.0f, 0.0f,      1.0f, 0.0f,   // top-right
-        1920.0f, 1080.0f,   1.0f, 1.0f,   // bottom-right
-        0.0f,    0.0f,      0.0f, 0.0f,   // top-left
-        1920.0f, 1080.0f,   1.0f, 1.0f,   // bottom-right
-        0.0f,    1080.0f,   0.0f, 1.0f,   // bottom-left
+        0.0f,    0.0f,      0.0f, 1.0f,   // top-left     -> image top-left
+        1920.0f, 0.0f,      1.0f, 1.0f,   // top-right    -> image top-right
+        1920.0f, 1080.0f,   1.0f, 0.0f,   // bottom-right -> image bottom-right
+        0.0f,    0.0f,      0.0f, 1.0f,   // top-left     -> image top-left
+        1920.0f, 1080.0f,   1.0f, 0.0f,   // bottom-right -> image bottom-right
+        0.0f,    1080.0f,   0.0f, 0.0f,   // bottom-left  -> image bottom-left
     };
 
     glGenVertexArrays(1, &m_bgVao);
@@ -97,19 +100,23 @@ bool Renderer::init() {
     glBindBuffer(GL_ARRAY_BUFFER, m_bgVbo);
     glBufferData(GL_ARRAY_BUFFER, sizeof(quadVertices), quadVertices, GL_STATIC_DRAW);
 
-    // Position attribute (location 0)
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)0);
 
-    // Texcoord attribute (location 1)
     glEnableVertexAttribArray(1);
     glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)(2 * sizeof(float)));
 
     glBindVertexArray(0);
 
-    // ── Load background texture ──
+    // ── Load default background texture ──
     if (!m_bgTexture.loadFromFile("assets/textures/menu-bg.jpg")) {
         MM_LOG_WARN("Renderer", "Failed to load menu background texture — will use solid color");
+    }
+
+    // ── Initialize note renderer ──
+    m_noteRenderer = std::make_unique<NoteRenderer>();
+    if (!m_noteRenderer->init()) {
+        MM_LOG_WARN("Renderer", "NoteRenderer initialization failed");
     }
 
     m_initialized = true;
@@ -121,94 +128,283 @@ void Renderer::setGameplayRendering(bool enabled) {
     m_gameplayRendering = enabled;
 }
 
+void Renderer::setBackgroundPath(const std::string& path) {
+    if (path == m_bgPath) return;
+    m_bgPath = path;
+    m_bgDirty = true;
+}
+
+void Renderer::setFormation(int32_t rows, int32_t cols) {
+    m_gridRows = rows;
+    m_gridCols = cols;
+    // 瞬间切换时清除过渡状态
+    m_transition.active = false;
+}
+
+void Renderer::beginFormationTransition(int32_t prevRows, int32_t prevCols,
+                                          int32_t nextRows, int32_t nextCols) {
+    m_transition.prevRows = prevRows;
+    m_transition.prevCols = prevCols;
+    m_transition.nextRows = nextRows;
+    m_transition.nextCols = nextCols;
+    m_transition.progress = 0.0f;
+    m_transition.active = true;
+}
+
+void Renderer::updateFormationTransition(float progress) {
+    if (!m_transition.active) return;
+    m_transition.progress = std::max(0.0f, std::min(1.0f, progress));
+    if (m_transition.progress >= 1.0f) {
+        // 过渡完成，切换到新阵型
+        m_gridRows = m_transition.nextRows;
+        m_gridCols = m_transition.nextCols;
+        m_transition.active = false;
+    }
+}
+
+void Renderer::setNotes(const std::vector<beatmap::Note>& notes, float ar) {
+    m_notes = notes;
+    m_ar = ar;
+}
+
+void Renderer::setScrollState(int32_t activeStartCol, int32_t activeEndCol) {
+    m_activeStartCol = activeStartCol;
+    m_activeEndCol = activeEndCol;
+}
+
+void Renderer::setColumnHeads(const std::array<size_t, 8>& heads, int32_t columnCount) {
+    m_colHeads = heads;
+    m_colHeadCount = columnCount;
+}
+
+void Renderer::setBgDim(float dim) {
+    m_bgDim = std::max(0.0f, std::min(1.0f, dim));
+}
+
 void Renderer::renderFrame(int64_t interpolatedTimeMs) {
     if (!m_initialized) return;
+
+    // 延迟加载背景纹理
+    if (m_bgDirty) {
+        m_bgDirty = false;
+        if (m_bgPath.empty()) {
+            // 恢复默认背景
+            m_bgTexture = Texture2D();
+            if (!m_bgTexture.loadFromFile("assets/textures/menu-bg.jpg")) {
+                MM_LOG_WARN("Renderer", "Failed to reload default background");
+            }
+        } else {
+            // 优先尝试.mp4（暂不支持视频，跳过）
+            // 其次加载图片
+            Texture2D newTex;
+            if (!newTex.loadFromFile(m_bgPath)) {
+                MM_LOG_WARN("Renderer", "Failed to load background: " + m_bgPath);
+                // 加载失败则用默认
+                m_bgTexture = Texture2D();
+                if (!m_bgTexture.loadFromFile("assets/textures/menu-bg.jpg")) {
+                    MM_LOG_WARN("Renderer", "Failed to reload default background");
+                }
+            } else {
+                m_bgTexture = std::move(newTex);
+                MM_LOG_INFO("Renderer", "Background loaded: " + m_bgPath);
+            }
+        }
+    }
 
     renderBackground();
     if (m_gameplayRendering) {
         renderGrid(interpolatedTimeMs);
+        renderNotes(interpolatedTimeMs);
     }
-    // [TODO] renderBorder(timeMs)
-    // [TODO] renderEffects(timeMs)
 }
 
 void Renderer::renderBackground() {
     if (!m_bgTexture.valid() || !m_bgShader.valid()) {
-        // Fallback: solid clear color already set by Kernel
         return;
     }
 
-    // Bind texture
     m_bgTexture.bind(0);
-
-    // Use background shader
     m_bgShader.use();
 
-    // Projection: orthographic mapping logical 1920×1080 → clip space
     glm::mat4 proj = glm::ortho(0.0f, 1920.0f, 1080.0f, 0.0f, -1.0f, 1.0f);
     m_bgShader.setMat4("uProjection", &proj[0][0]);
-
-    // Texture sampler at unit 0
     m_bgShader.setInt("uTexture", 0);
-
-    // Full opacity for background
     m_bgShader.setFloat("uAlpha", 1.0f);
 
-    // Draw fullscreen quad
     glBindVertexArray(m_bgVao);
     glDrawArrays(GL_TRIANGLES, 0, 6);
     glBindVertexArray(0);
 
-    // Unbind texture
     Texture2D::unbind(0);
+
+    // ── 背景遮罩层 ──
+    if (m_bgDim > 0.001f) {
+        m_gridShader.use();
+        m_gridShader.setMat4("uProjection", &proj[0][0]);
+        m_gridShader.setVec4("uColor", 0.063f, 0.063f, 0.118f, m_bgDim);
+
+        // 复用背景四边形的 VAO 绘制全屏遮罩
+        // 但背景 VAO 有两个属性（pos + texcoord），grid shader 只用 location=0
+        // 所以需要用 grid VAO 构建一个全屏四边形
+        float dimQuad[] = {
+            0.0f,    0.0f,
+            1920.0f, 0.0f,
+            1920.0f, 1080.0f,
+            0.0f,    0.0f,
+            1920.0f, 1080.0f,
+            0.0f,    1080.0f,
+        };
+        glBindBuffer(GL_ARRAY_BUFFER, m_gridVbo);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(dimQuad), dimQuad, GL_DYNAMIC_DRAW);
+        glBindVertexArray(m_gridVao);
+        glDrawArrays(GL_TRIANGLES, 0, 6);
+        glBindVertexArray(0);
+    }
 }
 
-void Renderer::renderGrid(int64_t timeMs) {
-    // ── Build grid lines based on current formation ──
+void Renderer::renderGrid(int64_t /*timeMs*/) {
     const float W = 1920.0f, H = 1080.0f, margin = 120.0f;
-    const float gw = (W - 2 * margin) / m_gridCols;
-    const float gh = (H - 2 * margin) / m_gridRows;
 
-    std::vector<float> lines;
+    if (m_transition.active) {
+        // ── Fade 过渡渲染：旧网格淡出 + 新网格淡入 ──
+        float p = m_transition.progress;
+        float easedP = p < 0.5f ? 2.0f * p * p : 1.0f - (-2.0f * p + 2.0f) * (-2.0f * p + 2.0f) / 2.0f;
 
-    // Vertical lines (cols + 1)
-    for (int c = 0; c <= m_gridCols; ++c) {
-        float x = margin + c * gw;
-        lines.push_back(x); lines.push_back(margin);
-        lines.push_back(x); lines.push_back(H - margin);
+        // 旧网格（淡出）
+        {
+            float gw = (W - 2 * margin) / m_transition.prevCols;
+            float gh = (H - 2 * margin) / m_transition.prevRows;
+            std::vector<float> lines;
+            for (int c = 0; c <= m_transition.prevCols; ++c) {
+                float x = margin + c * gw;
+                lines.push_back(x); lines.push_back(margin);
+                lines.push_back(x); lines.push_back(H - margin);
+            }
+            for (int r = 0; r <= m_transition.prevRows; ++r) {
+                float y = margin + r * gh;
+                lines.push_back(margin); lines.push_back(y);
+                lines.push_back(W - margin); lines.push_back(y);
+            }
+            int32_t vc = static_cast<int32_t>(lines.size() / 2);
+            glBindBuffer(GL_ARRAY_BUFFER, m_gridVbo);
+            glBufferData(GL_ARRAY_BUFFER, lines.size() * sizeof(float), lines.data(), GL_DYNAMIC_DRAW);
+            m_gridShader.use();
+            glm::mat4 proj = glm::ortho(0.0f, W, H, 0.0f, -1.0f, 1.0f);
+            m_gridShader.setMat4("uProjection", &proj[0][0]);
+            float oldAlpha = 0.3f * (1.0f - easedP);
+            m_gridShader.setVec4("uColor", 0.0f, 1.0f, 0.96f, oldAlpha);
+            glBindVertexArray(m_gridVao);
+            glDrawArrays(GL_LINES, 0, vc);
+            glBindVertexArray(0);
+        }
+
+        // 新网格（淡入）
+        {
+            float gw = (W - 2 * margin) / m_transition.nextCols;
+            float gh = (H - 2 * margin) / m_transition.nextRows;
+            std::vector<float> lines;
+            for (int c = 0; c <= m_transition.nextCols; ++c) {
+                float x = margin + c * gw;
+                lines.push_back(x); lines.push_back(margin);
+                lines.push_back(x); lines.push_back(H - margin);
+            }
+            for (int r = 0; r <= m_transition.nextRows; ++r) {
+                float y = margin + r * gh;
+                lines.push_back(margin); lines.push_back(y);
+                lines.push_back(W - margin); lines.push_back(y);
+            }
+            int32_t vc = static_cast<int32_t>(lines.size() / 2);
+            glBindBuffer(GL_ARRAY_BUFFER, m_gridVbo);
+            glBufferData(GL_ARRAY_BUFFER, lines.size() * sizeof(float), lines.data(), GL_DYNAMIC_DRAW);
+            m_gridShader.use();
+            glm::mat4 proj = glm::ortho(0.0f, W, H, 0.0f, -1.0f, 1.0f);
+            m_gridShader.setMat4("uProjection", &proj[0][0]);
+            float newAlpha = 0.3f * easedP;
+            m_gridShader.setVec4("uColor", 0.0f, 1.0f, 0.96f, newAlpha);
+            glBindVertexArray(m_gridVao);
+            glDrawArrays(GL_LINES, 0, vc);
+            glBindVertexArray(0);
+        }
+    } else {
+        // ── 正常渲染：完整矩阵网格 ──
+        const float gw = (W - 2 * margin) / m_gridCols;
+        const float gh = (H - 2 * margin) / m_gridRows;
+
+        std::vector<float> lines;
+
+        // 竖线
+        for (int c = 0; c <= m_gridCols; ++c) {
+            float x = margin + c * gw;
+            lines.push_back(x); lines.push_back(margin);
+            lines.push_back(x); lines.push_back(H - margin);
+        }
+
+        // 横线
+        for (int r = 0; r <= m_gridRows; ++r) {
+            float y = margin + r * gh;
+            lines.push_back(margin); lines.push_back(y);
+            lines.push_back(W - margin); lines.push_back(y);
+        }
+
+        int32_t vertexCount = static_cast<int32_t>(lines.size() / 2);
+
+        glBindBuffer(GL_ARRAY_BUFFER, m_gridVbo);
+        glBufferData(GL_ARRAY_BUFFER, lines.size() * sizeof(float), lines.data(), GL_DYNAMIC_DRAW);
+
+        m_gridShader.use();
+
+        glm::mat4 proj = glm::ortho(0.0f, W, H, 0.0f, -1.0f, 1.0f);
+        m_gridShader.setMat4("uProjection", &proj[0][0]);
+
+        // 活跃列高亮，非活跃列灰暗
+        // 先绘制完整网格（暗色），再绘制活跃列（亮色）
+        m_gridShader.setVec4("uColor", 0.0f, 1.0f, 0.96f, 0.15f);
+        glBindVertexArray(m_gridVao);
+        glDrawArrays(GL_LINES, 0, vertexCount);
+        glBindVertexArray(0);
+
+        // 活跃列竖线高亮
+        if (m_gridCols > 4) {
+            std::vector<float> activeLines;
+            for (int c = m_activeStartCol; c <= m_activeEndCol + 1 && c <= m_gridCols; ++c) {
+                float x = margin + c * gw;
+                activeLines.push_back(x); activeLines.push_back(margin);
+                activeLines.push_back(x); activeLines.push_back(H - margin);
+            }
+            if (!activeLines.empty()) {
+                int32_t activeVC = static_cast<int32_t>(activeLines.size() / 2);
+                glBindBuffer(GL_ARRAY_BUFFER, m_gridVbo);
+                glBufferData(GL_ARRAY_BUFFER, activeLines.size() * sizeof(float), activeLines.data(), GL_DYNAMIC_DRAW);
+                m_gridShader.setVec4("uColor", 0.0f, 1.0f, 0.96f, 0.4f);
+                glBindVertexArray(m_gridVao);
+                glDrawArrays(GL_LINES, 0, activeVC);
+                glBindVertexArray(0);
+            }
+        }
     }
+}
 
-    // Horizontal lines (rows + 1)
-    for (int r = 0; r <= m_gridRows; ++r) {
-        float y = margin + r * gh;
-        lines.push_back(margin); lines.push_back(y);
-        lines.push_back(W - margin); lines.push_back(y);
+void Renderer::renderNotes(int64_t timeMs) {
+    if (m_notes.empty() || !m_noteRenderer) return;
+
+    if (m_transition.active) {
+        float p = m_transition.progress;
+        int32_t rows = p < 0.5f ? m_transition.prevRows : m_transition.nextRows;
+        int32_t cols = p < 0.5f ? m_transition.prevCols : m_transition.nextCols;
+        m_noteRenderer->render(m_notes, timeMs, rows, cols, m_ar,
+                               m_activeStartCol, m_activeEndCol,
+                               m_colHeads, m_colHeadCount);
+    } else {
+        m_noteRenderer->render(m_notes, timeMs, m_gridRows, m_gridCols, m_ar,
+                               m_activeStartCol, m_activeEndCol,
+                               m_colHeads, m_colHeadCount);
     }
-
-    int32_t vertexCount = static_cast<int32_t>(lines.size() / 2);
-
-    // ── Update VBO ──
-    glBindBuffer(GL_ARRAY_BUFFER, m_gridVbo);
-    glBufferData(GL_ARRAY_BUFFER, lines.size() * sizeof(float), lines.data(), GL_DYNAMIC_DRAW);
-
-    // ── Draw ──
-    m_gridShader.use();
-
-    // Projection: orthographic mapping logical 1920x1080 → clip space
-    glm::mat4 proj = glm::ortho(0.0f, W, H, 0.0f, -1.0f, 1.0f);
-    m_gridShader.setMat4("uProjection", &proj[0][0]);
-
-    // Grid line color: dim cyan (#00fff5 at 30% opacity)
-    m_gridShader.setVec4("uColor", 0.0f, 1.0f, 0.96f, 0.3f);
-
-    glBindVertexArray(m_gridVao);
-    glDrawArrays(GL_LINES, 0, vertexCount);
-    glBindVertexArray(0);
 }
 
 void Renderer::shutdown() {
-    // Clean up background resources
-    m_bgTexture = Texture2D(); // RAII cleanup
+    m_noteRenderer.reset();
+
+    m_bgTexture = Texture2D();
     if (m_bgVao != 0) {
         glDeleteVertexArrays(1, &m_bgVao);
         m_bgVao = 0;
@@ -218,7 +414,6 @@ void Renderer::shutdown() {
         m_bgVbo = 0;
     }
 
-    // Clean up grid resources
     if (m_gridVao != 0) {
         glDeleteVertexArrays(1, &m_gridVao);
         m_gridVao = 0;

@@ -18,7 +18,7 @@ void PausedState::onExit() {
     MM_LOG_INFO("Paused", "Unpausing");
 }
 
-GameState PausedState::update(float dt) {
+GameState PausedState::update(float /*dt*/) {
     switch (m_action) {
     case PausedAction::Resume:
         return GameState::Playing;
@@ -32,11 +32,12 @@ GameState PausedState::update(float dt) {
         }
         return GameState::Playing;
     case PausedAction::Quit:
-        // Stop audio before leaving Playing state
         {
             auto* playing = Kernel::instance().stateManager().getStateAs<PlayingState>(GameState::Playing);
             if (playing) {
-                playing->markNeedsReinit(); // Full cleanup on next entry
+                playing->markNeedsReinit();
+                // 直接清除渲染资源，因为 PlayingState::onExit() 不会被调用
+                playing->cleanupRenderer();
             }
         }
         return GameState::SongSelect;

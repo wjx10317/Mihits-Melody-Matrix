@@ -24,6 +24,11 @@ void FormationController::load(const std::vector<beatmap::Formation>& formations
     }
 }
 
+int32_t FormationController::currentCols() const {
+    if (m_formations.empty()) return 4;
+    return m_formations[m_currentIndex].cols;
+}
+
 bool FormationController::update(int64_t nowMs) {
     if (m_formations.empty()) return false;
 

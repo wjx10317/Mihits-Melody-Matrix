@@ -159,6 +159,73 @@ bool BeatmapBuilder::validateVersion() const {
     return true;
 }
 
+bool BeatmapBuilder::validateHoldTapOverlap() {
+    // Rule 7: 同列 Hold+Tap 禁止重叠（软验证）
+    // 丢弃与 Hold 重叠的 Tap/其他 Hold，保留 Hold 本身
+    std::vector<size_t> toRemove;
+    std::vector<bool> marked(m_notes.size(), false);
+
+    for (size_t i = 0; i < m_notes.size(); ++i) {
+        if (m_notes[i].type != NoteType::Hold) continue;
+
+        int64_t holdStart = m_notes[i].time;
+        int64_t holdEnd   = m_notes[i].holdEnd;
+        int32_t col       = m_notes[i].col;
+
+        for (size_t j = 0; j < m_notes.size(); ++j) {
+            if (i == j || marked[j]) continue;
+            if (m_notes[j].col != col) continue;
+
+            int64_t noteTime = m_notes[j].time;
+            if (noteTime > holdStart && noteTime < holdEnd) {
+                MM_LOG_WARN("BeatmapBuilder", "Hold+Tap overlap: discarding note at t=" +
+                             std::to_string(noteTime) + "ms col=" + std::to_string(col) +
+                             " (overlaps Hold at t=" + std::to_string(holdStart) + "ms)");
+                marked[j] = true;
+            }
+        }
+    }
+
+    // 移除被标记的音符
+    size_t removed = 0;
+    m_notes.erase(std::remove_if(m_notes.begin(), m_notes.end(),
+        [&](const Note&) { bool r = marked[removed]; ++removed; return r; }),
+        m_notes.end());
+
+    return true; // 始终通过，冲突音符已被丢弃
+}
+
+bool BeatmapBuilder::validateFormationBuffer() {
+    // Rule 8: 阵型变化前 500ms 内的音符将被丢弃（软验证）
+    static constexpr int64_t BUFFER_MS = 500;
+
+    std::vector<bool> marked(m_notes.size(), false);
+
+    for (size_t fi = 1; fi < m_formations.size(); ++fi) {
+        int64_t formationTime = m_formations[fi].time;
+        int64_t bufferStart   = formationTime - BUFFER_MS;
+
+        for (size_t ni = 0; ni < m_notes.size(); ++ni) {
+            if (marked[ni]) continue;
+            if (m_notes[ni].time >= bufferStart && m_notes[ni].time < formationTime) {
+                MM_LOG_WARN("BeatmapBuilder", "Formation buffer: discarding note at t=" +
+                             std::to_string(m_notes[ni].time) + "ms" +
+                             " (within 500ms buffer of formation at t=" +
+                             std::to_string(formationTime) + "ms)");
+                marked[ni] = true;
+            }
+        }
+    }
+
+    // 移除被标记的音符
+    size_t removed = 0;
+    m_notes.erase(std::remove_if(m_notes.begin(), m_notes.end(),
+        [&](const Note&) { bool r = marked[removed]; ++removed; return r; }),
+        m_notes.end());
+
+    return true; // 始终通过，冲突音符已被丢弃
+}
+
 // ── Build ──
 
 util::Result<Beatmap> BeatmapBuilder::build() {
@@ -193,6 +260,10 @@ util::Result<Beatmap> BeatmapBuilder::build() {
         return util::Result<Beatmap>(static_cast<int32_t>(util::ErrorCode::ERROR_BEATMAP_MISSING_SECTION),
                                      "Required beatmap section is missing");
     }
+
+    // 软验证：丢弃冲突音符而非拒绝整个谱面
+    validateHoldTapOverlap();
+    validateFormationBuffer();
 
     // ── Construct Beatmap ──
     Beatmap bm;

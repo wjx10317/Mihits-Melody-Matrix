@@ -19,7 +19,7 @@ void ResultState::onExit() {
     MM_LOG_INFO("Result", "Exiting Result state");
 }
 
-GameState ResultState::update(float dt) {
+GameState ResultState::update(float /*dt*/) {
     switch (m_action) {
     case ResultAction::Retry:
         // Mark PlayingState for reinit before transitioning
@@ -31,6 +31,13 @@ GameState ResultState::update(float dt) {
         }
         return GameState::Playing;
     case ResultAction::Back:
+        {
+            auto* playing = Kernel::instance().stateManager().getStateAs<PlayingState>(GameState::Playing);
+            if (playing) {
+                playing->markNeedsReinit();
+                playing->cleanupRenderer();
+            }
+        }
         return GameState::SongSelect;
     default:
         break;

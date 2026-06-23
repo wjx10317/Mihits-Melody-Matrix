@@ -8,11 +8,20 @@
 
 namespace melody_matrix::beatmap {
 
+/// 阵型过渡类型
+enum class TransitionType : int32_t {
+    Fade    = 0,  ///< 交叉淡入淡出：旧网格淡出 + 新网格淡入 + 音符位置插值
+    Insert  = 1,  ///< 渐入插入：现有行/列平滑缩放，新增行/列渐入
+    Rotate  = 2,  ///< 矩阵旋转：前半段旧矩阵旋转到半角，切换，后半段新矩阵继续旋转
+};
+
 /// 阵型定义 — 描述特定时间点的网格布局
 struct Formation {
-    int64_t time = 0;    ///< 此阵型生效的时间（毫秒）
-    int32_t rows = 0;    ///< 网格行数
-    int32_t cols = 0;    ///< 网格列数
+    int64_t time = 0;                  ///< 此阵型生效的时间（毫秒）
+    int32_t rows = 0;                  ///< 网格行数
+    int32_t cols = 0;                  ///< 网格列数
+    TransitionType transitionType = TransitionType::Fade;       ///< 过渡类型
+    int64_t transitionDurationMs = 300; ///< 过渡持续时间（毫秒），0=瞬间切换
 };
 
 /// 谱面难度参数
@@ -76,3 +85,5 @@ struct Beatmap {
 };
 
 } // namespace melody_matrix::beatmap
+//为什么全用结构体？为什么这么选型？默认访问权限都是公有，类默认私有，类还要声明访问权限冗余，
+// 另外这里都是数据载体外加const查询，不涉及业务处理，选择结构体。设置为私有要写大量冗余getset接口

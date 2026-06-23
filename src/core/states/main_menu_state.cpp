@@ -7,6 +7,7 @@
 #include "util/hash.h"
 #include "platform/file_dialog.h"
 #include "platform/file_system.h"
+#include "platform/config.h"
 #include "platform/zip_extract.h"
 #include "beatmap/beatmap_parser.h"
 #include "beatmap/beatmap_builder.h"
@@ -264,9 +265,9 @@ util::Result<void> MainMenuState::validateAndImportOsz(const std::string& oszPat
                     if (!entry.is_directory()) continue;
                     // 查找目录中的 background.* 文件
                     for (const auto& f : fs::directory_iterator(entry.path())) {
-                        std::string ext = f.path().extension().string();
-                        for (char& c : ext) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
-                        if (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".webp") {
+                        std::string fileExt = f.path().extension().string();
+                        for (char& c : fileExt) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+                        if (fileExt == ".png" || fileExt == ".jpg" || fileExt == ".jpeg" || fileExt == ".webp") {
                             std::string name = f.path().stem().string();
                             if (name == "background") {
                                 renderer::TextureCache::instance().load(fs::absolute(f.path()).string(), false);
@@ -872,6 +873,40 @@ void MainMenuState::renderSettingsSidebar() {
         }
     }
     ImGui::PopStyleColor(3);
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    // Background dim slider
+    ImGui::PushStyleColor(ImGuiCol_Text,
+        ImVec4(Theme::PURP_R, Theme::PURP_G, Theme::PURP_B, 1.0f));
+    ImGui::SetWindowFontScale(1.2f);
+    ImGui::Text("GAMEPLAY");
+    ImGui::PopStyleColor();
+    ImGui::SetWindowFontScale(1.0f);
+    ImGui::Spacing();
+
+    {
+        static float s_bgDim = platform::Config::getFloat(platform::Config::KEY_BG_DIM, 0.67f);
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.7f, 0.7f, 0.75f, 1.0f));
+        ImGui::Text("Background Dim: %d%%", static_cast<int>(s_bgDim * 100));
+        ImGui::PopStyleColor();
+        ImGui::PushStyleColor(ImGuiCol_SliderGrab,
+            ImVec4(Theme::CYAN_R, Theme::CYAN_G, Theme::CYAN_B, 0.8f));
+        ImGui::PushStyleColor(ImGuiCol_SliderGrabActive,
+            ImVec4(Theme::CYAN_R, Theme::CYAN_G, Theme::CYAN_B, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_FrameBg,
+            ImVec4(0.18f, 0.18f, 0.30f, 0.8f));
+        ImGui::PushStyleColor(ImGuiCol_FrameBgHovered,
+            ImVec4(0.25f, 0.25f, 0.40f, 0.9f));
+        if (ImGui::SliderFloat("##BgDim", &s_bgDim, 0.0f, 1.0f, "")) {
+            Kernel::instance().renderer().setBgDim(s_bgDim);
+            platform::Config::setFloat(platform::Config::KEY_BG_DIM, s_bgDim);
+            platform::Config::save();
+        }
+        ImGui::PopStyleColor(4);
+    }
 
     ImGui::Spacing();
     ImGui::Separator();

@@ -56,6 +56,11 @@ void StateManager::executeTransition(GameState newState) {
     // Only enable OpenGL gameplay rendering (grid, notes, etc.) during Playing/Paused
     bool isGameplay = (newState == GameState::Playing || newState == GameState::Paused);
     Kernel::instance().renderer().setGameplayRendering(isGameplay);
+
+    // 离开游戏状态时清除背景纹理
+    if (!isGameplay) {
+        Kernel::instance().renderer().setBackgroundPath("");
+    }
 }
 
 void StateManager::update(float dt) {
