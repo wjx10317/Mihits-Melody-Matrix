@@ -88,6 +88,11 @@ public:
     /// 获取指定列的队列（供渲染器遍历可见音符）
     const ColumnQueue& columnQueue(int32_t col) const;
 
+    /// move 语义：将指定列的 note 数据移出并返回，列被清空。
+    /// 用于滚动时将离开窗口的列转移到"已完成"区域，保证 note 不丢失。
+    /// 同时将 head 设为原 notes.size()，使渲染器跳过该列所有音符。
+    std::vector<beatmap::Note> moveColumnNotes(int32_t col);
+
     /// 获取总列数
     int32_t columnCount() const { return m_columnCount; }
 

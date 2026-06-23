@@ -187,7 +187,7 @@ const beatmap::Note* JudgeQueue::getActiveHold(int32_t column) const {
     }
     // 返回该列的当前头部音符（Hold 已被 commitHit 推进，所以需要 head-1）
     auto& col = m_columns[column];
-    if (col.head == 0) {
+    if (col.head == 0 || col.notes.empty() || col.head > col.notes.size()) {
         return nullptr;
     }
     return &col.notes[col.head - 1];
@@ -212,6 +212,22 @@ void JudgeQueue::reset() {
 
 const ColumnQueue& JudgeQueue::columnQueue(int32_t col) const {
     return m_columns[col];
+}
+
+std::vector<beatmap::Note> JudgeQueue::moveColumnNotes(int32_t col) {
+    if (col < 0 || col >= m_columnCount) {
+        return {};
+    }
+    auto& colQ = m_columns[col];
+    // 将 head 推进到 notes 末尾，使渲染器（通过 colHeads）跳过该列全部音符
+    colQ.head = colQ.notes.size();
+    // move 出 note 数据，保证不丢失
+    std::vector<beatmap::Note> result = std::move(colQ.notes);
+    colQ.notes.clear();  // std::move 后保证有效空状态
+    // 清理该列的 Hold 状态，避免 move 后产生悬空引用
+    m_activeHolds[col] = {};
+    // head 保持为原 size，finished() == true
+    return result;
 }
 
 size_t JudgeQueue::totalNotes() const {

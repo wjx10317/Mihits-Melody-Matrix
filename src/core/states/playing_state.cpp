@@ -93,6 +93,7 @@ void PlayingState::resetGameplay() {
     m_popups.clear();
 
     m_scrollWindow = {};  // 重置滚动窗口
+    m_completedNotes.clear();  // 清空已完成区域
 
     auto& renderer = Kernel::instance().renderer();
     renderer.setGameplayRendering(false);
@@ -294,15 +295,13 @@ GameState PlayingState::update(float dt) {
         }
     }
 
-    // ── Process input (skip during formation transition or scroll animation) ──
+    // ── Process input & update judge queue ──
+    // 滚动期间锁判定：既不处理输入，也不触发 auto-miss，
+    // 避免对正在 move 的列产生误判或悬空引用。
     bool inTransition = m_formationCtrl.inTransition(nowMs);
     bool inScroll = m_scrollWindow.scrolling;
     if (!inTransition && !inScroll) {
         processInput();
-    }
-
-    // ── Update judge queue (auto-miss expired notes, skip during transition) ──
-    if (!inTransition) {
         m_judgeQueue.update(nowMs, od);
     }
 
@@ -448,7 +447,8 @@ void PlayingState::checkAndTriggerScroll(int64_t nowMs) {
         float timeDiff = static_cast<float>(note.time - nowMs);
 
         // 音符在 approach 窗口内（即将需要判定）
-        if (timeDiff <= approachMs && timeDiff > -500.0f) {
+        // 仅对未过期 note（timeDiff > 0）触发滚动，避免对已过期 note 触发
+        if (timeDiff <= approachMs && timeDiff > 0) {
             if (col < neededStart) neededStart = col;
             if (col > neededEnd) neededEnd = col;
         }
@@ -457,12 +457,23 @@ void PlayingState::checkAndTriggerScroll(int64_t nowMs) {
     // 如果需要的列超出当前窗口，触发滚动
     if (neededStart < windowStart || neededEnd > windowEnd) {
         // 计算新的窗口起始列
-        int32_t targetStart = neededStart;
-        // 确保窗口不超过总列数
+        int32_t targetStart = windowStart;
+
+        // 向右滚动：neededEnd 超出窗口右边界（如 col=4 出现 note，窗口 0-3 → 1-4）
+        if (neededEnd > windowEnd) {
+            targetStart = neededEnd - KEY_COUNT + 1;
+        }
+        // 向左滚动：neededStart 超出窗口左边界
+        // （仅在不需要向右滚动时处理；时间向前流动，优先保证新列进入窗口）
+        if (neededStart < windowStart && neededEnd <= windowEnd) {
+            targetStart = neededStart;
+        }
+
+        // 边界约束：窗口不能超出总列数范围
+        if (targetStart < 0) targetStart = 0;
         if (targetStart + KEY_COUNT > totalCols) {
             targetStart = totalCols - KEY_COUNT;
         }
-        if (targetStart < 0) targetStart = 0;
 
         // 只在窗口确实需要移动时才触发
         if (targetStart != windowStart) {
@@ -481,8 +492,59 @@ void PlayingState::checkAndTriggerScroll(int64_t nowMs) {
 }
 
 void PlayingState::completeScroll() {
-    m_scrollWindow.startCol = m_scrollWindow.targetStartCol;
-    m_scrollWindow.endCol = m_scrollWindow.targetEndCol;
+    int32_t oldStart = m_scrollWindow.startCol;
+    int32_t oldEnd = m_scrollWindow.endCol;
+    int32_t newStart = m_scrollWindow.targetStartCol;
+    int32_t newEnd = m_scrollWindow.targetEndCol;
+
+    // ── move 语义：将离开窗口的列的 note 数据转移到已完成区域 ──
+    // 环形队列管理：JudgeQueue 的固定 MAX_COLS 列数组作为环形缓冲，
+    // 滚动窗口在其上滑动；离开窗口的列被"回收"——note 数据 move 到
+    // m_completedNotes，保证 note 不丢失。滚动期间锁判定，move 不产生歧义。
+    if (newStart > oldStart) {
+        // 向右滚动：左侧列 [oldStart, newStart-1] 离开窗口
+        // guard：仅 move 已完成列；未完成列保留在 JudgeQueue 中，
+        // 滚动完成后由 update() 的 auto-miss 机制处理，避免 note 静默丢失。
+        for (int32_t col = oldStart; col < newStart; ++col) {
+            if (!m_judgeQueue.columnQueue(col).finished()) {
+                MM_LOG_WARN("Playing", "Right scroll encountered unjudged notes in col " +
+                            std::to_string(col) + ", skip move (will auto-miss)");
+                continue;
+            }
+            auto moved = m_judgeQueue.moveColumnNotes(col);
+            if (!moved.empty()) {
+                for (auto& n : moved) {
+                    m_completedNotes.push_back(std::move(n));
+                }
+                MM_LOG_INFO("Playing", "Moved col " + std::to_string(col) +
+                            " notes to completed area");
+            }
+        }
+    } else if (newStart < oldStart) {
+        // 向左滚动：右侧列 [newEnd+1, oldEnd] 离开窗口
+        // 时间向前流动时正常不会向左滚动（右侧列的 note 应在窗口内已判定完成）。
+        // 若因谱面列分布异常触发，未判定 note 不应被直接 move 到 completed 区域
+        // （会导致漏判且不计 miss）。此处加 guard：仅 move 已完成列；未完成列保留
+        // 在 JudgeQueue 中，滚动完成后由 update() 的 auto-miss 机制处理。
+        for (int32_t col = newEnd + 1; col <= oldEnd; ++col) {
+            if (!m_judgeQueue.columnQueue(col).finished()) {
+                MM_LOG_WARN("Playing", "Left scroll encountered unjudged notes in col " +
+                            std::to_string(col) + ", skip move (will auto-miss)");
+                continue;
+            }
+            auto moved = m_judgeQueue.moveColumnNotes(col);
+            if (!moved.empty()) {
+                for (auto& n : moved) {
+                    m_completedNotes.push_back(std::move(n));
+                }
+                MM_LOG_INFO("Playing", "Moved col " + std::to_string(col) +
+                            " notes to completed area");
+            }
+        }
+    }
+
+    m_scrollWindow.startCol = newStart;
+    m_scrollWindow.endCol = newEnd;
     m_scrollWindow.scrolling = false;
 
     MM_LOG_INFO("Playing", "Scroll completed: window now " +
@@ -825,6 +887,19 @@ void PlayingState::renderImGuiOverlay() {
             ImGui::SetWindowFontScale(1.6f);
             float textWidth = ImGui::CalcTextSize(label).x;
             dl->AddText(ImVec2(wp.x + keyW / 2 - textWidth / 2, wp.y + 12), textColor, label);
+
+            // ── 锁判定视觉提示：滚动期间显示红色叉号 ──
+            if (m_scrollWindow.scrolling) {
+                ImU32 xColor = IM_COL32(255, 40, 60, 255);
+                const float xPad = 6.0f;
+                const float xThick = 3.0f;
+                dl->AddLine(ImVec2(wp.x + xPad, wp.y + xPad),
+                            ImVec2(wp.x + keyW - xPad, wp.y + keyH - xPad),
+                            xColor, xThick);
+                dl->AddLine(ImVec2(wp.x + keyW - xPad, wp.y + xPad),
+                            ImVec2(wp.x + xPad, wp.y + keyH - xPad),
+                            xColor, xThick);
+            }
 
             ImGui::SetWindowFontScale(1.0f);
             ImGui::End();
