@@ -221,6 +221,12 @@ void NoteRenderer::buildNoteVertices(const std::vector<beatmap::Note>& notes, in
     const float noteFullW = gw * m_blockSize;
     const float noteFullH = gh * m_blockSize;
 
+    // 动态居中偏移：根据活跃窗口宽度计算（不再硬编码4列的1.5/2.0）
+    // cols<KEY_COUNT 时（如3列）用活跃列数算偏移，避免最左列超出屏幕
+    float activeWidth = static_cast<float>(activeEndCol - activeStartCol + 1);
+    float blockCenterOffset = activeWidth * 0.5f;        // block 左边界居中偏移
+    float noteCenterOffset = (activeWidth - 1.0f) * 0.5f; // note 中心居中偏移
+
     // 纹理层 ID：纹理未加载时用 -1（纯色 fallback）
     const float layerTap      = m_texTap ? 0.0f : -1.0f;
     const float layerSlider   = m_texSlider ? 1.0f : -1.0f;
@@ -242,7 +248,7 @@ void NoteRenderer::buildNoteVertices(const std::vector<beatmap::Note>& notes, in
         int32_t effEnd   = scrolling ? targetEndCol   : activeEndCol;
         for (int r = 0; r < rows; ++r) {
             for (int c = 0; c < cols; ++c) {
-                float bx = W * 0.5f + (c - activeStartCol - 2) * gw + scrollOffset;
+                float bx = W * 0.5f + (c - activeStartCol - blockCenterOffset) * gw + scrollOffset;
                 // 裁剪超出屏幕的列（4列居中时旁边列可能部分超出屏幕边界）
                 if (bx + gw < 0.0f || bx > W) continue;
                 float by = margin + r * gh;
@@ -292,7 +298,7 @@ void NoteRenderer::buildNoteVertices(const std::vector<beatmap::Note>& notes, in
         // 屏幕中央 4 列范围：[W/2 - 2*gw, W/2 + 2*gw]，中心列偏移 -1.5*gw ~ +1.5*gw
         // scrollOffset 在滚动期间为 -colDelta*gw*easedP（向右滚→矩阵左移），完成后归零
         // 滚动期间 activeStartCol 保持旧值，scrollOffset 平滑过渡，完成后 startCol 更新+scrollOffset归零，无跳变
-        float cellX = W * 0.5f + (note.col - activeStartCol - 1.5f) * gw + scrollOffset;
+        float cellX = W * 0.5f + (note.col - activeStartCol - noteCenterOffset) * gw + scrollOffset;
         // 裁剪超出屏幕的 note（旁边列可能部分超出屏幕边界）
         if (cellX < -gw || cellX > W + gw) continue;
         float cellY = margin + (note.row + 0.5f) * gh;

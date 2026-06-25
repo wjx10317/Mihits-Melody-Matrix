@@ -1189,7 +1189,10 @@ void PlayingState::renderImGuiOverlay() {
             const float margin = 120.0f;
             const float gw = (ImGui::GetIO().DisplaySize.x - 2 * margin) / totalCols;
             const int32_t startCol = m_scrollWindow.startCol;
-            colX = ImGui::GetIO().DisplaySize.x * 0.5f + (popup.column - startCol - 1.5f) * gw;
+            // 动态偏移：活跃窗口宽度算中心偏移（不再硬编码1.5）
+            int32_t activeWidth = m_scrollWindow.endCol - m_scrollWindow.startCol + 1;
+            float noteCenterOffset = (activeWidth - 1) * 0.5f;
+            colX = ImGui::GetIO().DisplaySize.x * 0.5f + (popup.column - startCol - noteCenterOffset) * gw;
         }
 
         ImGui::SetNextWindowPos(ImVec2(colX - 50, ImGui::GetIO().DisplaySize.y / 2 - 80 - offsetY));
@@ -1242,17 +1245,20 @@ void PlayingState::renderImGuiOverlay() {
         auto mapping = getKeyMapping();
 
         // 计算网格参数（与 Renderer 一致）
-        // 按键提示固定在屏幕中央4列位置（不随滚动偏移），与 note_renderer 的 cellX 公式对齐
+        // 按键提示固定在屏幕中央活跃列位置（不随滚动偏移），与 note_renderer 的 cellX 公式对齐
         const float W = ImGui::GetIO().DisplaySize.x;
         const float H = ImGui::GetIO().DisplaySize.y;
         const float margin = 120.0f;
         const float gw = (W - 2 * margin) / totalCols;
         const float keyHintY = H - margin + 15;  // 网格底部下方
         const int32_t startCol = m_scrollWindow.startCol;
+        // 动态偏移：活跃窗口宽度算中心偏移（不再硬编码1.5）
+        int32_t activeWidth = m_scrollWindow.endCol - m_scrollWindow.startCol + 1;
+        float noteCenterOffset = (activeWidth - 1) * 0.5f;
 
         for (const auto& m : mapping) {
-            // 按键固定在屏幕中央4列：col=startCol+0..3 对应 W/2-1.5*gw .. W/2+1.5*gw
-            float cellX = W * 0.5f + (m.column - startCol - 1.5f) * gw;
+            // 按键固定在屏幕中央活跃列：col=startCol+0..(activeWidth-1) 居中
+            float cellX = W * 0.5f + (m.column - startCol - noteCenterOffset) * gw;
             float keyW = std::min(gw * 0.8f, 80.0f);  // 按键宽度，最大80px
             float keyH = 44.0f;
 
