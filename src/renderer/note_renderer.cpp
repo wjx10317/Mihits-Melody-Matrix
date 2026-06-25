@@ -88,14 +88,18 @@ bool NoteRenderer::init() {
 void NoteRenderer::render(const std::vector<beatmap::Note>& notes, int64_t timeMs,
                            int rows, int cols, float ar,
                            int32_t activeStartCol, int32_t activeEndCol,
-                           const std::array<size_t, 8>& colHeads, int32_t colHeadCount) {
+                           const std::array<size_t, 8>& colHeads, int32_t colHeadCount,
+                           float scrollOffset, bool scrolling, float scrollProgress,
+                           int32_t targetStartCol, int32_t targetEndCol) {
     if (!m_initialized) return;
 
     std::vector<float> quads;
     std::vector<float> colors;
     buildNoteVertices(notes, timeMs, rows, cols, ar,
                       activeStartCol, activeEndCol,
-                      colHeads, colHeadCount, quads, colors);
+                      colHeads, colHeadCount, quads, colors,
+                      scrollOffset, scrolling, scrollProgress,
+                      targetStartCol, targetEndCol);
 
     if (quads.empty()) return;
 
@@ -124,7 +128,9 @@ void NoteRenderer::buildNoteVertices(const std::vector<beatmap::Note>& notes, in
                                       int32_t activeStartCol, int32_t activeEndCol,
                                       const std::array<size_t, 8>& colHeads, int32_t colHeadCount,
                                       std::vector<float>& quads,
-                                      std::vector<float>& colors) {
+                                      std::vector<float>& colors,
+                                      float scrollOffset, bool scrolling, float scrollProgress,
+                                      int32_t targetStartCol, int32_t targetEndCol) {
     const float W = 1920.0f, H = 1080.0f, margin = 120.0f;
     const float gw = (W - 2 * margin) / cols;
     const float gh = (H - 2 * margin) / rows;
@@ -155,14 +161,17 @@ void NoteRenderer::buildNoteVertices(const std::vector<beatmap::Note>& notes, in
         // Only render notes within approach window + brief after
         if (timeDiff > approachMs || timeDiff < -300.0f) continue;
 
-        // 完整矩阵显示
-        float cellX = margin + (note.col + 0.5f) * gw;
+        // 完整矩阵显示 — 应用滚动偏移
+        float cellX = margin + (note.col + 0.5f) * gw + scrollOffset;
         float cellY = margin + (note.row + 0.5f) * gh;
 
         // 活跃列高亮，非活跃列灰暗
+        // 滚动期间使用目标窗口判断活跃列
         float colDim = 1.0f;
         if (cols > 4) {
-            if (note.col < activeStartCol || note.col > activeEndCol) {
+            int32_t effStart = scrolling ? targetStartCol : activeStartCol;
+            int32_t effEnd = scrolling ? targetEndCol : activeEndCol;
+            if (note.col < effStart || note.col > effEnd) {
                 colDim = 0.25f;
             }
         }

@@ -13,6 +13,7 @@
 #include <array>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace melody_matrix::core {
 
@@ -37,6 +38,9 @@ public:
 
     /// 设置谱面背景图路径（由 SongSelectState 传入）
     void setBackgroundImage(const std::string& path) { m_bgImagePath = path; }
+
+    /// 设置启用的模组 ID 列表（由 SongSelectState 传入，在 initGameplay 中应用）
+    void setMods(const std::vector<std::string>& modIds) { m_modIds = modIds; }
 
 private:
     void initGameplay();
@@ -66,6 +70,7 @@ private:
     beatmap::Beatmap m_beatmap;
     std::string m_beatmapFile;
     std::string m_bgImagePath;    ///< 谱面背景图路径
+    std::vector<std::string> m_modIds;  ///< 启用的模组 ID 列表
     bool m_gameplayInitialized = false;
     bool m_needsReinit = false;
 
@@ -90,13 +95,21 @@ private:
         int32_t endCol = 3;             ///< 当前活跃窗口结束列（含）
         bool scrolling = false;         ///< 是否正在切换窗口中
         int64_t scrollStartMs = 0;      ///< 切换开始时间
-        float scrollDurationMs = 200.0f;///< 切换动画时长
+        float scrollDurationMs = 200.0f;///< 切换动画时长（自适应）
         int32_t targetStartCol = 0;     ///< 目标起始列
         int32_t targetEndCol = 3;       ///< 目标结束列
+        float scrollOffset = 0.0f;      ///< 当前滚动偏移（像素，用于动画）
 
         /// 切换是否完成
         bool finished(int64_t nowMs) const {
             return scrolling && nowMs >= scrollStartMs + static_cast<int64_t>(scrollDurationMs);
+        }
+
+        /// 滚动进度 [0,1]
+        float progress(int64_t nowMs) const {
+            if (!scrolling || scrollDurationMs <= 0.0f) return 1.0f;
+            float p = static_cast<float>(nowMs - scrollStartMs) / scrollDurationMs;
+            return std::max(0.0f, std::min(1.0f, p));
         }
     };
     ScrollWindow m_scrollWindow;

@@ -147,6 +147,78 @@ void PlayingState::initGameplay() {
     }
     m_beatmap = std::move(buildResult.value());
 
+    // ── 铺面导入丢弃：丢弃会在滚动过程中 miss 的 note ──
+    // 当列数 > KEY_COUNT 时，滚动事件窗口默认 100ms。
+    // 如果一个 note 在滚动期间到达 miss 阈值，玩家无法击打却被判 miss，不公平。
+    // 在导入时模拟滚动触发，丢弃这些 note。
+    if (m_beatmap.formations.size() > 0) {
+        int32_t maxCols = 0;
+        for (const auto& f : m_beatmap.formations) {
+            if (f.cols > maxCols) maxCols = f.cols;
+        }
+        if (maxCols > KEY_COUNT) {
+            // 需要滚动，执行 note 丢弃
+            float od = m_beatmap.difficulty.od;
+            int32_t goodW = static_cast<int32_t>(65.0f - 2.6f * od);
+            int64_t missThr = static_cast<int64_t>(goodW) + 50;
+            float scrollDuration = 100.0f;  // 默认滚动事件窗口
+
+            // 模拟滚动：遍历 note，检测哪些会在滚动期间 miss
+            std::vector<beatmap::Note> filteredNotes;
+            filteredNotes.reserve(m_beatmap.notes.size());
+
+            // 简化模型：对每个 note，检查其时间是否落在某个滚动窗口内
+            // 滚动窗口 = [scrollStart, scrollStart + scrollDuration]
+            // 如果 note.time - missThr <= scrollStart 且 note.time + missThr >= scrollStart，
+            // 则 note 可能在滚动期间 miss
+            // 更精确：模拟实际滚动触发过程
+            int32_t currentStart = 0;
+            int32_t currentEnd = KEY_COUNT - 1;
+            int64_t lastScrollEnd = 0;
+
+            for (const auto& note : m_beatmap.notes) {
+                // 检查此 note 是否需要滚动（col 超出当前窗口）
+                if (note.col > currentEnd || note.col < currentStart) {
+                    // 触发滚动
+                    int32_t newStart = currentStart;
+                    if (note.col > currentEnd) {
+                        newStart = note.col - KEY_COUNT + 1;
+                    } else {
+                        newStart = note.col;
+                    }
+                    if (newStart < 0) newStart = 0;
+
+                    int64_t scrollStart = note.time - static_cast<int64_t>(1800.0f - m_beatmap.difficulty.ar * 120.0f);
+                    if (scrollStart < lastScrollEnd) scrollStart = lastScrollEnd;
+                    int64_t scrollEnd = scrollStart + static_cast<int64_t>(scrollDuration);
+
+                    // 检查此 note 是否在滚动期间 miss
+                    // note miss 如果 nowMs >= note.time + missThr
+                    // 滚动期间 nowMs ∈ [scrollStart, scrollEnd]
+                    // 如果 scrollEnd >= note.time + missThr → note 会在滚动期间 miss
+                    if (scrollEnd >= note.time + missThr) {
+                        // 丢弃此 note
+                        MM_LOG_INFO("Playing", "Discarding note at t=" + std::to_string(note.time) +
+                                    " col=" + std::to_string(note.col) + " (would miss during scroll)");
+                        continue;
+                    }
+
+                    currentStart = newStart;
+                    currentEnd = newStart + KEY_COUNT - 1;
+                    lastScrollEnd = scrollEnd;
+                }
+                filteredNotes.push_back(note);
+            }
+
+            size_t discarded = m_beatmap.notes.size() - filteredNotes.size();
+            if (discarded > 0) {
+                MM_LOG_INFO("Playing", "Discarded " + std::to_string(discarded) +
+                            " notes that would miss during scroll");
+                m_beatmap.notes = std::move(filteredNotes);
+            }
+        }
+    }
+
     // ── Init judge ──
     m_judgeQueue.setStrategy(std::make_unique<gameplay::StandardJudgeStrategy>());
     m_judgeQueue.loadNotes(m_beatmap.notes);
@@ -182,6 +254,21 @@ void PlayingState::initGameplay() {
 
     // ── 设置 HP drain rate ──
     m_hpManager.setDrainRate(m_beatmap.difficulty.hp);
+
+    // ── 应用模组 ──
+    bool noFailEnabled = false;
+    for (const auto& id : m_modIds) {
+        if (id == "nofail") {
+            noFailEnabled = true;
+            break;
+        }
+    }
+    if (noFailEnabled) {
+        m_hpManager.setMod(std::make_shared<gameplay::NoFailMod>());
+        MM_LOG_INFO("Playing", "NoFail mod enabled");
+    } else {
+        m_hpManager.setMod(nullptr);
+    }
 
     // ── Count notes ──
     m_totalNotes = static_cast<int>(m_beatmap.notes.size());
@@ -315,7 +402,22 @@ GameState PlayingState::update(float dt) {
         checkAndTriggerScroll(nowMs);
     }
     // 同步滚动状态和判定头到渲染器
-    kernel.renderer().setScrollState(m_scrollWindow.startCol, m_scrollWindow.endCol);
+    float scrollOffset = 0.0f;
+    if (m_scrollWindow.scrolling) {
+        float p = m_scrollWindow.progress(nowMs);
+        // ease-in-out 缓动
+        float easedP = p < 0.5f ? 2.0f * p * p : 1.0f - (-2.0f * p + 2.0f) * (-2.0f * p + 2.0f) / 2.0f;
+        int32_t colDelta = m_scrollWindow.targetStartCol - m_scrollWindow.startCol;
+        const float W = 1920.0f, margin = 120.0f;
+        int32_t totalCols = m_formationCtrl.currentCols();
+        if (totalCols <= 0) totalCols = 4;
+        float gw = (W - 2 * margin) / totalCols;
+        scrollOffset = colDelta * gw * easedP;
+    }
+    kernel.renderer().setScrollState(m_scrollWindow.startCol, m_scrollWindow.endCol, scrollOffset,
+                                      m_scrollWindow.scrolling ? m_scrollWindow.targetStartCol : m_scrollWindow.startCol,
+                                      m_scrollWindow.scrolling ? m_scrollWindow.targetEndCol : m_scrollWindow.endCol,
+                                      m_scrollWindow.scrolling, m_scrollWindow.progress(nowMs));
     {
         std::array<size_t, 8> heads = {};
         for (int32_t c = 0; c < m_judgeQueue.columnCount() && c < 8; ++c) {
@@ -477,8 +579,36 @@ void PlayingState::checkAndTriggerScroll(int64_t nowMs) {
 
         // 只在窗口确实需要移动时才触发
         if (targetStart != windowStart) {
+            // ── 自适应滚动时长 ──
+            // 找到触发滚动的 note 的剩余时间，确保滚动完成后仍有足够击打窗口
+            // 击打窗口 = goodWindow + 10ms（比 good 快区间再快 10ms）
+            float od = m_beatmap.difficulty.od;
+            int32_t goodW = static_cast<int32_t>(65.0f - 2.6f * od);
+            int64_t minRemainingMs = static_cast<int64_t>(goodW) + 10;  // 最小剩余时间
+
+            // 找到最早需要判定的 note 的时间
+            int64_t earliestNoteTime = INT64_MAX;
+            for (int32_t col = 0; col < m_judgeQueue.columnCount(); ++col) {
+                const auto& colQ = m_judgeQueue.columnQueue(col);
+                if (colQ.finished()) continue;
+                if (col < targetStart || col > targetStart + KEY_COUNT - 1) continue;
+                if (colQ.front().time > nowMs && colQ.front().time < earliestNoteTime) {
+                    earliestNoteTime = colQ.front().time;
+                }
+            }
+
+            // 默认滚动时长 200ms
+            float scrollDuration = 200.0f;
+            if (earliestNoteTime != INT64_MAX) {
+                int64_t availableTime = earliestNoteTime - nowMs - minRemainingMs;
+                // 滚动时长 = 可用时间的 80%，但不超过 200ms，不小于 50ms
+                scrollDuration = static_cast<float>(availableTime) * 0.8f;
+                scrollDuration = std::max(50.0f, std::min(200.0f, scrollDuration));
+            }
+
             m_scrollWindow.scrolling = true;
             m_scrollWindow.scrollStartMs = nowMs;
+            m_scrollWindow.scrollDurationMs = scrollDuration;
             m_scrollWindow.targetStartCol = targetStart;
             m_scrollWindow.targetEndCol = targetStart + KEY_COUNT - 1;
 
@@ -486,7 +616,8 @@ void PlayingState::checkAndTriggerScroll(int64_t nowMs) {
                         std::to_string(windowStart) + "-" + std::to_string(windowEnd) +
                         " -> " + std::to_string(targetStart) + "-" +
                         std::to_string(targetStart + KEY_COUNT - 1) +
-                        " at t=" + std::to_string(nowMs) + "ms");
+                        " at t=" + std::to_string(nowMs) +
+                        "ms duration=" + std::to_string(static_cast<int>(scrollDuration)) + "ms");
         }
     }
 }

@@ -21,7 +21,9 @@ public:
     void render(const std::vector<beatmap::Note>& notes, int64_t timeMs,
                 int rows, int cols, float ar,
                 int32_t activeStartCol, int32_t activeEndCol,
-                const std::array<size_t, 8>& colHeads, int32_t colHeadCount);
+                const std::array<size_t, 8>& colHeads, int32_t colHeadCount,
+                float scrollOffset = 0.0f, bool scrolling = false, float scrollProgress = 0.0f,
+                int32_t targetStartCol = 0, int32_t targetEndCol = 3);
     void shutdown();
 
 private:
@@ -30,7 +32,9 @@ private:
                            int32_t activeStartCol, int32_t activeEndCol,
                            const std::array<size_t, 8>& colHeads, int32_t colHeadCount,
                            std::vector<float>& quads,
-                           std::vector<float>& colors);
+                           std::vector<float>& colors,
+                           float scrollOffset = 0.0f, bool scrolling = false, float scrollProgress = 0.0f,
+                           int32_t targetStartCol = 0, int32_t targetEndCol = 3);
 
     bool m_initialized = false;
     uint32_t m_vao = 0;

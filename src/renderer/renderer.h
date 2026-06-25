@@ -45,7 +45,10 @@ public:
                                    int32_t nextRows, int32_t nextCols);
     void updateFormationTransition(float progress);
     void setNotes(const std::vector<beatmap::Note>& notes, float ar);
-    void setScrollState(int32_t activeStartCol, int32_t activeEndCol);
+    void setScrollState(int32_t activeStartCol, int32_t activeEndCol,
+                        float scrollOffset = 0.0f,
+                        int32_t targetStartCol = 0, int32_t targetEndCol = 3,
+                        bool scrolling = false, float scrollProgress = 0.0f);
     /// 更新各列判定头指针（用于跳过已判定的音符）
     void setColumnHeads(const std::array<size_t, 8>& heads, int32_t columnCount);
     void shutdown();
@@ -86,6 +89,11 @@ private:
     // ── 列活跃状态 ──
     int32_t m_activeStartCol = 0;
     int32_t m_activeEndCol = 3;
+    float m_scrollOffset = 0.0f;          ///< 滚动偏移（像素）
+    int32_t m_targetStartCol = 0;         ///< 目标起始列
+    int32_t m_targetEndCol = 3;           ///< 目标结束列
+    bool m_scrolling = false;             ///< 是否正在滚动
+    float m_scrollProgress = 0.0f;        ///< 滚动进度 [0,1]
 
     // ── 列判定头指针 ──
     std::array<size_t, 8> m_colHeads = {};

@@ -167,9 +167,17 @@ void Renderer::setNotes(const std::vector<beatmap::Note>& notes, float ar) {
     m_ar = ar;
 }
 
-void Renderer::setScrollState(int32_t activeStartCol, int32_t activeEndCol) {
+void Renderer::setScrollState(int32_t activeStartCol, int32_t activeEndCol,
+                              float scrollOffset,
+                              int32_t targetStartCol, int32_t targetEndCol,
+                              bool scrolling, float scrollProgress) {
     m_activeStartCol = activeStartCol;
     m_activeEndCol = activeEndCol;
+    m_scrollOffset = scrollOffset;
+    m_targetStartCol = targetStartCol;
+    m_targetEndCol = targetEndCol;
+    m_scrolling = scrolling;
+    m_scrollProgress = scrollProgress;
 }
 
 void Renderer::setColumnHeads(const std::array<size_t, 8>& heads, int32_t columnCount) {
@@ -332,9 +340,9 @@ void Renderer::renderGrid(int64_t /*timeMs*/) {
 
         std::vector<float> lines;
 
-        // 竖线
+        // 竖线 — 应用滚动偏移
         for (int c = 0; c <= m_gridCols; ++c) {
-            float x = margin + c * gw;
+            float x = margin + c * gw + m_scrollOffset;
             lines.push_back(x); lines.push_back(margin);
             lines.push_back(x); lines.push_back(H - margin);
         }
@@ -357,17 +365,18 @@ void Renderer::renderGrid(int64_t /*timeMs*/) {
         m_gridShader.setMat4("uProjection", &proj[0][0]);
 
         // 活跃列高亮，非活跃列灰暗
-        // 先绘制完整网格（暗色），再绘制活跃列（亮色）
         m_gridShader.setVec4("uColor", 0.0f, 1.0f, 0.96f, 0.15f);
         glBindVertexArray(m_gridVao);
         glDrawArrays(GL_LINES, 0, vertexCount);
         glBindVertexArray(0);
 
-        // 活跃列竖线高亮
+        // 活跃列竖线高亮（应用滚动偏移）
         if (m_gridCols > 4) {
             std::vector<float> activeLines;
-            for (int c = m_activeStartCol; c <= m_activeEndCol + 1 && c <= m_gridCols; ++c) {
-                float x = margin + c * gw;
+            int32_t activeStart = m_scrolling ? m_targetStartCol : m_activeStartCol;
+            int32_t activeEnd = m_scrolling ? m_targetEndCol : m_activeEndCol;
+            for (int c = activeStart; c <= activeEnd + 1 && c <= m_gridCols; ++c) {
+                float x = margin + c * gw + m_scrollOffset;
                 activeLines.push_back(x); activeLines.push_back(margin);
                 activeLines.push_back(x); activeLines.push_back(H - margin);
             }
@@ -393,11 +402,15 @@ void Renderer::renderNotes(int64_t timeMs) {
         int32_t cols = p < 0.5f ? m_transition.prevCols : m_transition.nextCols;
         m_noteRenderer->render(m_notes, timeMs, rows, cols, m_ar,
                                m_activeStartCol, m_activeEndCol,
-                               m_colHeads, m_colHeadCount);
+                               m_colHeads, m_colHeadCount,
+                               m_scrollOffset, m_scrolling, m_scrollProgress,
+                               m_targetStartCol, m_targetEndCol);
     } else {
         m_noteRenderer->render(m_notes, timeMs, m_gridRows, m_gridCols, m_ar,
                                m_activeStartCol, m_activeEndCol,
-                               m_colHeads, m_colHeadCount);
+                               m_colHeads, m_colHeadCount,
+                               m_scrollOffset, m_scrolling, m_scrollProgress,
+                               m_targetStartCol, m_targetEndCol);
     }
 }
 

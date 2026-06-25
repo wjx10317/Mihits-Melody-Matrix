@@ -109,6 +109,14 @@ GameState SongSelectState::update(float dt) {
             if (m_selectedGroup >= 0 && m_selectedGroup < static_cast<int>(m_groups.size())) {
                 playing->setBackgroundImage(m_groups[m_selectedGroup].imagePath);
             }
+            // 传递已激活的模组 ID
+            std::vector<std::string> activeMods;
+            for (const auto& mod : m_mods) {
+                if (mod.active && mod.implemented) {
+                    activeMods.push_back(mod.id);
+                }
+            }
+            playing->setMods(activeMods);
         }
         return GameState::Playing;
     }
