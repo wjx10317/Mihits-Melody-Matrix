@@ -297,11 +297,12 @@ void Renderer::renderBackground() {
 
     Texture2D::unbind(0);
 
-    // ── 背景遮罩层 ──
-    if (m_bgDim > 0.001f) {
+    // ── 背景遮罩层（受 gameplayFade 控制实现休息段渐变隐藏）──
+    float dimAlpha = m_bgDim * m_gameplayFade;
+    if (dimAlpha > 0.001f) {
         m_gridShader.use();
         m_gridShader.setMat4("uProjection", &proj[0][0]);
-        m_gridShader.setVec4("uColor", 0.063f, 0.063f, 0.118f, m_bgDim);
+        m_gridShader.setVec4("uColor", 0.063f, 0.063f, 0.118f, dimAlpha);
 
         // 复用背景四边形的 VAO 绘制全屏遮罩
         // 但背景 VAO 有两个属性（pos + texcoord），grid shader 只用 location=0
@@ -331,6 +332,9 @@ void Renderer::renderGrid(int64_t /*timeMs*/) {
 
 void Renderer::renderNotes(int64_t timeMs) {
     if (m_notes.empty() || !m_noteRenderer) return;
+
+    // 应用休息段渐变（矩阵+note 整体 alpha）
+    m_noteRenderer->setGlobalAlpha(m_gameplayFade);
 
     if (m_transition.active) {
         float p = m_transition.progress;

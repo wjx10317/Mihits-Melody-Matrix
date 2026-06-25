@@ -11,8 +11,8 @@ namespace melody_matrix::beatmap {
 ///
 /// 转换策略：
 ///   - HitCircle → 单点 Tap
-///   - Slider   → 沿曲线等间距 Tap 序列（基于 TimingPoints 拍速）
-///   - Spinner  → Hold（中心位置，start→endTime）
+///   - Slider   → Hold（slider 长按，起点位置，start→start+duration，长按期间渲染边缘进度条贴图）
+///   - Spinner  → Tap（转盘渲染成 tap，放在中心位置，避免触发矩阵变换/滚动）
 ///
 /// 核心特性 — 动态呼吸矩阵：
 ///   不使用固定网格，而是根据 Note 的空间分布动态生成 Formation 序列。
@@ -77,11 +77,14 @@ private:
                                    int& outX, int& outY) const;
 
     /// 动态呼吸矩阵 — 根据 RawHitObject 的空间分布生成 Formation 序列
+    /// 支持非正方形：rows 和 cols 独立映射 spread，适配器转换铺面最大 4 行 6 列
     std::vector<Formation> generateBreathingFormations(
         const std::vector<RawHitObject>& objects,
         int64_t windowMs = 2000,    ///< 滑动窗口大小（ms）
-        int32_t minSize = 3,        ///< 最小网格维度
-        int32_t maxSize = 8,        ///< 最大网格维度
+        int32_t minRows = 3,        ///< 最小行数
+        int32_t maxRows = 4,        ///< 最大行数（适配器转换上限）
+        int32_t minCols = 3,        ///< 最小列数
+        int32_t maxCols = 6,        ///< 最大列数（适配器转换上限，cols>KEY_COUNT 时需滚动）
         int32_t hysteresis = 1      ///< 迟滞量（避免频繁切换）
     ) const;
 

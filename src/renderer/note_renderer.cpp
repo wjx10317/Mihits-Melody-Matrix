@@ -148,6 +148,13 @@ void NoteRenderer::render(const std::vector<beatmap::Note>& notes, int64_t timeM
 
     if (quads.empty()) return;
 
+    // 应用全局 alpha（休息段渐变隐藏）
+    if (m_globalAlpha < 1.0f) {
+        for (size_t i = 3; i < colors.size(); i += 4) {
+            colors[i] *= m_globalAlpha;
+        }
+    }
+
     int32_t instanceCount = static_cast<int32_t>(quads.size() / 4);
     instanceCount = std::min(instanceCount, m_maxInstances);
 

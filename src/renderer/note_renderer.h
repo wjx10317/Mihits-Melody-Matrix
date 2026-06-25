@@ -46,6 +46,9 @@ public:
     /// 设置 note 图片相对格子的缩放比例（来自 Formation.blockSize，默认 0.9）
     void setBlockSize(float blockSize) { m_blockSize = blockSize; }
 
+    /// 设置全局 alpha（用于休息段渐变隐藏，0=隐藏, 1=显示，默认1）
+    void setGlobalAlpha(float alpha) { m_globalAlpha = std::max(0.0f, std::min(1.0f, alpha)); }
+
 private:
     void buildNoteVertices(const std::vector<beatmap::Note>& notes, int64_t timeMs,
                            int rows, int cols, float ar,
@@ -76,6 +79,7 @@ private:
 
     // note 图片相对格子的缩放比例（来自 Formation.blockSize）
     float m_blockSize = 0.9f;
+    float m_globalAlpha = 1.0f;  ///< 全局 alpha（休息段渐变用）
 };
 
 } // namespace melody_matrix::renderer

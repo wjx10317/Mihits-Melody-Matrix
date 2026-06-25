@@ -232,56 +232,45 @@ void OsuParser::interpolateSliderPosition(const RawHitObject& obj, float progres
     outY = path.back().second;
 }
 
-// ── Dynamic Breathing Formation ──
+// ── Dynamic Breathing Formation (non-square: rows by y-spread, cols by x-spread) ──
 
 std::vector<Formation> OsuParser::generateBreathingFormations(
     const std::vector<RawHitObject>& objects,
     int64_t windowMs,
-    int32_t minSize,
-    int32_t maxSize,
+    int32_t minRows, int32_t maxRows,
+    int32_t minCols, int32_t maxCols,
     int32_t hysteresis) const
 {
     if (objects.empty()) {
-        return {Formation{0, minSize, minSize}};
+        return {Formation{0, minRows, minCols}};
     }
 
     // ── 第一步：滑动窗口分析 Note 空间分布 ──
-    // 计算每个时间窗口内 Note 的边缘分布指标
-    //
-    // 边缘分布指标 = Note 到 playfield 中心的归一化距离的加权平均
-    // playfield 中心 = (256, 192)
-    // 归一化：x ∈ [0, 512] → dx = |x-256|/256, y ∈ [0, 384] → dy = |y-192|/192
-    // spread = max(mean_dx, mean_dy) → 范围 [0, 1]
-    // 0 = 全在中心, 1 = 全在边缘
-
+    // x 方向扩散 → cols，y 方向扩散 → rows（独立映射，支持非正方形）
     struct WindowInfo {
-        int64_t time;        ///< 窗口中心时间
-        double  spread;      ///< 边缘分布指标 [0, 1]
-        int     count;       ///< 窗口内 Note 数量
+        int64_t time;
+        double meanDx = 0.0;   ///< x 方向归一化扩散 [0,1]
+        double meanDy = 0.0;   ///< y 方向归一化扩散 [0,1]
+        int     count = 0;
     };
 
     std::vector<WindowInfo> windows;
-    const int64_t stepMs = 500;   ///< 窗口步进（ms）
+    const int64_t stepMs = 500;
     const int64_t halfWin = windowMs / 2;
 
-    // 确定时间范围
     int64_t startTime = objects.front().time;
     int64_t endTime = objects.back().time;
 
     for (int64_t t = startTime; t <= endTime + halfWin; t += stepMs) {
-        // 收集窗口内的 Note
         double sumDx = 0.0, sumDy = 0.0;
         int count = 0;
         for (const auto& obj : objects) {
             if (obj.time < t - halfWin) continue;
             if (obj.time > t + halfWin) break;
-            // 跳过 Spinner（它们没有有意义的位置）
-            if (obj.type & 4) continue;
+            if (obj.type & 4) continue;  // 跳过 Spinner
 
-            double dx = std::abs(obj.x - 256.0) / 256.0;  // [0, 1]
-            double dy = std::abs(obj.y - 192.0) / 192.0;  // [0, 1]
-            sumDx += dx;
-            sumDy += dy;
+            sumDx += std::abs(obj.x - 256.0) / 256.0;
+            sumDy += std::abs(obj.y - 192.0) / 192.0;
             count++;
         }
 
@@ -289,26 +278,16 @@ std::vector<Formation> OsuParser::generateBreathingFormations(
         wi.time = t;
         wi.count = count;
         if (count > 0) {
-            // spread = 最大归一化方向上的均值
-            // 密度加权：Note 越多，分布越有意义
-            double meanDx = sumDx / count;
-            double meanDy = sumDy / count;
-            wi.spread = std::max(meanDx, meanDy);
-            // 密度加成：Note 多时 spread 的影响更显著
-            double densityFactor = std::min(1.0, count / 8.0); // 8个Note以上为满密度
-            wi.spread = wi.spread * (0.4 + 0.6 * densityFactor); // 稀疏时缩小 spread
-        } else {
-            wi.spread = 0.0;
+            wi.meanDx = sumDx / count;
+            wi.meanDy = sumDy / count;
+            double densityFactor = std::min(1.0, count / 8.0);
+            wi.meanDx *= (0.4 + 0.6 * densityFactor);
+            wi.meanDy *= (0.4 + 0.6 * densityFactor);
         }
-
         windows.push_back(wi);
     }
 
-    // ── 第二步：将 spread 映射到网格尺寸 ──
-    // spread=0 → minSize (e.g. 3×3)
-    // spread=1 → maxSize (e.g. 8×8)
-    // 使用迟滞避免频繁切换
-
+    // ── 第二步：分别映射到 rows/cols，带迟滞 ──
     struct FormationCandidate {
         int64_t time;
         int32_t rows;
@@ -316,42 +295,35 @@ std::vector<Formation> OsuParser::generateBreathingFormations(
     };
 
     std::vector<FormationCandidate> candidates;
-    int32_t currentSize = minSize;  // 当前网格尺寸（正方形）
+    int32_t curRows = minRows;
+    int32_t curCols = minCols;
 
     for (const auto& wi : windows) {
-        // 目标尺寸：线性映射 spread → size
-        int32_t targetSize = minSize + static_cast<int32_t>(
-            std::round(wi.spread * (maxSize - minSize)));
+        int32_t targetRows = minRows + static_cast<int32_t>(std::round(wi.meanDy * (maxRows - minRows)));
+        int32_t targetCols = minCols + static_cast<int32_t>(std::round(wi.meanDx * (maxCols - minCols)));
 
-        // 迟滞：只有当目标尺寸与当前尺寸差距超过 hysteresis 时才切换
-        if (std::abs(targetSize - currentSize) > hysteresis) {
-            currentSize = targetSize;
+        // 迟滞：差距超过阈值才切换；向大方向更敏感
+        if (std::abs(targetRows - curRows) > hysteresis || (targetRows > curRows && targetRows - curRows >= 1)) {
+            curRows = targetRows;
         }
-        // 向大尺寸方向的迟滞更小（宁可多扩展不留死角）
-        else if (targetSize > currentSize && (targetSize - currentSize) >= 1) {
-            currentSize = targetSize;
+        if (std::abs(targetCols - curCols) > hysteresis || (targetCols > curCols && targetCols - curCols >= 1)) {
+            curCols = targetCols;
         }
 
-        // 限制范围
-        currentSize = std::max(minSize, std::min(maxSize, currentSize));
+        curRows = std::max(minRows, std::min(maxRows, curRows));
+        curCols = std::max(minCols, std::min(maxCols, curCols));
 
-        FormationCandidate fc;
-        fc.time = wi.time;
-        fc.rows = currentSize;
-        fc.cols = currentSize; // 正方形网格
-        candidates.push_back(fc);
+        candidates.push_back({wi.time, curRows, curCols});
     }
 
     // ── 第三步：合并连续相同尺寸的时间段 ──
     std::vector<Formation> formations;
     if (candidates.empty()) {
-        formations.push_back({0, minSize, minSize});
+        formations.push_back({0, minRows, minCols});
         return formations;
     }
 
-    // 初始 Formation（第一个 Note 之前）
     formations.push_back({0, candidates.front().rows, candidates.front().cols});
-
     for (size_t i = 1; i < candidates.size(); ++i) {
         const auto& prev = candidates[i - 1];
         const auto& curr = candidates[i];
@@ -360,7 +332,7 @@ std::vector<Formation> OsuParser::generateBreathingFormations(
         }
     }
 
-    // 去重（时间相同的 Formation 只保留最后一个）
+    // 去重
     std::vector<Formation> deduped;
     for (const auto& f : formations) {
         if (deduped.empty() || deduped.back().time != f.time) {
@@ -372,9 +344,8 @@ std::vector<Formation> OsuParser::generateBreathingFormations(
 
     MM_LOG_INFO("OsuParser", "Generated " + std::to_string(deduped.size()) +
                 " breathing formations (range " +
-                std::to_string(minSize) + "x" + std::to_string(minSize) + " ~ " +
-                std::to_string(maxSize) + "x" + std::to_string(maxSize) + ")");
-
+                std::to_string(minRows) + "x" + std::to_string(minCols) + " ~ " +
+                std::to_string(maxRows) + "x" + std::to_string(maxCols) + ")");
     return deduped;
 }
 
@@ -516,12 +487,9 @@ util::Result<void> OsuParser::parse(const std::string& content, BeatmapBuilder& 
             builder.addNote(note);
         }
 
-        // Bit 1 (2): Slider → 等间距 Tap 序列（每个 Tap 用自身时间查找阵型）
+        // Bit 1 (2): Slider → Hold（slider 长按，起点位置，长按期间渲染边缘进度条贴图）
         else if (obj.type & 2) {
             double msPerBeat = getMsPerBeatAt(obj.time);
-            double tapInterval = msPerBeat / 4.0;
-            if (tapInterval < 50.0) tapInterval = 50.0;
-
             const TimingPoint* baseTP = getBaseTimingPoint(obj.time);
             double baseMsPerBeat = baseTP ? baseTP->msPerBeat : msPerBeat;
             double sv = m_sliderMultiplier * baseMsPerBeat / 1000.0;
@@ -533,55 +501,34 @@ util::Result<void> OsuParser::parse(const std::string& content, BeatmapBuilder& 
             } else {
                 totalDurationMs = msPerBeat;
             }
+            // 限制 slider 最小/最大时长
+            totalDurationMs = std::max(100.0, std::min(totalDurationMs, 5000.0));
 
-            int tapCount = std::max(1, static_cast<int>(totalDurationMs / tapInterval));
-            tapCount = std::min(tapCount, 32);
+            const Formation* af = findFormationAt(obj.time);
+            int32_t row, col;
+            // 用 slider 起点位置
+            pixelToGrid(obj.x, obj.y, af->rows, af->cols, row, col);
 
-            for (int i = 0; i < tapCount; ++i) {
-                int64_t tapTime = obj.time + static_cast<int64_t>(i * tapInterval);
-
-                // 关键修复：用 Tap 自身的实际时间查找阵型，而非 Slider 起始时间
-                const Formation* af = findFormationAt(tapTime);
-
-                float progress = (tapCount > 1) ?
-                    static_cast<float>(i) / static_cast<float>(tapCount - 1) : 0.0f;
-
-                if (obj.slides > 1) {
-                    float slideProgress = progress * obj.slides;
-                    int slideIndex = static_cast<int>(slideProgress);
-                    float localProgress = slideProgress - slideIndex;
-                    if (slideIndex % 2 == 1) {
-                        localProgress = 1.0f - localProgress;
-                    }
-                    progress = localProgress;
-                }
-
-                int ix, iy;
-                interpolateSliderPosition(obj, progress, ix, iy);
-
-                int32_t row, col;
-                pixelToGrid(ix, iy, af->rows, af->cols, row, col);
-
-                Note note;
-                note.time = tapTime;
-                note.row = row;
-                note.col = col;
-                note.type = NoteType::Tap;
-                builder.addNote(note);
-            }
+            Note note;
+            note.time = obj.time;
+            note.row = row;
+            note.col = col;
+            note.type = NoteType::Hold;
+            note.holdEnd = obj.time + static_cast<int64_t>(totalDurationMs);
+            builder.addNote(note);
         }
 
-        // Bit 2 (4): Spinner → Hold（用自身时间查找阵型）
+        // Bit 2 (4): Spinner → Tap（转盘渲染成 tap，放在中心位置，避免触发矩阵变换/滚动）
         else if (obj.type & 4) {
             const Formation* af = findFormationAt(obj.time);
+            // 中心位置，尽量在不需要变换矩阵/滚动的区域
             int32_t centerRow = af->rows / 2;
             int32_t centerCol = af->cols / 2;
             Note note;
             note.time = obj.time;
             note.row = centerRow;
             note.col = centerCol;
-            note.type = NoteType::Hold;
-            note.holdEnd = obj.endTime > obj.time ? obj.endTime : obj.time + 1000;
+            note.type = NoteType::Tap;
             builder.addNote(note);
         }
     }

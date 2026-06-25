@@ -60,6 +60,10 @@ public:
     /// 设置背景遮罩透明度（0.0=无遮罩, 1.0=完全遮盖）
     void setBgDim(float dim);
 
+    /// 设置游戏界面（矩阵+note+遮罩）整体淡入淡出（0.0=完全隐藏, 1.0=完全显示）
+    /// 用于休息段：>10s 空挡时渐变隐藏，新 note 前 3s 渐变回来
+    void setGameplayFade(float fade) { m_gameplayFade = std::max(0.0f, std::min(1.0f, fade)); }
+
 private:
     void renderBackground();
     void renderGrid(int64_t timeMs);
@@ -91,6 +95,7 @@ private:
     FormationTransition m_transition;
 
     float m_bgDim = 0.67f;  ///< 背景遮罩透明度（默认67%）
+    float m_gameplayFade = 1.0f;  ///< 游戏界面整体淡入淡出（休息段用，0=隐藏, 1=显示）
 
     // ── 列活跃状态 ──
     int32_t m_activeStartCol = 0;

@@ -170,8 +170,8 @@ void PlayingState::initGameplay() {
             int64_t missThr = static_cast<int64_t>(goodW) + 50;
             float approachMs = 1800.0f - m_beatmap.difficulty.ar * 120.0f;
             if (approachMs < 300.0f) approachMs = 300.0f;
-            // 使用实际最大滚动时长（与 checkAndTriggerScroll 的上限一致）
-            int64_t scrollDuration = 200;
+            // 使用实际最大滚动时长（与 checkAndTriggerScroll 的上限一致，丢弃模拟用 100ms 保守估计）
+            int64_t scrollDuration = 100;
 
             // 按时间排序，确保模拟与实际运行时一致
             std::vector<beatmap::Note> sortedNotes = m_beatmap.notes;
@@ -516,6 +516,40 @@ GameState PlayingState::update(float dt) {
         kernel.renderer().setColumnHeads(heads, m_judgeQueue.columnCount());
     }
 
+    // ── 休息段检测：>10s 空挡渐变隐藏游戏界面，新 note 前 3s 渐变回来 ──
+    // beatmap.notes 已按时间排序，找当前时间后的第一个 note 和前的最后一个 note
+    if (!m_beatmap.notes.empty()) {
+        int64_t nextNoteTime = INT64_MAX;
+        int64_t prevNoteTime = 0;
+        for (const auto& n : m_beatmap.notes) {
+            if (n.time > nowMs) { nextNoteTime = n.time; break; }
+            prevNoteTime = n.time;
+        }
+
+        float gameplayFade = 1.0f;
+        if (nextNoteTime != INT64_MAX && prevNoteTime > 0) {
+            int64_t gap = nextNoteTime - prevNoteTime;
+            if (gap > 10000) {
+                // prevNote+1s 开始 1s 内渐变隐藏；nextNote-3s 开始 1s 内渐变回来
+                int64_t fadeOutStart = prevNoteTime + 1000;
+                int64_t fadeInStart = nextNoteTime - 3000;
+                int64_t fadeInEnd = nextNoteTime - 2000;
+                if (nowMs < fadeOutStart) {
+                    gameplayFade = 1.0f;
+                } else if (nowMs < fadeOutStart + 1000) {
+                    gameplayFade = 1.0f - static_cast<float>(nowMs - fadeOutStart) / 1000.0f;
+                } else if (nowMs < fadeInStart) {
+                    gameplayFade = 0.0f;
+                } else if (nowMs < fadeInEnd) {
+                    gameplayFade = static_cast<float>(nowMs - fadeInStart) / 1000.0f;
+                } else {
+                    gameplayFade = 1.0f;
+                }
+            }
+        }
+        kernel.renderer().setGameplayFade(gameplayFade);
+    }
+
     // ── Update formation ──
     bool formationChanged = m_formationCtrl.update(nowMs);
     if (formationChanged) {
@@ -706,9 +740,9 @@ void PlayingState::checkAndTriggerScroll(int64_t nowMs) {
             float scrollDuration = 200.0f;
             if (earliestNoteTime != INT64_MAX) {
                 int64_t availableTime = earliestNoteTime - nowMs - minRemainingMs;
-                // 滚动时长 = 可用时间的 80%，但不超过 200ms，不小于 50ms
+                // 滚动时长 = 可用时间的 80%，但不超过 200ms，不小于 100ms
                 scrollDuration = static_cast<float>(availableTime) * 0.8f;
-                scrollDuration = std::max(50.0f, std::min(200.0f, scrollDuration));
+                scrollDuration = std::max(100.0f, std::min(200.0f, scrollDuration));
             }
 
             m_scrollWindow.scrolling = true;
