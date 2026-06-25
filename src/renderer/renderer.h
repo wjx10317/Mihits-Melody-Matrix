@@ -48,10 +48,11 @@ public:
                                    int32_t nextRows, int32_t nextCols);
     void updateFormationTransition(float progress);
     void setNotes(const std::vector<beatmap::Note>& notes, float ar);
+    /// 设置滚动状态。scrollOffset 由 renderer 内部根据 scrollProgress 和 m_gridCols 统一计算，
+    /// 确保 renderGrid / renderNotes / note_renderer 三处 gw 基准完全一致，消除抽搐和错位。
     void setScrollState(int32_t activeStartCol, int32_t activeEndCol,
-                        float scrollOffset = 0.0f,
-                        int32_t targetStartCol = 0, int32_t targetEndCol = 3,
-                        bool scrolling = false, float scrollProgress = 0.0f);
+                        int32_t targetStartCol, int32_t targetEndCol,
+                        bool scrolling, float scrollProgress);
     /// 更新各列判定头指针（用于跳过已判定的音符）
     void setColumnHeads(const std::array<size_t, 8>& heads, int32_t columnCount);
     void shutdown();

@@ -502,22 +502,9 @@ GameState PlayingState::update(float dt) {
     if (!inScroll) {
         checkAndTriggerScroll(nowMs);
     }
-    // 同步滚动状态和判定头到渲染器
-    // scrollOffset 符号约定：向右滚(targetStart>startCol)→矩阵向左移→scrollOffset为负
-    // 公式：scrollOffset = -colDelta * gw * easedP，确保 col=targetStart 平滑移到原 startCol 位置
-    float scrollOffset = 0.0f;
-    if (m_scrollWindow.scrolling) {
-        float p = m_scrollWindow.progress(nowMs);
-        // ease-in-out 缓动
-        float easedP = p < 0.5f ? 2.0f * p * p : 1.0f - (-2.0f * p + 2.0f) * (-2.0f * p + 2.0f) / 2.0f;
-        int32_t colDelta = m_scrollWindow.targetStartCol - m_scrollWindow.startCol;
-        const float W = 1920.0f, margin = 120.0f;
-        int32_t totalCols = m_formationCtrl.currentCols();
-        if (totalCols <= 0) totalCols = 4;
-        float gw = (W - 2 * margin) / totalCols;
-        scrollOffset = -colDelta * gw * easedP;
-    }
-    kernel.renderer().setScrollState(m_scrollWindow.startCol, m_scrollWindow.endCol, scrollOffset,
+    // 同步滚动状态到渲染器。scrollOffset 由 renderer 内部根据 scrollProgress 和 m_gridCols 统一计算，
+    // 确保 renderGrid / renderNotes / note_renderer 三处 gw 基准完全一致（消除抽搐和 note 错位）。
+    kernel.renderer().setScrollState(m_scrollWindow.startCol, m_scrollWindow.endCol,
                                       m_scrollWindow.scrolling ? m_scrollWindow.targetStartCol : m_scrollWindow.startCol,
                                       m_scrollWindow.scrolling ? m_scrollWindow.targetEndCol : m_scrollWindow.endCol,
                                       m_scrollWindow.scrolling, m_scrollWindow.progress(nowMs));

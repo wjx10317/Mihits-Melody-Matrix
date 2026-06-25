@@ -42,6 +42,7 @@ bool NoteRenderer::init() {
         in float vTexLayer;
         out vec4 FragColor;
 
+        uniform sampler2D uTexBlock;    // layer 5 (background.png 格子背景块)
         uniform sampler2D uTexTap;      // layer 0
         uniform sampler2D uTexSlider;   // layer 1
         uniform sampler2D uTexOverlay;  // layer 2
@@ -51,7 +52,8 @@ bool NoteRenderer::init() {
         void main() {
             int layer = int(vTexLayer + 0.5);
             vec4 texColor = vec4(1.0);  // 默认白色（纯色模式 layer=-1 或纹理未加载）
-            if (layer == 0)      texColor = texture(uTexTap, vTexCoord);
+            if (layer == 5)      texColor = texture(uTexBlock, vTexCoord);
+            else if (layer == 0) texColor = texture(uTexTap, vTexCoord);
             else if (layer == 1) texColor = texture(uTexSlider, vTexCoord);
             else if (layer == 2) texColor = texture(uTexOverlay, vTexCoord);
             else if (layer == 3) texColor = texture(uTexSPRing, vTexCoord);
@@ -118,12 +120,13 @@ bool NoteRenderer::init() {
 
 void NoteRenderer::setTextures(const Texture2D* tap, const Texture2D* slider,
                                 const Texture2D* overlay, const Texture2D* sliderPushRing,
-                                const Texture2D* sliderPushFull) {
+                                const Texture2D* sliderPushFull, const Texture2D* block) {
     m_texTap = tap;
     m_texSlider = slider;
     m_texOverlay = overlay;
     m_texSliderPushRing = sliderPushRing;
     m_texSliderPushFull = sliderPushFull;
+    m_texBlock = block;
 }
 
 void NoteRenderer::render(const std::vector<beatmap::Note>& notes, int64_t timeMs,
@@ -165,6 +168,7 @@ void NoteRenderer::render(const std::vector<beatmap::Note>& notes, int64_t timeM
     if (m_texOverlay) m_texOverlay->bind(2);
     if (m_texSliderPushRing) m_texSliderPushRing->bind(3);
     if (m_texSliderPushFull) m_texSliderPushFull->bind(4);
+    if (m_texBlock) m_texBlock->bind(5);
 
     // Draw
     m_shader.use();
@@ -175,6 +179,7 @@ void NoteRenderer::render(const std::vector<beatmap::Note>& notes, int64_t timeM
     m_shader.setInt("uTexOverlay", 2);
     m_shader.setInt("uTexSPRing", 3);
     m_shader.setInt("uTexSPFull", 4);
+    m_shader.setInt("uTexBlock", 5);
 
     // 启用 alpha 混合（纹理 PNG 带 alpha 通道）
     glEnable(GL_BLEND);
@@ -190,6 +195,7 @@ void NoteRenderer::render(const std::vector<beatmap::Note>& notes, int64_t timeM
     if (m_texOverlay) Texture2D::unbind(2);
     if (m_texSliderPushRing) Texture2D::unbind(3);
     if (m_texSliderPushFull) Texture2D::unbind(4);
+    if (m_texBlock) Texture2D::unbind(5);
 }
 
 void NoteRenderer::buildNoteVertices(const std::vector<beatmap::Note>& notes, int64_t timeMs,
@@ -214,10 +220,32 @@ void NoteRenderer::buildNoteVertices(const std::vector<beatmap::Note>& notes, in
     const float layerOverlay  = m_texOverlay ? 2.0f : -1.0f;
     const float layerSPRing   = m_texSliderPushRing ? 3.0f : -1.0f;
     const float layerSPFull   = m_texSliderPushFull ? 4.0f : -1.0f;
+    const float layerBlock    = m_texBlock ? 5.0f : -1.0f;
 
     // Approach time based on AR (osu formula)
     float approachMs = 1800.0f - ar * 120.0f;
     if (approachMs < 300.0f) approachMs = 300.0f;
+
+    // ── 渲染判定矩阵的 block 背景（background.png 按块渲染）──
+    // 每个格子 (r,c) 渲染一个 background.png quad，256x256 纹理缩放到 gw x gh
+    // 位置与网格竖线一致：x = W/2 + (c - activeStartCol - 2)*gw + scrollOffset（格子左边界）
+    // 活跃4列正常 alpha，非活跃列半透明（旁边列预览效果）
+    if (layerBlock >= 0.0f && rows > 0 && cols > 0) {
+        int32_t effStart = scrolling ? targetStartCol : activeStartCol;
+        int32_t effEnd   = scrolling ? targetEndCol   : activeEndCol;
+        for (int r = 0; r < rows; ++r) {
+            for (int c = 0; c < cols; ++c) {
+                float bx = W * 0.5f + (c - activeStartCol - 2) * gw + scrollOffset;
+                float by = margin + r * gh;
+                quads.insert(quads.end(), { bx, by, gw, gh });
+                // 活跃列高亮，非活跃列半透明预览
+                bool isActive = (c >= effStart && c <= effEnd);
+                float blockAlpha = isActive ? 0.85f : 0.35f;
+                colors.insert(colors.end(), { 1.0f, 1.0f, 1.0f, blockAlpha });
+                layers.push_back(layerBlock);
+            }
+        }
+    }
 
     // colHeads[col] = 该列 JudgeQueue 中已前进的 head 数量
     std::array<size_t, 8> colEncounterCount = {};

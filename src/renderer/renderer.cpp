@@ -144,9 +144,10 @@ bool Renderer::init() {
     const Texture2D* texOverlay = loadNoteTexture("overlay.png");
     const Texture2D* texSPRing = loadNoteTexture("sliderpush_ring.png");
     const Texture2D* texSPFull = loadNoteTexture("sliderpush_100.png");
+    const Texture2D* texBlock = loadNoteTexture("background.png");
 
     if (m_noteRenderer) {
-        m_noteRenderer->setTextures(texTap, texSlider, texOverlay, texSPRing, texSPFull);
+        m_noteRenderer->setTextures(texTap, texSlider, texOverlay, texSPRing, texSPFull, texBlock);
     }
 
     m_initialized = true;
@@ -206,16 +207,29 @@ void Renderer::setNotes(const std::vector<beatmap::Note>& notes, float ar) {
 }
 
 void Renderer::setScrollState(int32_t activeStartCol, int32_t activeEndCol,
-                              float scrollOffset,
                               int32_t targetStartCol, int32_t targetEndCol,
                               bool scrolling, float scrollProgress) {
     m_activeStartCol = activeStartCol;
     m_activeEndCol = activeEndCol;
-    m_scrollOffset = scrollOffset;
     m_targetStartCol = targetStartCol;
     m_targetEndCol = targetEndCol;
     m_scrolling = scrolling;
     m_scrollProgress = scrollProgress;
+
+    // ── 内部统一计算 scrollOffset，确保 renderGrid / renderNotes / note_renderer 三处 gw 基准一致 ──
+    // gw 用 m_gridCols（与 renderGrid/note_renderer 完全相同），消除 playing_state 用 currentCols()
+    // 与 renderer 用 m_gridCols 在过渡期不同步导致的抽搐和 note 错位。
+    // scrollOffset 符号：向右滚(targetStart>activeStart)→矩阵向左移→scrollOffset 为负
+    m_scrollOffset = 0.0f;
+    if (scrolling && m_gridCols > 0) {
+        float p = std::max(0.0f, std::min(1.0f, scrollProgress));
+        // ease-in-out 缓动（与原 playing_state 计算一致）
+        float easedP = p < 0.5f ? 2.0f * p * p : 1.0f - (-2.0f * p + 2.0f) * (-2.0f * p + 2.0f) / 2.0f;
+        const float W = 1920.0f, margin = 120.0f;
+        float gw = (W - 2 * margin) / m_gridCols;
+        int32_t colDelta = targetStartCol - activeStartCol;
+        m_scrollOffset = -static_cast<float>(colDelta) * gw * easedP;
+    }
 }
 
 void Renderer::setColumnHeads(const std::array<size_t, 8>& heads, int32_t columnCount) {
