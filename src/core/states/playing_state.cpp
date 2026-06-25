@@ -267,6 +267,40 @@ void PlayingState::initGameplay() {
         }
     }
 
+    // ── 矩阵变换前后500ms保护区间：变换点 ±500ms 内不允许有note，有则丢弃 ──
+    // 避免note在阵型切换瞬间出现导致判定/渲染错位
+    if (m_beatmap.formations.size() > 1) {
+        std::vector<int64_t> transitionTimes;
+        transitionTimes.reserve(m_beatmap.formations.size() - 1);
+        for (size_t i = 1; i < m_beatmap.formations.size(); ++i) {
+            transitionTimes.push_back(m_beatmap.formations[i].time);
+        }
+
+        std::vector<beatmap::Note> protectedNotes;
+        protectedNotes.reserve(m_beatmap.notes.size());
+        size_t guardDiscarded = 0;
+        for (const auto& note : m_beatmap.notes) {
+            bool inGuardZone = false;
+            for (int64_t t : transitionTimes) {
+                if (note.time >= t - 500 && note.time <= t + 500) {
+                    inGuardZone = true;
+                    break;
+                }
+            }
+            if (inGuardZone) {
+                ++guardDiscarded;
+            } else {
+                protectedNotes.push_back(note);
+            }
+        }
+
+        if (guardDiscarded > 0) {
+            MM_LOG_INFO("Playing", "Discarded " + std::to_string(guardDiscarded) +
+                        " notes in formation transition guard zones (±500ms)");
+            m_beatmap.notes = std::move(protectedNotes);
+        }
+    }
+
     // ── Init judge ──
     m_judgeQueue.setStrategy(std::make_unique<gameplay::StandardJudgeStrategy>());
     m_judgeQueue.loadNotes(m_beatmap.notes);

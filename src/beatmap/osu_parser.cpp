@@ -280,14 +280,15 @@ std::vector<Formation> OsuParser::generateBreathingFormations(
         if (count > 0) {
             wi.meanDx = sumDx / count;
             wi.meanDy = sumDy / count;
-            double densityFactor = std::min(1.0, count / 8.0);
-            wi.meanDx *= (0.4 + 0.6 * densityFactor);
-            wi.meanDy *= (0.4 + 0.6 * densityFactor);
+            // 不再缩放：直接用原始扩散值，配合 sqrt 映射让中等扩散也能达到高 cols/rows
         }
         windows.push_back(wi);
     }
 
     // ── 第二步：分别映射到 rows/cols，带迟滞 ──
+    // 用 sqrt 映射：meanDx=0.5 → sqrt(0.5)=0.707 → cols=3+round(0.707*3)=5
+    //              meanDx=0.77 → sqrt(0.77)=0.877 → cols=3+round(0.877*3)=6
+    // 这样常见的扩散水平也能触发6列，体现滚动效果
     struct FormationCandidate {
         int64_t time;
         int32_t rows;
@@ -299,8 +300,8 @@ std::vector<Formation> OsuParser::generateBreathingFormations(
     int32_t curCols = minCols;
 
     for (const auto& wi : windows) {
-        int32_t targetRows = minRows + static_cast<int32_t>(std::round(wi.meanDy * (maxRows - minRows)));
-        int32_t targetCols = minCols + static_cast<int32_t>(std::round(wi.meanDx * (maxCols - minCols)));
+        int32_t targetRows = minRows + static_cast<int32_t>(std::round(std::sqrt(wi.meanDy) * (maxRows - minRows)));
+        int32_t targetCols = minCols + static_cast<int32_t>(std::round(std::sqrt(wi.meanDx) * (maxCols - minCols)));
 
         // 迟滞：差距超过阈值才切换；向大方向更敏感
         if (std::abs(targetRows - curRows) > hysteresis || (targetRows > curRows && targetRows - curRows >= 1)) {
