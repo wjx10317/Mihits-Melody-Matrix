@@ -368,7 +368,7 @@ void PlayingState::initGameplay() {
     // 设置初始阵型
     if (!m_beatmap.formations.empty()) {
         const auto& f = m_beatmap.formations[0];
-        renderer.setFormation(f.rows, f.cols);
+        renderer.setFormation(f.rows, f.cols, f.blockSize, f.noteTransformType);
     }
 
     // 设置音符数据
@@ -503,6 +503,8 @@ GameState PlayingState::update(float dt) {
         checkAndTriggerScroll(nowMs);
     }
     // 同步滚动状态和判定头到渲染器
+    // scrollOffset 符号约定：向右滚(targetStart>startCol)→矩阵向左移→scrollOffset为负
+    // 公式：scrollOffset = -colDelta * gw * easedP，确保 col=targetStart 平滑移到原 startCol 位置
     float scrollOffset = 0.0f;
     if (m_scrollWindow.scrolling) {
         float p = m_scrollWindow.progress(nowMs);
@@ -513,7 +515,7 @@ GameState PlayingState::update(float dt) {
         int32_t totalCols = m_formationCtrl.currentCols();
         if (totalCols <= 0) totalCols = 4;
         float gw = (W - 2 * margin) / totalCols;
-        scrollOffset = colDelta * gw * easedP;
+        scrollOffset = -colDelta * gw * easedP;
     }
     kernel.renderer().setScrollState(m_scrollWindow.startCol, m_scrollWindow.endCol, scrollOffset,
                                       m_scrollWindow.scrolling ? m_scrollWindow.targetStartCol : m_scrollWindow.startCol,
@@ -540,7 +542,7 @@ GameState PlayingState::update(float dt) {
             kernel.renderer().beginFormationTransition(prev.rows, prev.cols, next.rows, next.cols);
         } else {
             // 瞬间切换
-            kernel.renderer().setFormation(next.rows, next.cols);
+            kernel.renderer().setFormation(next.rows, next.cols, next.blockSize, next.noteTransformType);
         }
 
         // 阵型变化时重置滚动窗口
@@ -1124,14 +1126,15 @@ void PlayingState::renderImGuiOverlay() {
         float alpha = std::min(1.0f, popup.timer / (JudgePopup::DURATION * 0.3f));
         float offsetY = (1.0f - popup.timer / JudgePopup::DURATION) * 40.0f;
 
-        // 根据列号计算水平位置（使用完整矩阵列位置）
+        // 根据列号计算水平位置（4列活跃窗口居中，与 note_renderer 的 cellX 公式对齐）
         float colX = ImGui::GetIO().DisplaySize.x / 2;
         int32_t totalCols = m_formationCtrl.currentCols();
         if (totalCols <= 0) totalCols = 4;
         {
             const float margin = 120.0f;
             const float gw = (ImGui::GetIO().DisplaySize.x - 2 * margin) / totalCols;
-            colX = margin + (popup.column + 0.5f) * gw;
+            const int32_t startCol = m_scrollWindow.startCol;
+            colX = ImGui::GetIO().DisplaySize.x * 0.5f + (popup.column - startCol - 1.5f) * gw;
         }
 
         ImGui::SetNextWindowPos(ImVec2(colX - 50, ImGui::GetIO().DisplaySize.y / 2 - 80 - offsetY));
@@ -1184,14 +1187,17 @@ void PlayingState::renderImGuiOverlay() {
         auto mapping = getKeyMapping();
 
         // 计算网格参数（与 Renderer 一致）
+        // 按键提示固定在屏幕中央4列位置（不随滚动偏移），与 note_renderer 的 cellX 公式对齐
         const float W = ImGui::GetIO().DisplaySize.x;
         const float H = ImGui::GetIO().DisplaySize.y;
         const float margin = 120.0f;
         const float gw = (W - 2 * margin) / totalCols;
         const float keyHintY = H - margin + 15;  // 网格底部下方
+        const int32_t startCol = m_scrollWindow.startCol;
 
         for (const auto& m : mapping) {
-            float cellX = margin + (m.column + 0.5f) * gw;
+            // 按键固定在屏幕中央4列：col=startCol+0..3 对应 W/2-1.5*gw .. W/2+1.5*gw
+            float cellX = W * 0.5f + (m.column - startCol - 1.5f) * gw;
             float keyW = std::min(gw * 0.8f, 80.0f);  // 按键宽度，最大80px
             float keyH = 44.0f;
 

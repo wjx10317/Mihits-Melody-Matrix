@@ -1,5 +1,6 @@
 #include "renderer.h"
 #include "note_renderer.h"
+#include "renderer/texture_cache.h"
 #include "beatmap/note.h"
 #include "util/logger.h"
 
@@ -119,6 +120,35 @@ bool Renderer::init() {
         MM_LOG_WARN("Renderer", "NoteRenderer initialization failed");
     }
 
+    // ── 加载 note 纹理资源（从 res/ 目录，相对 exe）──
+    // 路径后备：尝试 res/、../res/、../../res/（适配不同工作目录）
+    auto loadNoteTexture = [](const std::string& name) -> const Texture2D* {
+        auto& cache = TextureCache::instance();
+        const std::vector<std::string> prefixes = { "res/", "../res/", "../../res/" };
+        for (const auto& prefix : prefixes) {
+            std::string path = prefix + name;
+            const Texture2D* tex = cache.get(path);
+            if (tex && tex->valid()) return tex;
+            tex = cache.load(path);
+            if (tex && tex->valid()) {
+                MM_LOG_INFO("Renderer", "Loaded note texture: %s", path.c_str());
+                return tex;
+            }
+        }
+        MM_LOG_WARN("Renderer", "Note texture not found: %s (fallback to solid color)", name.c_str());
+        return nullptr;
+    };
+
+    const Texture2D* texTap = loadNoteTexture("tap.png");
+    const Texture2D* texSlider = loadNoteTexture("slider.png");
+    const Texture2D* texOverlay = loadNoteTexture("overlay.png");
+    const Texture2D* texSPRing = loadNoteTexture("sliderpush_ring.png");
+    const Texture2D* texSPFull = loadNoteTexture("sliderpush_100.png");
+
+    if (m_noteRenderer) {
+        m_noteRenderer->setTextures(texTap, texSlider, texOverlay, texSPRing, texSPFull);
+    }
+
     m_initialized = true;
     MM_LOG_INFO("Renderer", "Renderer initialized successfully");
     return true;
@@ -134,9 +164,17 @@ void Renderer::setBackgroundPath(const std::string& path) {
     m_bgDirty = true;
 }
 
-void Renderer::setFormation(int32_t rows, int32_t cols) {
+void Renderer::setFormation(int32_t rows, int32_t cols,
+                            float blockSize,
+                            beatmap::NoteTransformType noteTransformType) {
     m_gridRows = rows;
     m_gridCols = cols;
+    m_blockSize = blockSize;
+    m_noteTransformType = noteTransformType;
+    // 同步 blockSize 到 note renderer
+    if (m_noteRenderer) {
+        m_noteRenderer->setBlockSize(blockSize);
+    }
     // 瞬间切换时清除过渡状态
     m_transition.active = false;
 }
@@ -334,24 +372,29 @@ void Renderer::renderGrid(int64_t /*timeMs*/) {
             glBindVertexArray(0);
         }
     } else {
-        // ── 正常渲染：完整矩阵网格 ──
+        // ── 正常渲染：4列活跃窗口固定屏幕中央，整体随滚动偏移 ──
         const float gw = (W - 2 * margin) / m_gridCols;
         const float gh = (H - 2 * margin) / m_gridRows;
+        // 活跃4列在屏幕中央的范围 [W/2-2*gw, W/2+2*gw]（不随滚动变化）
+        const float activeLeft = W * 0.5f - 2.0f * gw;
+        const float activeRight = W * 0.5f + 2.0f * gw;
+        // 滚动期间用旧 activeStartCol 作基准，scrollOffset 平滑过渡
+        int32_t baseStart = m_activeStartCol;
 
         std::vector<float> lines;
 
-        // 竖线 — 应用滚动偏移
+        // 竖线 — 所有列都显示，整体随 scrollOffset 偏移，让活跃4列居中
         for (int c = 0; c <= m_gridCols; ++c) {
-            float x = margin + c * gw + m_scrollOffset;
+            float x = W * 0.5f + (c - baseStart - 2) * gw + m_scrollOffset;
             lines.push_back(x); lines.push_back(margin);
             lines.push_back(x); lines.push_back(H - margin);
         }
 
-        // 横线
+        // 横线 — 仅在活跃4列范围内绘制（固定屏幕中央，不随滚动偏移）
         for (int r = 0; r <= m_gridRows; ++r) {
             float y = margin + r * gh;
-            lines.push_back(margin); lines.push_back(y);
-            lines.push_back(W - margin); lines.push_back(y);
+            lines.push_back(activeLeft); lines.push_back(y);
+            lines.push_back(activeRight); lines.push_back(y);
         }
 
         int32_t vertexCount = static_cast<int32_t>(lines.size() / 2);
@@ -376,7 +419,7 @@ void Renderer::renderGrid(int64_t /*timeMs*/) {
             int32_t activeStart = m_scrolling ? m_targetStartCol : m_activeStartCol;
             int32_t activeEnd = m_scrolling ? m_targetEndCol : m_activeEndCol;
             for (int c = activeStart; c <= activeEnd + 1 && c <= m_gridCols; ++c) {
-                float x = margin + c * gw + m_scrollOffset;
+                float x = W * 0.5f + (c - baseStart - 2) * gw + m_scrollOffset;
                 activeLines.push_back(x); activeLines.push_back(margin);
                 activeLines.push_back(x); activeLines.push_back(H - margin);
             }

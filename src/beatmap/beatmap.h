@@ -15,6 +15,13 @@ enum class TransitionType : int32_t {
     Rotate  = 2,  ///< 矩阵旋转：前半段旧矩阵旋转到半角，切换，后半段新矩阵继续旋转
 };
 
+/// note 图片出现方式（独立于矩阵过渡，控制单个note贴图的入场动画）
+enum class NoteTransformType : int32_t {
+    Scale  = 0,  ///< 缩放渐入（默认）：note从0缩放到blockSize
+    Fade   = 1,  ///< 淡入：note透明度从0到1，尺寸不变
+    Rotate = 2,  ///< 旋转入场：note从-90°旋转到0°同时缩放
+};
+
 /// 阵型定义 — 描述特定时间点的网格布局
 struct Formation {
     int64_t time = 0;                  ///< 此阵型生效的时间（毫秒）
@@ -22,6 +29,8 @@ struct Formation {
     int32_t cols = 0;                  ///< 网格列数
     TransitionType transitionType = TransitionType::Fade;       ///< 过渡类型
     int64_t transitionDurationMs = 300; ///< 过渡持续时间（毫秒），0=瞬间切换
+    float blockSize = 0.9f;            ///< note图片相对格子的缩放比例（1.0=占满格子，0.9=90%留间距）
+    NoteTransformType noteTransformType = NoteTransformType::Scale;  ///< note图片出现方式
 };
 
 /// 谱面难度参数

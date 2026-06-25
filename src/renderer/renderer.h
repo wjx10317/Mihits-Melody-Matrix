@@ -4,6 +4,7 @@
 #include "renderer/texture.h"
 #include "renderer/note_renderer.h"
 #include "beatmap/note.h"
+#include "beatmap/beatmap.h"
 
 #include <array>
 #include <cstdint>
@@ -40,7 +41,9 @@ public:
     void renderFrame(int64_t interpolatedTimeMs);
     void setGameplayRendering(bool enabled);
     void setBackgroundPath(const std::string& path);
-    void setFormation(int32_t rows, int32_t cols);
+    void setFormation(int32_t rows, int32_t cols,
+                      float blockSize = 0.9f,
+                      beatmap::NoteTransformType noteTransformType = beatmap::NoteTransformType::Scale);
     void beginFormationTransition(int32_t prevRows, int32_t prevCols,
                                    int32_t nextRows, int32_t nextCols);
     void updateFormationTransition(float progress);
@@ -81,6 +84,8 @@ private:
 
     int32_t m_gridRows = 3;
     int32_t m_gridCols = 4;
+    float m_blockSize = 0.9f;  ///< note图片相对格子的缩放比例（来自 Formation.blockSize）
+    beatmap::NoteTransformType m_noteTransformType = beatmap::NoteTransformType::Scale;  ///< note图片出现方式
 
     FormationTransition m_transition;
 

@@ -239,6 +239,21 @@ util::Result<void> MmaParser::parseFormations(const std::vector<std::string>& li
         if (parts.size() >= 5) {
             parseInt64(parts[4], f.transitionDurationMs);
         }
+        // 可选字段：blockSize (parts[5]) 和 noteTransformType (parts[6])
+        if (parts.size() >= 6) {
+            float bs = 1.0f;
+            if (parseFloat(parts[5], bs)) {
+                // 限制在合理范围 [0.1, 2.0]，避免极端值
+                f.blockSize = std::clamp(bs, 0.1f, 2.0f);
+            }
+        }
+        if (parts.size() >= 7) {
+            int32_t ntt = 0;
+            if (parseInt32(parts[6], ntt)) {
+                ntt = std::clamp(ntt, 0, 2);
+                f.noteTransformType = static_cast<NoteTransformType>(ntt);
+            }
+        }
 
         builder.addFormation(f);
     }

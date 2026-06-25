@@ -12,28 +12,51 @@ namespace melody_matrix::renderer {
 bool NoteRenderer::init() {
     MM_LOG_INFO("NoteRenderer", "Initializing...");
 
-    // ── Compile note shader ──
+    // ── Compile note shader（支持多纹理绑定 + 实例纹理层ID）──
     const std::string vertSrc = R"(
         #version 330 core
-        layout(location = 0) in vec2 aPos;       // unit quad
+        layout(location = 0) in vec2 aPos;       // unit quad (0,0)-(1,1)
         layout(location = 1) in vec4 aInstance;   // x, y, w, h
-        layout(location = 2) in vec4 aColor;      // RGBA
+        layout(location = 2) in vec4 aColor;      // RGBA tint
+        layout(location = 3) in float aTexLayer;  // 纹理层 ID
 
         uniform mat4 uProjection;
         out vec4 vColor;
+        out vec2 vTexCoord;
+        out float vTexLayer;
 
         void main() {
             vec2 worldPos = aPos * aInstance.zw + aInstance.xy;
             gl_Position = uProjection * vec4(worldPos, 0.0, 1.0);
             vColor = aColor;
+            // unit quad 顶点位置直接作为 UV：(0,0)左上 → (1,1)右下
+            // 配合 stbi flip_vertically_on_load(1) + Y-down 投影，UV(0,0)对应图像顶部对应屏幕上方
+            vTexCoord = aPos;
+            vTexLayer = aTexLayer;
         }
     )";
     const std::string fragSrc = R"(
         #version 330 core
         in vec4 vColor;
+        in vec2 vTexCoord;
+        in float vTexLayer;
         out vec4 FragColor;
+
+        uniform sampler2D uTexTap;      // layer 0
+        uniform sampler2D uTexSlider;   // layer 1
+        uniform sampler2D uTexOverlay;  // layer 2
+        uniform sampler2D uTexSPRing;   // layer 3
+        uniform sampler2D uTexSPFull;   // layer 4
+
         void main() {
-            FragColor = vColor;
+            int layer = int(vTexLayer + 0.5);
+            vec4 texColor = vec4(1.0);  // 默认白色（纯色模式 layer=-1 或纹理未加载）
+            if (layer == 0)      texColor = texture(uTexTap, vTexCoord);
+            else if (layer == 1) texColor = texture(uTexSlider, vTexCoord);
+            else if (layer == 2) texColor = texture(uTexOverlay, vTexCoord);
+            else if (layer == 3) texColor = texture(uTexSPRing, vTexCoord);
+            else if (layer == 4) texColor = texture(uTexSPFull, vTexCoord);
+            FragColor = texColor * vColor;
         }
     )";
 
@@ -55,10 +78,11 @@ bool NoteRenderer::init() {
     glGenBuffers(1, &m_quadVbo);
     glGenBuffers(1, &m_instanceVbo);
     glGenBuffers(1, &m_colorVbo);
+    glGenBuffers(1, &m_layerVbo);
 
     glBindVertexArray(m_vao);
 
-    // Quad geometry (location 0)
+    // Quad geometry (location 0) — 同时作为 UV 坐标
     glBindBuffer(GL_ARRAY_BUFFER, m_quadVbo);
     glBufferData(GL_ARRAY_BUFFER, sizeof(quad), quad, GL_STATIC_DRAW);
     glEnableVertexAttribArray(0);
@@ -78,11 +102,28 @@ bool NoteRenderer::init() {
     glVertexAttribPointer(2, 4, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)0);
     glVertexAttribDivisor(2, 1);
 
+    // Instance texture layer (location 3): float
+    glBindBuffer(GL_ARRAY_BUFFER, m_layerVbo);
+    glBufferData(GL_ARRAY_BUFFER, m_maxInstances * 1 * sizeof(float), nullptr, GL_DYNAMIC_DRAW);
+    glEnableVertexAttribArray(3);
+    glVertexAttribPointer(3, 1, GL_FLOAT, GL_FALSE, 1 * sizeof(float), (void*)0);
+    glVertexAttribDivisor(3, 1);
+
     glBindVertexArray(0);
 
     m_initialized = true;
     MM_LOG_INFO("NoteRenderer", "Initialized successfully");
     return true;
+}
+
+void NoteRenderer::setTextures(const Texture2D* tap, const Texture2D* slider,
+                                const Texture2D* overlay, const Texture2D* sliderPushRing,
+                                const Texture2D* sliderPushFull) {
+    m_texTap = tap;
+    m_texSlider = slider;
+    m_texOverlay = overlay;
+    m_texSliderPushRing = sliderPushRing;
+    m_texSliderPushFull = sliderPushFull;
 }
 
 void NoteRenderer::render(const std::vector<beatmap::Note>& notes, int64_t timeMs,
@@ -95,9 +136,10 @@ void NoteRenderer::render(const std::vector<beatmap::Note>& notes, int64_t timeM
 
     std::vector<float> quads;
     std::vector<float> colors;
+    std::vector<float> layers;
     buildNoteVertices(notes, timeMs, rows, cols, ar,
                       activeStartCol, activeEndCol,
-                      colHeads, colHeadCount, quads, colors,
+                      colHeads, colHeadCount, quads, colors, layers,
                       scrollOffset, scrolling, scrollProgress,
                       targetStartCol, targetEndCol);
 
@@ -113,14 +155,41 @@ void NoteRenderer::render(const std::vector<beatmap::Note>& notes, int64_t timeM
     glBindBuffer(GL_ARRAY_BUFFER, m_colorVbo);
     glBufferData(GL_ARRAY_BUFFER, colors.size() * sizeof(float), colors.data(), GL_DYNAMIC_DRAW);
 
+    glBindBuffer(GL_ARRAY_BUFFER, m_layerVbo);
+    glBufferData(GL_ARRAY_BUFFER, layers.size() * sizeof(float), layers.data(), GL_DYNAMIC_DRAW);
+
+    // 绑定多纹理到不同 texture unit
+    // 纹理未加载时绑定默认 1x1 白色纹理（或跳过），这里简单处理：仅绑定已加载的
+    if (m_texTap) m_texTap->bind(0);
+    if (m_texSlider) m_texSlider->bind(1);
+    if (m_texOverlay) m_texOverlay->bind(2);
+    if (m_texSliderPushRing) m_texSliderPushRing->bind(3);
+    if (m_texSliderPushFull) m_texSliderPushFull->bind(4);
+
     // Draw
     m_shader.use();
     glm::mat4 proj = glm::ortho(0.0f, 1920.0f, 1080.0f, 0.0f, -1.0f, 1.0f);
     m_shader.setMat4("uProjection", &proj[0][0]);
+    m_shader.setInt("uTexTap", 0);
+    m_shader.setInt("uTexSlider", 1);
+    m_shader.setInt("uTexOverlay", 2);
+    m_shader.setInt("uTexSPRing", 3);
+    m_shader.setInt("uTexSPFull", 4);
+
+    // 启用 alpha 混合（纹理 PNG 带 alpha 通道）
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
     glBindVertexArray(m_vao);
     glDrawArraysInstanced(GL_TRIANGLES, 0, 6, instanceCount);
     glBindVertexArray(0);
+
+    // 解绑纹理 unit，避免影响后续渲染
+    if (m_texTap) Texture2D::unbind(0);
+    if (m_texSlider) Texture2D::unbind(1);
+    if (m_texOverlay) Texture2D::unbind(2);
+    if (m_texSliderPushRing) Texture2D::unbind(3);
+    if (m_texSliderPushFull) Texture2D::unbind(4);
 }
 
 void NoteRenderer::buildNoteVertices(const std::vector<beatmap::Note>& notes, int64_t timeMs,
@@ -129,14 +198,22 @@ void NoteRenderer::buildNoteVertices(const std::vector<beatmap::Note>& notes, in
                                       const std::array<size_t, 8>& colHeads, int32_t colHeadCount,
                                       std::vector<float>& quads,
                                       std::vector<float>& colors,
+                                      std::vector<float>& layers,
                                       float scrollOffset, bool scrolling, float scrollProgress,
                                       int32_t targetStartCol, int32_t targetEndCol) {
     const float W = 1920.0f, H = 1080.0f, margin = 120.0f;
     const float gw = (W - 2 * margin) / cols;
     const float gh = (H - 2 * margin) / rows;
-    // 音符满尺寸 = 格子大小 × 0.9（留 10% 间距），确保 100% 时填满格子
-    const float noteFullW = gw * 0.9f;
-    const float noteFullH = gh * 0.9f;
+    // 音符满尺寸 = 格子大小 × m_blockSize（来自 Formation.blockSize，默认 0.9 留 10% 间距）
+    const float noteFullW = gw * m_blockSize;
+    const float noteFullH = gh * m_blockSize;
+
+    // 纹理层 ID：纹理未加载时用 -1（纯色 fallback）
+    const float layerTap      = m_texTap ? 0.0f : -1.0f;
+    const float layerSlider   = m_texSlider ? 1.0f : -1.0f;
+    const float layerOverlay  = m_texOverlay ? 2.0f : -1.0f;
+    const float layerSPRing   = m_texSliderPushRing ? 3.0f : -1.0f;
+    const float layerSPFull   = m_texSliderPushFull ? 4.0f : -1.0f;
 
     // Approach time based on AR (osu formula)
     float approachMs = 1800.0f - ar * 120.0f;
@@ -161,8 +238,12 @@ void NoteRenderer::buildNoteVertices(const std::vector<beatmap::Note>& notes, in
         // Only render notes within approach window + brief after
         if (timeDiff > approachMs || timeDiff < -300.0f) continue;
 
-        // 完整矩阵显示 — 应用滚动偏移
-        float cellX = margin + (note.col + 0.5f) * gw + scrollOffset;
+        // 完整矩阵显示 — 4个有效列固定屏幕中央，整体随滚动偏移
+        // cellX 公式：以活跃窗口起始列 activeStartCol 为基准，让 col=[startCol, startCol+3] 始终居中
+        // 屏幕中央 4 列范围：[W/2 - 2*gw, W/2 + 2*gw]，中心列偏移 -1.5*gw ~ +1.5*gw
+        // scrollOffset 在滚动期间为 -colDelta*gw*easedP（向右滚→矩阵左移），完成后归零
+        // 滚动期间 activeStartCol 保持旧值，scrollOffset 平滑过渡，完成后 startCol 更新+scrollOffset归零，无跳变
+        float cellX = W * 0.5f + (note.col - activeStartCol - 1.5f) * gw + scrollOffset;
         float cellY = margin + (note.row + 0.5f) * gh;
 
         // 活跃列高亮，非活跃列灰暗
@@ -196,8 +277,8 @@ void NoteRenderer::buildNoteVertices(const std::vector<beatmap::Note>& notes, in
             noteScale = 1.0f;
         }
 
-        // 判定环（approach circle）：从格子边缘收缩到音符边缘
-        // 格子半宽 = gw/2，音符满尺寸半宽 = noteFullW/2
+        // 判定环（overlay.png 缩圈）：从格子边缘收缩到音符边缘
+        // overlay.png 是矩形框纹理（中间透明），用单个 quad 替代原来的4条线
         float cellHalfW = gw * 0.5f;
         float cellHalfH = gh * 0.5f;
         float noteHalfW = noteFullW * 0.5f;
@@ -210,21 +291,16 @@ void NoteRenderer::buildNoteVertices(const std::vector<beatmap::Note>& notes, in
             ringAlpha = 0.0f;  // 过判定时间后环消失
         }
 
-        // ── 绘制判定环 ──
+        // ── 绘制判定环（overlay 纹理，单个 quad）──
         if (ringAlpha > 0.01f) {
-            float ringLineW = 2.5f;  // 线宽
-            // 上边
-            quads.insert(quads.end(), { cellX - ringHalfW, cellY - ringHalfH, ringHalfW * 2, ringLineW });
+            float rw = ringHalfW * 2.0f;
+            float rh = ringHalfH * 2.0f;
+            float rx = cellX - ringHalfW;
+            float ry = cellY - ringHalfH;
+            quads.insert(quads.end(), { rx, ry, rw, rh });
+            // tint 青色 + ringAlpha（纹理本身是白色矩形框，tint 调色）
             colors.insert(colors.end(), { 0.0f, 1.0f, 0.96f, ringAlpha * 0.7f });
-            // 下边
-            quads.insert(quads.end(), { cellX - ringHalfW, cellY + ringHalfH - ringLineW, ringHalfW * 2, ringLineW });
-            colors.insert(colors.end(), { 0.0f, 1.0f, 0.96f, ringAlpha * 0.7f });
-            // 左边
-            quads.insert(quads.end(), { cellX - ringHalfW, cellY - ringHalfH, ringLineW, ringHalfH * 2 });
-            colors.insert(colors.end(), { 0.0f, 1.0f, 0.96f, ringAlpha * 0.7f });
-            // 右边
-            quads.insert(quads.end(), { cellX + ringHalfW - ringLineW, cellY - ringHalfH, ringLineW, ringHalfH * 2 });
-            colors.insert(colors.end(), { 0.0f, 1.0f, 0.96f, ringAlpha * 0.7f });
+            layers.push_back(layerOverlay);
         }
 
         // ── 绘制音符本体 ──
@@ -236,7 +312,8 @@ void NoteRenderer::buildNoteVertices(const std::vector<beatmap::Note>& notes, in
 
             quads.insert(quads.end(), { x, y, w, h });
 
-            // 击打窗口内：亮青色 + 高alpha；接近中：暗色；过期：淡出
+            // tint 颜色：击打窗口内亮青色；接近中暗色；过期淡红
+            // 纹理 tap.png 是灰度渐变，tint 调色让 note 呈现主题色
             float noteAlpha = alpha * 0.9f * colDim;
             if (approachProgress > 0.85f && timeDiff >= 0) {
                 // 即将到达判定时间 — 亮色
@@ -249,7 +326,9 @@ void NoteRenderer::buildNoteVertices(const std::vector<beatmap::Note>& notes, in
                 // 接近中 — 暗色
                 colors.insert(colors.end(), { 0.0f, 0.5f, 0.48f, noteAlpha * 0.5f });
             }
+            layers.push_back(layerTap);
         } else if (note.type == beatmap::NoteType::Hold) {
+            // slider 本体（slider.png 纹理）
             float w = noteFullW * 0.7f;
             float h = noteFullH * 0.7f;
             float holdDuration = static_cast<float>(note.holdEnd - note.time);
@@ -264,6 +343,30 @@ void NoteRenderer::buildNoteVertices(const std::vector<beatmap::Note>& notes, in
             } else {
                 colors.insert(colors.end(), { 0.5f, 0.0f, 0.7f, holdAlpha * 0.5f });
             }
+            layers.push_back(layerSlider);
+
+            // ── sliderpush 进度光效（hold 进行中：timeMs ∈ [note.time, note.holdEnd]）──
+            // 绘制尺寸略大于 slider 本体（×1.125 ≈ 144/128），让光效环绕 note 外围
+            // 底图 sliderpush_ring.png 始终显示（alpha 0.5），高亮 sliderpush_100.png alpha 随进度增长
+            if (timeMs >= note.time && timeMs <= note.holdEnd && holdDuration > 0.0f) {
+                float progress = static_cast<float>(timeMs - note.time) / holdDuration;
+                progress = std::max(0.0f, std::min(1.0f, progress));
+
+                float spW = w * 1.125f;
+                float spH = h * 1.125f;
+                float spX = cellX - spW * 0.5f;
+                float spY = cellY - spH * 0.5f;
+
+                // 底图 ring
+                quads.insert(quads.end(), { spX, spY, spW, spH });
+                colors.insert(colors.end(), { 1.0f, 1.0f, 1.0f, 0.5f * colDim });
+                layers.push_back(layerSPRing);
+
+                // 高亮 full（alpha 随进度从 0 到 1）
+                quads.insert(quads.end(), { spX, spY, spW, spH });
+                colors.insert(colors.end(), { 1.0f, 1.0f, 1.0f, progress * colDim });
+                layers.push_back(layerSPFull);
+            }
         }
     }
 }
@@ -273,6 +376,7 @@ void NoteRenderer::shutdown() {
     if (m_quadVbo != 0) { glDeleteBuffers(1, &m_quadVbo); m_quadVbo = 0; }
     if (m_instanceVbo != 0) { glDeleteBuffers(1, &m_instanceVbo); m_instanceVbo = 0; }
     if (m_colorVbo != 0) { glDeleteBuffers(1, &m_colorVbo); m_colorVbo = 0; }
+    if (m_layerVbo != 0) { glDeleteBuffers(1, &m_layerVbo); m_layerVbo = 0; }
     m_initialized = false;
 }
 
