@@ -243,6 +243,8 @@ void NoteRenderer::buildNoteVertices(const std::vector<beatmap::Note>& notes, in
         for (int r = 0; r < rows; ++r) {
             for (int c = 0; c < cols; ++c) {
                 float bx = W * 0.5f + (c - activeStartCol - 2) * gw + scrollOffset;
+                // 裁剪超出屏幕的列（4列居中时旁边列可能部分超出屏幕边界）
+                if (bx + gw < 0.0f || bx > W) continue;
                 float by = margin + r * gh;
                 quads.insert(quads.end(), { bx, by, gw, gh });
                 // 活跃列高亮，非活跃列半透明预览
@@ -262,16 +264,28 @@ void NoteRenderer::buildNoteVertices(const std::vector<beatmap::Note>& notes, in
         if (note.col >= 0 && note.col < colHeadCount) {
             size_t& encountered = colEncounterCount[note.col];
             if (encountered < colHeads[note.col]) {
-                encountered++;
-                continue;
+                // Hold note 在按住期间不跳过：head 已 advance 但 holdEnd 未到，
+                // 需要继续渲染 slider 本体 + 进度光效，体现"按住"视觉
+                bool isHolding = (note.type == beatmap::NoteType::Hold) &&
+                                 (timeMs >= note.time && timeMs <= note.holdEnd);
+                if (!isHolding) {
+                    encountered++;
+                    continue;
+                }
+                // 按住期间：不 continue，继续渲染该 Hold
             }
             encountered++;
         }
 
         float timeDiff = static_cast<float>(note.time - timeMs);
 
+        // Hold 按住期间标志（用于保持 alpha 不淡出）
+        bool isHolding = (note.type == beatmap::NoteType::Hold) &&
+                         (timeMs >= note.time && timeMs <= note.holdEnd);
+
         // Only render notes within approach window + brief after
-        if (timeDiff > approachMs || timeDiff < -300.0f) continue;
+        // 按住期间的 Hold 始终渲染（不受 approach 窗口限制）
+        if (!isHolding && (timeDiff > approachMs || timeDiff < -300.0f)) continue;
 
         // 完整矩阵显示 — 4个有效列固定屏幕中央，整体随滚动偏移
         // cellX 公式：以活跃窗口起始列 activeStartCol 为基准，让 col=[startCol, startCol+3] 始终居中
@@ -279,6 +293,8 @@ void NoteRenderer::buildNoteVertices(const std::vector<beatmap::Note>& notes, in
         // scrollOffset 在滚动期间为 -colDelta*gw*easedP（向右滚→矩阵左移），完成后归零
         // 滚动期间 activeStartCol 保持旧值，scrollOffset 平滑过渡，完成后 startCol 更新+scrollOffset归零，无跳变
         float cellX = W * 0.5f + (note.col - activeStartCol - 1.5f) * gw + scrollOffset;
+        // 裁剪超出屏幕的 note（旁边列可能部分超出屏幕边界）
+        if (cellX < -gw || cellX > W + gw) continue;
         float cellY = margin + (note.row + 0.5f) * gh;
 
         // 活跃列高亮，非活跃列灰暗
@@ -305,10 +321,13 @@ void NoteRenderer::buildNoteVertices(const std::vector<beatmap::Note>& notes, in
         float noteScale = 0.3f + 0.7f * approachProgress;
         float alpha = 1.0f;
 
-        if (timeDiff <= 0) {
-            // 已过判定时间：快速淡出
+        if (timeDiff <= 0 && !isHolding) {
+            // 已过判定时间且非按住中：快速淡出
             float fadeProgress = -timeDiff / 300.0f;
             alpha = 1.0f - std::min(1.0f, fadeProgress);
+            noteScale = 1.0f;
+        } else if (isHolding) {
+            // 按住期间：满尺寸、不淡出
             noteScale = 1.0f;
         }
 
@@ -363,11 +382,9 @@ void NoteRenderer::buildNoteVertices(const std::vector<beatmap::Note>& notes, in
             }
             layers.push_back(layerTap);
         } else if (note.type == beatmap::NoteType::Hold) {
-            // slider 本体（slider.png 纹理）
-            float w = noteFullW * 0.7f;
-            float h = noteFullH * 0.7f;
-            float holdDuration = static_cast<float>(note.holdEnd - note.time);
-            h = std::max(h, std::min(holdDuration * 0.5f, gh * 2.0f));
+            // slider 本体（slider.png 纹理）— 大小固定，与 tap 一致用 blockSize 控制，不随 duration 变化
+            float w = noteFullW;
+            float h = noteFullH;
             float x = cellX - w * 0.5f;
             float y = cellY - h * 0.5f;
 
@@ -383,6 +400,7 @@ void NoteRenderer::buildNoteVertices(const std::vector<beatmap::Note>& notes, in
             // ── sliderpush 进度光效（hold 进行中：timeMs ∈ [note.time, note.holdEnd]）──
             // 绘制尺寸略大于 slider 本体（×1.125 ≈ 144/128），让光效环绕 note 外围
             // 底图 sliderpush_ring.png 始终显示（alpha 0.5），高亮 sliderpush_100.png alpha 随进度增长
+            float holdDuration = static_cast<float>(note.holdEnd - note.time);
             if (timeMs >= note.time && timeMs <= note.holdEnd && holdDuration > 0.0f) {
                 float progress = static_cast<float>(timeMs - note.time) / holdDuration;
                 progress = std::max(0.0f, std::min(1.0f, progress));

@@ -267,7 +267,7 @@ void PlayingState::initGameplay() {
         }
     }
 
-    // ── 矩阵变换前后500ms保护区间：变换点 ±500ms 内不允许有note，有则丢弃 ──
+    // ── 矩阵变换前后250ms保护区间：变换点 ±250ms 内不允许有note，有则丢弃 ──
     // 避免note在阵型切换瞬间出现导致判定/渲染错位
     if (m_beatmap.formations.size() > 1) {
         std::vector<int64_t> transitionTimes;
@@ -282,7 +282,7 @@ void PlayingState::initGameplay() {
         for (const auto& note : m_beatmap.notes) {
             bool inGuardZone = false;
             for (int64_t t : transitionTimes) {
-                if (note.time >= t - 500 && note.time <= t + 500) {
+                if (note.time >= t - 250 && note.time <= t + 250) {
                     inGuardZone = true;
                     break;
                 }
@@ -296,7 +296,7 @@ void PlayingState::initGameplay() {
 
         if (guardDiscarded > 0) {
             MM_LOG_INFO("Playing", "Discarded " + std::to_string(guardDiscarded) +
-                        " notes in formation transition guard zones (±500ms)");
+                        " notes in formation transition guard zones (±250ms)");
             m_beatmap.notes = std::move(protectedNotes);
         }
     }
