@@ -55,7 +55,8 @@ private:
     };
     std::vector<KeyColumnMapping> getKeyMapping() const;
 
-    void handlePressResult(gameplay::JudgmentResult result, int32_t column = 0);
+    void handlePressResult(gameplay::JudgmentResult result, int32_t column,
+                           int64_t pressTime, int64_t noteTime);
     void handleHoldReleaseResult(gameplay::HoldReleaseResult result);
 
     // ── 游戏子系统 ──
@@ -73,6 +74,21 @@ private:
     std::vector<std::string> m_modIds;  ///< 启用的模组 ID 列表
     bool m_gameplayInitialized = false;
     bool m_needsReinit = false;
+
+    // ── Autoplay 模组 ──
+    bool m_autoplay = false;
+
+    // ── 偏移条（Offset Bar）──
+    bool m_offsetBarEnabled = false;
+    struct OffsetBarMark {
+        int64_t hitTime = 0;                       ///< 击打时刻
+        int64_t noteTime = 0;                      ///< note 时间
+        int64_t timing = 0;                        ///< 判定时机偏差(hitTime - noteTime)
+        float timer = 0.0f;                        ///< 显示倒计时
+        gameplay::JudgmentResult result = gameplay::JudgmentResult::Ignored;  ///< 判定结果
+        static constexpr float DURATION = 2.0f;    ///< 显示 2 秒
+    };
+    std::vector<OffsetBarMark> m_offsetBarMarks;
 
     // ── 游戏状态 ──
     bool m_songFinished = false;

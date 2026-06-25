@@ -50,6 +50,8 @@ void SongSelectState::onEnter() {
     // 初始化音频引擎（每次进入时初始化，退出时 shutdown）
     if (!m_audio.init()) {
         MM_LOG_ERROR("SongSelect", "Failed to initialize audio engine!");
+    } else {
+        m_audio.loadSfx();
     }
 
     m_nextState = GameState::Count;
@@ -69,6 +71,7 @@ void SongSelectState::onEnter() {
     // 初始化 Mod 列表
     if (m_mods.empty()) {
         m_mods.push_back({"NoFail", "nofail", false, true});
+        m_mods.push_back({"Autoplay", "autoplay", false, true});
     }
 
     // 随机选中一组铺面
@@ -661,6 +664,7 @@ void SongSelectState::renderLeftPanel(float panelWidth, float panelHeight) {
     if (ImGui::Button("BACK", ImVec2(smallBtnWidth, btnHeight))) {
         m_selectedGroup = -1;
         m_selectedSet = -1;
+        m_audio.playSfx(audio::SfxType::MenuHit);
         m_nextState = GameState::MainMenu;
     }
     ImGui::PopStyleColor(4);
@@ -689,6 +693,7 @@ void SongSelectState::renderLeftPanel(float panelWidth, float panelHeight) {
             m_scrollToSelected = true;
             tryLoadGroupImage(m_selectedGroup);
             tryPlayPreview();   // RANDOM 切换后触发预览
+            m_audio.playSfx(audio::SfxType::MenuClick);
         }
     }
     ImGui::PopStyleColor(4);
@@ -706,6 +711,7 @@ void SongSelectState::renderLeftPanel(float panelWidth, float panelHeight) {
         ImVec4(ui::Theme::CYAN_R, ui::Theme::CYAN_G, ui::Theme::CYAN_B, 1.0f));
     if (ImGui::Button("MOD", ImVec2(smallBtnWidth, btnHeight))) {
         m_modPopupOpen = !m_modPopupOpen;
+        m_audio.playSfx(audio::SfxType::MenuHit);
     }
     ImGui::PopStyleColor(4);
 
@@ -844,6 +850,7 @@ void SongSelectState::renderRightPanel(float panelX, float panelWidth, float pan
             m_scrollToSelected = true;
             tryLoadGroupImage(g);
             tryPlayPreview();   // 组头点击后触发预览
+            m_audio.playSfx(audio::SfxType::MenuClick);
         }
 
         // ── 组头缩略图 ──
@@ -965,10 +972,12 @@ void SongSelectState::renderRightPanel(float panelX, float panelWidth, float pan
                 if (ImGui::IsItemClicked()) {
                     m_selectedSet = s;
                     tryPlayPreview();   // set 单击后触发预览
+                    m_audio.playSfx(audio::SfxType::MenuClick);
                 }
                 if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0)) {
                     m_selectedSet = s;
                     m_selectedBeatmap = set.filePath;
+                    m_audio.playSfx(audio::SfxType::MenuHit);
                     tryPlayPreview();   // 双击时也触发（防重复逻辑在内部）
                 }
 
@@ -1074,6 +1083,7 @@ void SongSelectState::renderRightPanel(float panelX, float panelWidth, float pan
     if (ImGui::Button("START", ImVec2(startBtnWidth, startBtnHeight))) {
         if (canPlay) {
             m_selectedBeatmap = selSet->filePath;
+            m_audio.playSfx(audio::SfxType::MenuHit);
         }
     }
     ImGui::SetWindowFontScale(1.0f);
@@ -1197,6 +1207,7 @@ void SongSelectState::renderModPopup() {
 
             if (ImGui::IsItemClicked() && mod.implemented) {
                 mod.active = !mod.active;
+                m_audio.playSfx(audio::SfxType::MenuHit);
             }
 
             ImGui::Spacing();
@@ -1215,6 +1226,7 @@ void SongSelectState::renderModPopup() {
     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.7f, 0.7f, 0.8f, 1.0f));
     if (ImGui::Button("CLOSE", ImVec2(closeBtnWidth, 40))) {
         m_modPopupOpen = false;
+        m_audio.playSfx(audio::SfxType::MenuHit);
     }
     ImGui::PopStyleColor(4);
 

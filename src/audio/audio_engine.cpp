@@ -70,6 +70,18 @@ void AudioEngine::shutdown() {
 
     m_activeSounds.clear();  // 析构函数会自动释放 ma_sound
 
+    // 释放音效资源（每个类型 SFX_POOL_SIZE 个实例）
+    for (int i = 0; i < static_cast<int>(SfxType::Count); ++i) {
+        for (int j = 0; j < SFX_POOL_SIZE; ++j) {
+            if (m_sfxSounds[i][j]) {
+                destroySound(m_sfxSounds[i][j]);
+                m_sfxSounds[i][j] = nullptr;
+            }
+        }
+        m_sfxRoundRobin[i] = 0;
+    }
+    m_sfxLoaded = false;
+
     if (m_engine) {
         ma_engine_uninit(m_engine);
         ma_free(m_engine, nullptr);
@@ -350,12 +362,27 @@ void AudioEngine::update(float dt) {
 // ============================================================
 // 查询接口
 // ============================================================
+bool AudioEngine::isPlaying() const {
+    for (const auto& snd : m_activeSounds) {
+        if (snd.sound && !snd.isFadingOut) {
+            if (ma_sound_is_playing(snd.sound)) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 int64_t AudioEngine::positionMs() const {
     for (const auto& snd : m_activeSounds) {
         if (snd.sound && !snd.isFadingOut) {
-            float cursor = 0.0f;
-            ma_sound_get_cursor_in_seconds(snd.sound, &cursor);
-            return static_cast<int64_t>(cursor * 1000.0);
+            // 用 PCM 帧整数运算替代 float 秒数截断，避免精度损失。
+            // ms = frames * 1000 / sampleRate，+sampleRate/2 实现四舍五入。
+            ma_uint64 cursorFrames = 0;
+            ma_sound_get_cursor_in_pcm_frames(snd.sound, &cursorFrames);
+            ma_uint32 sampleRate = ma_engine_get_sample_rate(m_engine);
+            if (sampleRate == 0) sampleRate = 48000;
+            return static_cast<int64_t>((cursorFrames * 1000 + sampleRate / 2) / sampleRate);
         }
     }
     return 0;
@@ -408,6 +435,96 @@ float AudioEngine::calcVolume(SoundType type) const {
     int idx = static_cast<int>(type);
     if (idx < 0 || idx > 2) return m_volume;
     return m_volume * m_typeVolumes[idx];
+}
+
+// ============================================================
+// 音效（SFX）—— 全量加载（非流式）+ 播放
+// ============================================================
+bool AudioEngine::loadSfx() {
+    if (!m_initialized) return false;
+    if (m_sfxLoaded) return true;
+
+    // 音效文件相对路径（工作目录可能不同，尝试多个）
+    static const char* kSfxFiles[static_cast<int>(SfxType::Count)] = {
+        "res/menuclick.wav",          // MenuClick
+        "res/menuhit.wav",            // MenuHit
+        "res/normal-hitnormal.wav",   // HitNormal
+        "res/normal-slidertick.wav"   // SliderTick
+    };
+
+    for (int i = 0; i < static_cast<int>(SfxType::Count); ++i) {
+        // 构造候选路径（工作目录可能不同，尝试多个）
+        std::string baseName = std::string(kSfxFiles[i]).substr(4);  // 去掉 "res/"
+        std::string up1 = "../res/" + baseName;
+        std::string up2 = "../../res/" + baseName;
+        const char* relPaths[3] = {
+            kSfxFiles[i],
+            up1.c_str(),
+            up2.c_str()
+        };
+
+        // 为每个 SfxType 加载 SFX_POOL_SIZE 个实例，构成声音池
+        int loadedCount = 0;
+        for (int slot = 0; slot < SFX_POOL_SIZE; ++slot) {
+            ma_sound* sound = nullptr;
+            for (int p = 0; p < 3 && !sound; ++p) {
+                if (!relPaths[p]) continue;
+                // 全量加载：不使用 MA_SOUND_FLAG_STREAM
+                sound = (ma_sound*)ma_malloc(sizeof(ma_sound), nullptr);
+                if (!sound) continue;
+                ma_result result = ma_sound_init_from_file(
+                    m_engine, relPaths[p], 0, nullptr, nullptr, sound);
+                if (result != MA_SUCCESS) {
+                    ma_free(sound, nullptr);
+                    sound = nullptr;
+                    continue;
+                }
+                MM_LOG_INFO("Audio", "SFX loaded: %s (slot %d)", relPaths[p], slot);
+            }
+
+            if (!sound) {
+                // 该 slot 加载失败，跳出（剩余 slot 也大概率失败）
+                break;
+            }
+            m_sfxSounds[i][slot] = sound;
+            ++loadedCount;
+        }
+
+        if (loadedCount == 0) {
+            MM_LOG_WARN("Audio", "SFX load failed: %s", kSfxFiles[i]);
+            continue;
+        }
+    }
+
+    m_sfxLoaded = true;
+    return true;
+}
+
+void AudioEngine::playSfx(SfxType type) {
+    if (!m_initialized || !m_sfxLoaded) return;
+    int idx = static_cast<int>(type);
+    if (idx < 0 || idx >= static_cast<int>(SfxType::Count)) return;
+
+    // 轮转选择一个 slot，避免快速连击时截断正在播放的实例
+    int slot = m_sfxRoundRobin[idx];
+    m_sfxRoundRobin[idx] = (slot + 1) % SFX_POOL_SIZE;
+
+    ma_sound* sound = m_sfxSounds[idx][slot];
+    if (!sound) {
+        // 当前 slot 未加载，尝试其他 slot
+        for (int s = 0; s < SFX_POOL_SIZE; ++s) {
+            if (m_sfxSounds[idx][s]) {
+                sound = m_sfxSounds[idx][s];
+                break;
+            }
+        }
+        if (!sound) return;
+    }
+
+    // seek 到开头，然后播放
+    ma_sound_seek_to_pcm_frame(sound, 0);
+    ma_sound_set_volume(sound, calcVolume(SoundType::Effect));
+    ma_sound_start(sound);
 }
 
 } // namespace melody_matrix::audio

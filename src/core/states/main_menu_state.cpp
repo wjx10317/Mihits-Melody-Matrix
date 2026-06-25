@@ -909,6 +909,33 @@ void MainMenuState::renderSettingsSidebar() {
     }
 
     ImGui::Spacing();
+
+    // 偏移条开关（Offset Bar）
+    {
+        bool offsetBarEnabled = platform::Config::getInt(platform::Config::KEY_OFFSET_BAR, 0) != 0;
+        if (offsetBarEnabled) {
+            ImGui::PushStyleColor(ImGuiCol_Button,
+                ImVec4(Theme::CYAN_R, Theme::CYAN_G, Theme::CYAN_B, 0.35f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
+                ImVec4(Theme::CYAN_R, Theme::CYAN_G, Theme::CYAN_B, 0.5f));
+            ImGui::PushStyleColor(ImGuiCol_Text,
+                ImVec4(Theme::CYAN_R, Theme::CYAN_G, Theme::CYAN_B, 1.0f));
+        } else {
+            ImGui::PushStyleColor(ImGuiCol_Button,
+                ImVec4(0.18f, 0.18f, 0.30f, 0.8f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
+                ImVec4(0.25f, 0.25f, 0.40f, 0.9f));
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.7f, 0.7f, 0.75f, 1.0f));
+        }
+        if (ImGui::Button(offsetBarEnabled ? "OFFSET BAR: ON" : "OFFSET BAR: OFF",
+                          ImVec2(sidebarWidth - 60, 38))) {
+            platform::Config::setInt(platform::Config::KEY_OFFSET_BAR, offsetBarEnabled ? 0 : 1);
+            platform::Config::save();
+        }
+        ImGui::PopStyleColor(3);
+    }
+
+    ImGui::Spacing();
     ImGui::Separator();
     ImGui::Spacing();
     ImGui::Spacing();

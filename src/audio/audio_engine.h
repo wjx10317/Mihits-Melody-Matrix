@@ -18,6 +18,15 @@ enum class SoundType : int {
     Effect  = 2,   // 音效（判定音、UI音等）
 };
 
+// 音效类型枚举 —— 用于 playSfx() 选择播放的音效
+enum class SfxType : int {
+    MenuClick  = 0,    // 菜单点击（切换铺面）
+    MenuHit    = 1,    // 菜单击中（选中模组/取消模组/开始游戏）
+    HitNormal  = 2,    // 游戏内 tap 击中
+    SliderTick = 3,    // slidertick（预留）
+    Count      = 4
+};
+
 // ============================================================
 // ActiveSound —— 池中管理的活动声音
 // 禁止拷贝（避免 ma_sound* 浅拷贝），只允许移动
@@ -119,7 +128,7 @@ public:
     void update(float dt);
 
     // 查询
-    bool isPlaying() const { return !m_activeSounds.empty(); }
+    bool isPlaying() const;  // 实现在 .cpp（需 ma_sound_is_playing）
     int64_t positionMs() const;//当前位置
     int64_t durationMs() const;//总时长
 
@@ -129,6 +138,14 @@ public:
     // ---- 音量分组控制（未来扩展）----
     void setTypeVolume(SoundType type, float volume);
     float getTypeVolume(SoundType type) const;
+
+    // ---- 音效（SFX）----
+    /// 全量加载所有音效文件（非流式）。加载失败时记录警告但不中断。
+    /// 重复调用安全：已加载则直接返回 true。
+    bool loadSfx();
+
+    /// 播放指定类型的音效。若未加载或类型越界则静默返回。
+    void playSfx(SfxType type);
 
 private:
     // 内部：创建 ma_sound
@@ -152,6 +169,13 @@ private:
     // 音量
     float m_volume = 1.0f;                           // 全局音量
     float m_typeVolumes[3] = {1.0f, 1.0f, 1.0f}; // 按 SoundType 分组音量
+
+    // 音效（SFX）—— 全量加载（非流式），每个类型维护 3 个实例轮转播放，
+    // 避免快速连击时第二次播放截断第一次。
+    static constexpr int SFX_POOL_SIZE = 3;
+    ma_sound* m_sfxSounds[static_cast<int>(SfxType::Count)][SFX_POOL_SIZE] = {};
+    int m_sfxRoundRobin[static_cast<int>(SfxType::Count)] = {};
+    bool m_sfxLoaded = false;
 };
 
 } // namespace melody_matrix::audio

@@ -31,8 +31,11 @@ void PlayingState::onEnter() {
     }
 
     if (m_gameplayInitialized) {
-        m_audio.resume();
-        Kernel::instance().clock().resume();
+        // 歌曲已结束则不再恢复音频（防止暂停后继续导致音乐重播）
+        if (!m_songFinished) {
+            m_audio.resume();
+            Kernel::instance().clock().resume();
+        }
         Kernel::instance().renderer().setGameplayRendering(true);
 
         // 恢复时重置按键状态，避免暂停期间按下的键在恢复后误触发
@@ -95,6 +98,10 @@ void PlayingState::resetGameplay() {
     m_scrollWindow = {};  // 重置滚动窗口
     m_completedNotes.clear();  // 清空已完成区域
 
+    m_autoplay = false;
+    m_offsetBarEnabled = false;
+    m_offsetBarMarks.clear();
+
     auto& renderer = Kernel::instance().renderer();
     renderer.setGameplayRendering(false);
     renderer.setBackgroundPath("");
@@ -112,6 +119,7 @@ void PlayingState::initGameplay() {
         MM_LOG_ERROR("Playing", "Failed to initialize audio engine");
         return;
     }
+    m_audio.loadSfx();
 
     // ── Reset clock ──
     // 从 Result/Retry 回来时时钟可能处于暂停状态，必须重置
@@ -147,39 +155,41 @@ void PlayingState::initGameplay() {
     }
     m_beatmap = std::move(buildResult.value());
 
-    // ── 铺面导入丢弃：丢弃会在滚动过程中 miss 的 note ──
-    // 当列数 > KEY_COUNT 时，滚动事件窗口默认 100ms。
-    // 如果一个 note 在滚动期间到达 miss 阈值，玩家无法击打却被判 miss，不公平。
-    // 在导入时模拟滚动触发，丢弃这些 note。
+    // ── 铺面导入丢弃：丢弃会在滚动过程中变得不可击打的 note ──
+    // 当列数 > KEY_COUNT 时，滚动期间锁判定。
+    // 如果一个 note 在滚动期间到达 miss 阈值，或处于离开窗口的列中，
+    // 玩家/autoplay 无法击打却被判 miss，不公平。在导入时模拟滚动触发，丢弃这些 note。
     if (m_beatmap.formations.size() > 0) {
         int32_t maxCols = 0;
         for (const auto& f : m_beatmap.formations) {
             if (f.cols > maxCols) maxCols = f.cols;
         }
         if (maxCols > KEY_COUNT) {
-            // 需要滚动，执行 note 丢弃
             float od = m_beatmap.difficulty.od;
             int32_t goodW = static_cast<int32_t>(65.0f - 2.6f * od);
             int64_t missThr = static_cast<int64_t>(goodW) + 50;
-            float scrollDuration = 100.0f;  // 默认滚动事件窗口
+            float approachMs = 1800.0f - m_beatmap.difficulty.ar * 120.0f;
+            if (approachMs < 300.0f) approachMs = 300.0f;
+            // 使用实际最大滚动时长（与 checkAndTriggerScroll 的上限一致）
+            int64_t scrollDuration = 200;
 
-            // 模拟滚动：遍历 note，检测哪些会在滚动期间 miss
-            std::vector<beatmap::Note> filteredNotes;
-            filteredNotes.reserve(m_beatmap.notes.size());
+            // 按时间排序，确保模拟与实际运行时一致
+            std::vector<beatmap::Note> sortedNotes = m_beatmap.notes;
+            std::sort(sortedNotes.begin(), sortedNotes.end(),
+                      [](const beatmap::Note& a, const beatmap::Note& b) { return a.time < b.time; });
 
-            // 简化模型：对每个 note，检查其时间是否落在某个滚动窗口内
-            // 滚动窗口 = [scrollStart, scrollStart + scrollDuration]
-            // 如果 note.time - missThr <= scrollStart 且 note.time + missThr >= scrollStart，
-            // 则 note 可能在滚动期间 miss
-            // 更精确：模拟实际滚动触发过程
+            std::vector<bool> discard(sortedNotes.size(), false);
+
             int32_t currentStart = 0;
             int32_t currentEnd = KEY_COUNT - 1;
             int64_t lastScrollEnd = 0;
 
-            for (const auto& note : m_beatmap.notes) {
+            for (size_t i = 0; i < sortedNotes.size(); ++i) {
+                if (discard[i]) continue;
+                const auto& note = sortedNotes[i];
+
                 // 检查此 note 是否需要滚动（col 超出当前窗口）
                 if (note.col > currentEnd || note.col < currentStart) {
-                    // 触发滚动
                     int32_t newStart = currentStart;
                     if (note.col > currentEnd) {
                         newStart = note.col - KEY_COUNT + 1;
@@ -187,33 +197,71 @@ void PlayingState::initGameplay() {
                         newStart = note.col;
                     }
                     if (newStart < 0) newStart = 0;
+                    if (newStart + KEY_COUNT > maxCols) newStart = maxCols - KEY_COUNT;
 
-                    int64_t scrollStart = note.time - static_cast<int64_t>(1800.0f - m_beatmap.difficulty.ar * 120.0f);
+                    int64_t scrollStart = note.time - static_cast<int64_t>(approachMs);
                     if (scrollStart < lastScrollEnd) scrollStart = lastScrollEnd;
-                    int64_t scrollEnd = scrollStart + static_cast<int64_t>(scrollDuration);
+                    int64_t scrollEnd = scrollStart + scrollDuration;
 
-                    // 检查此 note 是否在滚动期间 miss
-                    // note miss 如果 nowMs >= note.time + missThr
-                    // 滚动期间 nowMs ∈ [scrollStart, scrollEnd]
-                    // 如果 scrollEnd >= note.time + missThr → note 会在滚动期间 miss
+                    // 检查触发滚动的 note 是否会在滚动期间 miss
                     if (scrollEnd >= note.time + missThr) {
-                        // 丢弃此 note
+                        discard[i] = true;
                         MM_LOG_INFO("Playing", "Discarding note at t=" + std::to_string(note.time) +
                                     " col=" + std::to_string(note.col) + " (would miss during scroll)");
                         continue;
+                    }
+
+                    // 检查离开窗口列中尚未击打的 note 是否会变得不可击打
+                    int32_t leaveStart = -1, leaveEnd = -1;
+                    if (newStart > currentStart) {
+                        // 右滚：[currentStart, newStart-1] 离开窗口
+                        leaveStart = currentStart;
+                        leaveEnd = newStart - 1;
+                    } else if (newStart < currentStart) {
+                        // 左滚：[newStart+KEY_COUNT, currentEnd] 离开窗口
+                        leaveStart = newStart + KEY_COUNT;
+                        leaveEnd = currentEnd;
+                    }
+
+                    if (leaveStart >= 0) {
+                        for (size_t j = i + 1; j < sortedNotes.size(); ++j) {
+                            if (discard[j]) continue;
+                            const auto& n = sortedNotes[j];
+                            if (n.col >= leaveStart && n.col <= leaveEnd) {
+                                // 该 note 在离开窗口的列中
+                                // 若其时间在滚动开始之后，则无法在滚动前击打，
+                                // 滚动期间锁判定，滚动后该列已不在窗口内 → 不可击打
+                                if (n.time > scrollStart) {
+                                    discard[j] = true;
+                                    MM_LOG_INFO("Playing", "Discarding note at t=" + std::to_string(n.time) +
+                                                " col=" + std::to_string(n.col) +
+                                                " (in leaving column during scroll)");
+                                }
+                            }
+                        }
                     }
 
                     currentStart = newStart;
                     currentEnd = newStart + KEY_COUNT - 1;
                     lastScrollEnd = scrollEnd;
                 }
-                filteredNotes.push_back(note);
             }
 
-            size_t discarded = m_beatmap.notes.size() - filteredNotes.size();
+            // 执行过滤
+            std::vector<beatmap::Note> filteredNotes;
+            filteredNotes.reserve(sortedNotes.size());
+            size_t discarded = 0;
+            for (size_t i = 0; i < sortedNotes.size(); ++i) {
+                if (discard[i]) {
+                    ++discarded;
+                } else {
+                    filteredNotes.push_back(sortedNotes[i]);
+                }
+            }
+
             if (discarded > 0) {
                 MM_LOG_INFO("Playing", "Discarded " + std::to_string(discarded) +
-                            " notes that would miss during scroll");
+                            " notes that would be unplayable during scroll");
                 m_beatmap.notes = std::move(filteredNotes);
             }
         }
@@ -236,6 +284,17 @@ void PlayingState::initGameplay() {
         m_hpManager.onJudgment(gameplay::JudgmentResult::Miss);
         m_scoreManager.addScore(gameplay::JudgmentResult::Miss, 0);
         m_popups.push_back({evt.col, gameplay::JudgmentResult::Miss, JudgePopup::DURATION});
+
+        // 偏移条：记录 auto-miss（timing 取 goodW 边界值，超出 good 窗口）
+        if (m_offsetBarEnabled) {
+            float od = m_beatmap.difficulty.od;
+            int32_t goodW = static_cast<int32_t>(65.0f - 2.6f * od);
+            int64_t missTiming = static_cast<int64_t>(goodW) + 50;
+            m_offsetBarMarks.push_back({evt.time + missTiming, evt.time,
+                                        missTiming,
+                                        OffsetBarMark::DURATION,
+                                        gameplay::JudgmentResult::Miss});
+        }
     };
 
     // ── Init formation ──
@@ -257,10 +316,12 @@ void PlayingState::initGameplay() {
 
     // ── 应用模组 ──
     bool noFailEnabled = false;
+    m_autoplay = false;
     for (const auto& id : m_modIds) {
         if (id == "nofail") {
             noFailEnabled = true;
-            break;
+        } else if (id == "autoplay") {
+            m_autoplay = true;
         }
     }
     if (noFailEnabled) {
@@ -269,6 +330,13 @@ void PlayingState::initGameplay() {
     } else {
         m_hpManager.setMod(nullptr);
     }
+    if (m_autoplay) {
+        MM_LOG_INFO("Playing", "Autoplay mod enabled");
+    }
+
+    // ── 读取偏移条配置 ──
+    m_offsetBarEnabled = platform::Config::getInt(platform::Config::KEY_OFFSET_BAR, 0) != 0;
+    m_offsetBarMarks.clear();
 
     // ── Count notes ──
     m_totalNotes = static_cast<int>(m_beatmap.notes.size());
@@ -388,6 +456,39 @@ GameState PlayingState::update(float dt) {
     bool inTransition = m_formationCtrl.inTransition(nowMs);
     bool inScroll = m_scrollWindow.scrolling;
     if (!inTransition && !inScroll) {
+        // Autoplay 模组：自动击打当前滚动窗口内的列
+        if (m_autoplay) {
+            int32_t startCol = m_scrollWindow.startCol;
+            int32_t endCol = m_scrollWindow.endCol;
+            for (int32_t c = startCol; c <= endCol; ++c) {
+                if (c < 0 || c >= m_judgeQueue.columnCount()) continue;
+
+                // 优先处理活跃 Hold 的自动释放
+                const auto* activeHold = m_judgeQueue.getActiveHold(c);
+                if (activeHold && nowMs >= activeHold->holdEnd) {
+                    // Autoplay：以 holdEnd 作为 releaseTime，保证 dt=0 落在 perfect 窗口内
+                    auto holdResult = m_judgeQueue.onKeyRelease(activeHold->holdEnd, c, od);
+                    handleHoldReleaseResult(holdResult);
+                    continue;
+                }
+                if (activeHold) continue;  // 正在按住，等待释放
+
+                const auto& colQ = m_judgeQueue.columnQueue(c);
+                if (colQ.finished()) continue;
+                const auto& note = colQ.front();
+
+                // 自动击打：当 note 到达判定正中心
+                if (nowMs >= note.time) {
+                    // Autoplay：以 note.time 作为 pressTime，保证 dt=0 必在 perfect 窗口内
+                    int64_t noteTime = note.time;
+                    auto result = m_judgeQueue.onKeyPress(noteTime, c, od);
+                    if (result != gameplay::JudgmentResult::Ignored) {
+                        // pressTime 传 noteTime 使偏移条显示 timing=0（完美中心）
+                        handlePressResult(result, c, noteTime, noteTime);
+                    }
+                }
+            }
+        }
         processInput();
         m_judgeQueue.update(nowMs, od);
     }
@@ -472,9 +573,24 @@ GameState PlayingState::update(float dt) {
                        [](const JudgePopup& p) { return p.timer <= 0.0f; }),
         m_popups.end());
 
+    // ── Update offset bar marks ──
+    if (m_offsetBarEnabled) {
+        for (auto& m : m_offsetBarMarks) {
+            m.timer -= dt;
+        }
+        m_offsetBarMarks.erase(
+            std::remove_if(m_offsetBarMarks.begin(), m_offsetBarMarks.end(),
+                           [](const OffsetBarMark& m) { return m.timer <= 0.0f; }),
+            m_offsetBarMarks.end());
+    }
+
     // ── Check song end ──
-    if (!m_audio.isPlaying() && m_audio.positionMs() > 0) {
-        m_songFinished = true;
+    // BGM 播放结束（ma_sound_is_playing 返回 false），
+    // 或所有 note 已判定完毕且音频已停止（音频可能短于最后一个 note）
+    if (!m_audio.isPlaying()) {
+        if (m_audio.positionMs() > 0 || m_judgeQueue.finished()) {
+            m_songFinished = true;
+        }
     }
 
     // ── Check HP death ──
@@ -720,11 +836,19 @@ void PlayingState::processInput() {
         if (column < 0) continue;  // 非游戏按键，跳过
 
         if (evt.pressed) {
+            // 获取头部 note 的时间（用于偏移条记录），需在 onKeyPress 之前读取
+            int64_t noteTime = 0;
+            if (column >= 0 && column < m_judgeQueue.columnCount()) {
+                const auto& colQ = m_judgeQueue.columnQueue(column);
+                if (!colQ.finished()) {
+                    noteTime = colQ.front().time;
+                }
+            }
             auto result = m_judgeQueue.onKeyPress(nowMs, column, od);
             MM_LOG_INFO("Playing", "KeyDown: col=" + std::to_string(column) +
                         " nowMs=" + std::to_string(nowMs) +
                         " result=" + std::to_string(static_cast<int>(result)));
-            handlePressResult(result, column);
+            handlePressResult(result, column, nowMs, noteTime);
         } else {
             auto holdResult = m_judgeQueue.onKeyRelease(nowMs, column, od);
             MM_LOG_INFO("Playing", "KeyUp: col=" + std::to_string(column) +
@@ -735,7 +859,8 @@ void PlayingState::processInput() {
     }
 }
 
-void PlayingState::handlePressResult(gameplay::JudgmentResult result, int32_t column) {
+void PlayingState::handlePressResult(gameplay::JudgmentResult result, int32_t column,
+                                     int64_t pressTime, int64_t noteTime) {
     switch (result) {
     case gameplay::JudgmentResult::Perfect:
         m_perfectCount++;
@@ -743,6 +868,7 @@ void PlayingState::handlePressResult(gameplay::JudgmentResult result, int32_t co
         m_comboManager.onHit();
         m_scoreManager.addScore(gameplay::JudgmentResult::Perfect, m_comboManager.current());
         m_hpManager.onJudgment(gameplay::JudgmentResult::Perfect);
+        m_audio.playSfx(audio::SfxType::HitNormal);
         break;
     case gameplay::JudgmentResult::Good:
         m_goodCount++;
@@ -750,6 +876,7 @@ void PlayingState::handlePressResult(gameplay::JudgmentResult result, int32_t co
         m_comboManager.onHit();
         m_scoreManager.addScore(gameplay::JudgmentResult::Good, m_comboManager.current());
         m_hpManager.onJudgment(gameplay::JudgmentResult::Good);
+        m_audio.playSfx(audio::SfxType::HitNormal);
         break;
     case gameplay::JudgmentResult::Miss:
         m_missCount++;
@@ -759,6 +886,17 @@ void PlayingState::handlePressResult(gameplay::JudgmentResult result, int32_t co
         break;
     case gameplay::JudgmentResult::Ignored:
         return;  // Ignored 不产生弹出
+    }
+
+    // 偏移条：记录判定时机
+    if (m_offsetBarEnabled && result != gameplay::JudgmentResult::Ignored) {
+        OffsetBarMark mark;
+        mark.hitTime = pressTime;
+        mark.noteTime = noteTime;
+        mark.timing = pressTime - noteTime;
+        mark.timer = OffsetBarMark::DURATION;
+        mark.result = result;
+        m_offsetBarMarks.push_back(mark);
     }
 
     // 添加判定弹出
@@ -902,6 +1040,83 @@ void PlayingState::renderImGuiOverlay() {
     ImGui::ProgressBar(hp, ImVec2(barWidth - 20, 20), "");
     ImGui::PopStyleColor();
     ImGui::End();
+
+    // ── Offset Bar（偏移条）──
+    if (m_offsetBarEnabled) {
+        // 判定窗口公式与 StandardJudgeStrategy 保持一致（策略为 private，无法直接获取）
+        float od = m_beatmap.difficulty.od;
+        int32_t perfectW = static_cast<int32_t>(22.0f - 1.05f * od);
+        int32_t goodW = static_cast<int32_t>(65.0f - 2.6f * od);
+        if (perfectW < 1) perfectW = 1;
+        if (goodW <= perfectW) goodW = perfectW + 1;
+
+        const float obW = 400.0f;
+        const float obH = 20.0f;
+        float obX = (ImGui::GetIO().DisplaySize.x - obW) * 0.5f;
+        // 上移至 -140，避免与暂停提示（-90）重叠
+        float obY = ImGui::GetIO().DisplaySize.y - 140.0f;
+        float centerX = obX + obW * 0.5f;
+        float perfectHalfW = (static_cast<float>(perfectW) / static_cast<float>(goodW)) * (obW * 0.5f);
+
+        ImDrawList* dl = ImGui::GetForegroundDrawList();
+
+        // 背景灰色（最外侧，超出 good 窗口）
+        dl->AddRectFilled(ImVec2(obX, obY), ImVec2(obX + obW, obY + obH),
+                          IM_COL32(60, 60, 70, 200));
+
+        // Good 区域（绿色）
+        ImU32 goodColor = IM_COL32(100, 200, 50, 200);
+        dl->AddRectFilled(ImVec2(obX, obY),
+                          ImVec2(centerX - perfectHalfW, obY + obH), goodColor);
+        dl->AddRectFilled(ImVec2(centerX + perfectHalfW, obY),
+                          ImVec2(obX + obW, obY + obH), goodColor);
+
+        // Perfect 区域（青色）
+        dl->AddRectFilled(ImVec2(centerX - perfectHalfW, obY),
+                          ImVec2(centerX + perfectHalfW, obY + obH),
+                          IM_COL32(0, 255, 245, 200));
+
+        // 中心线（0ms 位置）白色
+        dl->AddLine(ImVec2(centerX, obY - 2),
+                    ImVec2(centerX, obY + obH + 2),
+                    IM_COL32(255, 255, 255, 255), 2.0f);
+
+        // 边框
+        dl->AddRect(ImVec2(obX, obY), ImVec2(obX + obW, obY + obH),
+                    IM_COL32(200, 200, 220, 220), 0.0f, 0, 1.0f);
+
+        // 标记点（每次击中 note 时记录的 timing）
+        for (const auto& mark : m_offsetBarMarks) {
+            // 将 timing 限制在 ±goodW 范围内用于显示
+            int64_t clamped = mark.timing;
+            if (clamped < -static_cast<int64_t>(goodW)) clamped = -goodW;
+            if (clamped >  static_cast<int64_t>(goodW)) clamped =  goodW;
+            float markX = centerX + (static_cast<float>(clamped) / static_cast<float>(goodW)) * (obW * 0.5f);
+            float alpha = std::min(1.0f, mark.timer / OffsetBarMark::DURATION);
+
+            ImU32 markColor;
+            int alphaByte = static_cast<int>(255.0f * alpha);
+            switch (mark.result) {
+            case gameplay::JudgmentResult::Perfect:
+                markColor = IM_COL32(0, 255, 245, alphaByte);
+                break;
+            case gameplay::JudgmentResult::Good:
+                markColor = IM_COL32(100, 200, 50, alphaByte);
+                break;
+            case gameplay::JudgmentResult::Miss:
+                markColor = IM_COL32(255, 0, 110, alphaByte);
+                break;
+            default:
+                markColor = IM_COL32(200, 200, 200, alphaByte);
+                break;
+            }
+
+            // 标记为竖线
+            dl->AddLine(ImVec2(markX, obY - 4),
+                        ImVec2(markX, obY + obH + 4),
+                        markColor, 3.0f);
+        }
+    }
 
     // ── Judgment popups ──
     int popupIdx = 0;
