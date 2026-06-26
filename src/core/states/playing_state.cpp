@@ -267,27 +267,37 @@ void PlayingState::initGameplay() {
         }
     }
 
-    // ── 矩阵变换前后250ms保护区间：变换点 ±250ms 内不允许有note，有则丢弃 ──
-    // 避免note在阵型切换瞬间出现导致判定/渲染错位
+    // ── 矩阵变换前后100ms保护区间：只丢弃"待失效的行/列"内的note ──
+    // 变换后不存在的行/列（newRows<oldRows 或 newCols<oldCols）内的note丢弃，
+    // 保留"待生效的note"（新阵型中会触发滚动的边缘列note），避免误丢弃
     if (m_beatmap.formations.size() > 1) {
-        std::vector<int64_t> transitionTimes;
-        transitionTimes.reserve(m_beatmap.formations.size() - 1);
-        for (size_t i = 1; i < m_beatmap.formations.size(); ++i) {
-            transitionTimes.push_back(m_beatmap.formations[i].time);
-        }
-
         std::vector<beatmap::Note> protectedNotes;
         protectedNotes.reserve(m_beatmap.notes.size());
         size_t guardDiscarded = 0;
         for (const auto& note : m_beatmap.notes) {
-            bool inGuardZone = false;
-            for (int64_t t : transitionTimes) {
-                if (note.time >= t - 250 && note.time <= t + 250) {
-                    inGuardZone = true;
+            bool discard = false;
+            for (size_t i = 1; i < m_beatmap.formations.size(); ++i) {
+                int64_t T = m_beatmap.formations[i].time;
+                // 在变换点 ±100ms 窗口内
+                if (note.time < T - 100 || note.time > T + 100) continue;
+
+                const auto& oldF = m_beatmap.formations[i - 1];
+                const auto& newF = m_beatmap.formations[i];
+                // 待失效的行：newRows < oldRows 时，行 [newRows, oldRows-1] 在新阵型中不存在
+                bool inFailedRow = (newF.rows < oldF.rows) &&
+                                   (note.row >= newF.rows && note.row < oldF.rows);
+                // 待失效的列：newCols < oldCols 时，列 [newCols, oldCols-1] 在新阵型中不存在
+                bool inFailedCol = (newF.cols < oldF.cols) &&
+                                   (note.col >= newF.cols && note.col < oldF.cols);
+                if (inFailedRow || inFailedCol) {
+                    discard = true;
+                    MM_LOG_INFO("Playing", "Discarding note at t=" + std::to_string(note.time) +
+                                " col=" + std::to_string(note.col) + " row=" + std::to_string(note.row) +
+                                " (in failed row/col at formation transition)");
                     break;
                 }
             }
-            if (inGuardZone) {
+            if (discard) {
                 ++guardDiscarded;
             } else {
                 protectedNotes.push_back(note);
@@ -296,7 +306,7 @@ void PlayingState::initGameplay() {
 
         if (guardDiscarded > 0) {
             MM_LOG_INFO("Playing", "Discarded " + std::to_string(guardDiscarded) +
-                        " notes in formation transition guard zones (±250ms)");
+                        " notes in failed rows/cols at formation transitions (±100ms)");
             m_beatmap.notes = std::move(protectedNotes);
         }
     }
