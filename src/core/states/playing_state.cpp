@@ -96,7 +96,6 @@ void PlayingState::resetGameplay() {
     m_popups.clear();
 
     m_scrollWindow = {};  // 重置滚动窗口
-    m_completedNotes.clear();  // 清空已完成区域
 
     m_autoplay = false;
     m_offsetBarEnabled = false;
@@ -267,37 +266,28 @@ void PlayingState::initGameplay() {
         }
     }
 
-    // ── 矩阵变换前后100ms保护区间：只丢弃"待失效的行/列"内的note ──
-    // 变换后不存在的行/列（newRows<oldRows 或 newCols<oldCols）内的note丢弃，
-    // 保留"待生效的note"（新阵型中会触发滚动的边缘列note），避免误丢弃
+    // ── 矩阵变换前后250ms保护区间：变换点 ±250ms 内不允许有note，有则丢弃 ──
+    // 矩阵变换（行数/列数变化）会导致网格重建，此时段内的note会判定/渲染错位
+    // 滚动±100ms丢弃待失效列note由上面的scroll discard simulation处理
     if (m_beatmap.formations.size() > 1) {
+        std::vector<int64_t> transitionTimes;
+        transitionTimes.reserve(m_beatmap.formations.size() - 1);
+        for (size_t i = 1; i < m_beatmap.formations.size(); ++i) {
+            transitionTimes.push_back(m_beatmap.formations[i].time);
+        }
+
         std::vector<beatmap::Note> protectedNotes;
         protectedNotes.reserve(m_beatmap.notes.size());
         size_t guardDiscarded = 0;
         for (const auto& note : m_beatmap.notes) {
-            bool discard = false;
-            for (size_t i = 1; i < m_beatmap.formations.size(); ++i) {
-                int64_t T = m_beatmap.formations[i].time;
-                // 在变换点 ±100ms 窗口内
-                if (note.time < T - 100 || note.time > T + 100) continue;
-
-                const auto& oldF = m_beatmap.formations[i - 1];
-                const auto& newF = m_beatmap.formations[i];
-                // 待失效的行：newRows < oldRows 时，行 [newRows, oldRows-1] 在新阵型中不存在
-                bool inFailedRow = (newF.rows < oldF.rows) &&
-                                   (note.row >= newF.rows && note.row < oldF.rows);
-                // 待失效的列：newCols < oldCols 时，列 [newCols, oldCols-1] 在新阵型中不存在
-                bool inFailedCol = (newF.cols < oldF.cols) &&
-                                   (note.col >= newF.cols && note.col < oldF.cols);
-                if (inFailedRow || inFailedCol) {
-                    discard = true;
-                    MM_LOG_INFO("Playing", "Discarding note at t=" + std::to_string(note.time) +
-                                " col=" + std::to_string(note.col) + " row=" + std::to_string(note.row) +
-                                " (in failed row/col at formation transition)");
+            bool inGuardZone = false;
+            for (int64_t t : transitionTimes) {
+                if (note.time >= t - 250 && note.time <= t + 250) {
+                    inGuardZone = true;
                     break;
                 }
             }
-            if (discard) {
+            if (inGuardZone) {
                 ++guardDiscarded;
             } else {
                 protectedNotes.push_back(note);
@@ -306,7 +296,7 @@ void PlayingState::initGameplay() {
 
         if (guardDiscarded > 0) {
             MM_LOG_INFO("Playing", "Discarded " + std::to_string(guardDiscarded) +
-                        " notes in failed rows/cols at formation transitions (±100ms)");
+                        " notes in formation transition guard zones (±250ms)");
             m_beatmap.notes = std::move(protectedNotes);
         }
     }
@@ -690,21 +680,11 @@ std::vector<PlayingState::KeyColumnMapping> PlayingState::getKeyMapping() const 
 
     std::vector<KeyColumnMapping> mapping;
 
-    if (totalCols <= KEY_COUNT) {
-        // 总列数 <= 4：按键直接映射到对应列
-        // D=col0, F=col1, J=col2, K=col3（只映射存在的列）
-        if (totalCols >= 1) mapping.push_back({SDLK_d, 0});
-        if (totalCols >= 2) mapping.push_back({SDLK_f, 1});
-        if (totalCols >= 3) mapping.push_back({SDLK_j, 2});
-        if (totalCols >= 4) mapping.push_back({SDLK_k, 3});
-    } else {
-        // 总列数 > KEY_COUNT：使用滚动窗口映射
-        // D F J K 映射到 startCol ~ startCol+3
-        int32_t startCol = m_scrollWindow.startCol;
-        mapping.push_back({SDLK_d, startCol + 0});
-        mapping.push_back({SDLK_f, startCol + 1});
-        mapping.push_back({SDLK_j, startCol + 2});
-        mapping.push_back({SDLK_k, startCol + 3});
+    // 动态映射：用 KEY_COUNT 循环，不硬编码偏移
+    int32_t startCol = (totalCols <= KEY_COUNT) ? 0 : m_scrollWindow.startCol;
+    int32_t mapCount = std::min(static_cast<int32_t>(KEY_COUNT), totalCols);
+    for (int32_t i = 0; i < mapCount; ++i) {
+        mapping.push_back({KEY_CODES[i], startCol + i});
     }
 
     return mapping;
@@ -806,57 +786,13 @@ void PlayingState::checkAndTriggerScroll(int64_t nowMs) {
 }
 
 void PlayingState::completeScroll() {
-    int32_t oldStart = m_scrollWindow.startCol;
-    int32_t oldEnd = m_scrollWindow.endCol;
     int32_t newStart = m_scrollWindow.targetStartCol;
     int32_t newEnd = m_scrollWindow.targetEndCol;
 
-    // ── move 语义：将离开窗口的列的 note 数据转移到已完成区域 ──
-    // 环形队列管理：JudgeQueue 的固定 MAX_COLS 列数组作为环形缓冲，
-    // 滚动窗口在其上滑动；离开窗口的列被"回收"——note 数据 move 到
-    // m_completedNotes，保证 note 不丢失。滚动期间锁判定，move 不产生歧义。
-    if (newStart > oldStart) {
-        // 向右滚动：左侧列 [oldStart, newStart-1] 离开窗口
-        // guard：仅 move 已完成列；未完成列保留在 JudgeQueue 中，
-        // 滚动完成后由 update() 的 auto-miss 机制处理，避免 note 静默丢失。
-        for (int32_t col = oldStart; col < newStart; ++col) {
-            if (!m_judgeQueue.columnQueue(col).finished()) {
-                MM_LOG_WARN("Playing", "Right scroll encountered unjudged notes in col " +
-                            std::to_string(col) + ", skip move (will auto-miss)");
-                continue;
-            }
-            auto moved = m_judgeQueue.moveColumnNotes(col);
-            if (!moved.empty()) {
-                for (auto& n : moved) {
-                    m_completedNotes.push_back(std::move(n));
-                }
-                MM_LOG_INFO("Playing", "Moved col " + std::to_string(col) +
-                            " notes to completed area");
-            }
-        }
-    } else if (newStart < oldStart) {
-        // 向左滚动：右侧列 [newEnd+1, oldEnd] 离开窗口
-        // 时间向前流动时正常不会向左滚动（右侧列的 note 应在窗口内已判定完成）。
-        // 若因谱面列分布异常触发，未判定 note 不应被直接 move 到 completed 区域
-        // （会导致漏判且不计 miss）。此处加 guard：仅 move 已完成列；未完成列保留
-        // 在 JudgeQueue 中，滚动完成后由 update() 的 auto-miss 机制处理。
-        for (int32_t col = newEnd + 1; col <= oldEnd; ++col) {
-            if (!m_judgeQueue.columnQueue(col).finished()) {
-                MM_LOG_WARN("Playing", "Left scroll encountered unjudged notes in col " +
-                            std::to_string(col) + ", skip move (will auto-miss)");
-                continue;
-            }
-            auto moved = m_judgeQueue.moveColumnNotes(col);
-            if (!moved.empty()) {
-                for (auto& n : moved) {
-                    m_completedNotes.push_back(std::move(n));
-                }
-                MM_LOG_INFO("Playing", "Moved col " + std::to_string(col) +
-                            " notes to completed area");
-            }
-        }
-    }
-
+    // 映射改变方案：不 move note，只更新窗口
+    // note 留在原始列（0-7），滚动只改 dfjk 映射（getKeyMapping 返回 startCol+0..3）
+    // 离开窗口列的未判定note由 JudgeQueue::update() 自动miss
+    // (scroll discard simulation 已预丢弃会导致问题的note)
     m_scrollWindow.startCol = newStart;
     m_scrollWindow.endCol = newEnd;
     m_scrollWindow.scrolling = false;
@@ -979,7 +915,6 @@ void PlayingState::handleHoldReleaseResult(gameplay::HoldReleaseResult result, i
         m_comboManager.onHit();
         m_scoreManager.addScore(gameplay::JudgmentResult::Perfect, m_comboManager.current());
         m_hpManager.onJudgment(gameplay::JudgmentResult::Perfect);
-        m_audio.playSfx(audio::SfxType::HitNormal);
         m_popups.push_back({column, gameplay::JudgmentResult::Perfect, JudgePopup::DURATION});
         break;
     case gameplay::HoldReleaseResult::Good:
@@ -989,7 +924,6 @@ void PlayingState::handleHoldReleaseResult(gameplay::HoldReleaseResult result, i
         m_comboManager.onHit();
         m_scoreManager.addScore(gameplay::JudgmentResult::Good, m_comboManager.current());
         m_hpManager.onJudgment(gameplay::JudgmentResult::Good);
-        m_audio.playSfx(audio::SfxType::HitNormal);
         m_popups.push_back({column, gameplay::JudgmentResult::Good, JudgePopup::DURATION});
         break;
     case gameplay::HoldReleaseResult::Miss:

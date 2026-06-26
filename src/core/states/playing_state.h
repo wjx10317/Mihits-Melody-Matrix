@@ -130,10 +130,6 @@ private:
     };
     ScrollWindow m_scrollWindow;
 
-    /// 已完成区域：滚动时离开窗口的列的 note 数据被 move 到此容器，
-    /// 保证 note 不丢失（环形队列管理的"回收"区）。
-    std::vector<beatmap::Note> m_completedNotes;
-
     /// 检查是否需要滚动并触发
     void checkAndTriggerScroll(int64_t nowMs);
     /// 完成滚动，更新映射
