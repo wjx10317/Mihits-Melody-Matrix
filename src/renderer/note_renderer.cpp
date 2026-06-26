@@ -324,8 +324,8 @@ void NoteRenderer::buildNoteVertices(const std::vector<beatmap::Note>& notes, in
         // scrollOffset 在滚动期间为 -colDelta*gw*easedP（向右滚→矩阵左移），完成后归零
         // 滚动期间 activeStartCol 保持旧值，scrollOffset 平滑过渡，完成后 startCol 更新+scrollOffset归零，无跳变
         float cellX = W * 0.5f + (note.col - activeStartCol - noteCenterOffset) * gw + scrollOffset;
-        // 裁剪超出屏幕的 note（旁边列可能部分超出屏幕边界）
-        if (cellX < -gw || cellX > W + gw) continue;
+        // 裁剪完全超出屏幕的 note（用 note 半宽收紧，避免矩阵变换后新列note出界绘制）
+        if (cellX < -noteFullW * 0.5f || cellX > W + noteFullW * 0.5f) continue;
         float cellY = H - margin - (note.row + 0.5f) * gh;
 
         // ── Slide 动画偏移：新行从左滑入，新列从顶部滑下 ──

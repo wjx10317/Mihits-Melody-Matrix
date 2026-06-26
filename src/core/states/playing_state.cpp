@@ -228,9 +228,11 @@ void PlayingState::initGameplay() {
                             const auto& n = sortedNotes[j];
                             if (n.col >= leaveStart && n.col <= leaveEnd) {
                                 // 该 note 在离开窗口的列中
-                                // 若其时间在滚动开始之后，则无法在滚动前击打，
-                                // 滚动期间锁判定，滚动后该列已不在窗口内 → 不可击打
-                                if (n.time > scrollStart) {
+                                // 检查 note 的判定区间是否与滚动区间重叠
+                                // hold note 的判定区间延伸到 holdEnd + goodW（释放窗口）
+                                int64_t noteJudgeEnd = (n.type == beatmap::NoteType::Hold)
+                                                          ? n.holdEnd : n.time;
+                                if (noteJudgeEnd > scrollStart) {
                                     discard[j] = true;
                                     MM_LOG_INFO("Playing", "Discarding note at t=" + std::to_string(n.time) +
                                                 " col=" + std::to_string(n.col) +
@@ -293,7 +295,9 @@ void PlayingState::initGameplay() {
                         }
                     }
                     if (firstAfterTime != INT64_MAX) {
-                        int64_t lateGood = note.time + goodW;
+                        // hold note 的判定区间延伸到 holdEnd + goodW（释放窗口）
+                        int64_t noteEnd = (note.type == beatmap::NoteType::Hold) ? note.holdEnd : note.time;
+                        int64_t lateGood = noteEnd + goodW;
                         int64_t earlyGood = firstAfterTime - goodW;
                         if (earlyGood - lateGood < animDur) {
                             discard = true;
@@ -723,9 +727,12 @@ void PlayingState::checkAndTriggerScroll(int64_t nowMs) {
     int32_t windowStart = m_scrollWindow.startCol;
     int32_t windowEnd = m_scrollWindow.endCol;
 
-    // 遍历 JudgeQueue 各列，查找 approach 窗口内最早需要判定的音符
-    int32_t neededStart = windowStart;
-    int32_t neededEnd = windowEnd;
+    // ── 只跟踪 approach 窗口内最早需要判定的 note 所在列 ──
+    // 修复：原逻辑用 neededStart/neededEnd 跨度触发滚动，会导致向左滚动时让右侧 note 离开窗口丢失。
+    // 新逻辑：只滚动到包含最早判定 note 的窗口，确保最早 note 必在窗口内。
+    // 时间向前流动，最早 note 需优先被击打；其他 note 若不在窗口内，等当前 note 判定完后再次触发滚动。
+    int64_t earliestNoteTime = INT64_MAX;
+    int32_t earliestNoteCol = -1;
 
     for (int32_t col = 0; col < m_judgeQueue.columnCount(); ++col) {
         const auto& colQ = m_judgeQueue.columnQueue(col);
@@ -734,28 +741,20 @@ void PlayingState::checkAndTriggerScroll(int64_t nowMs) {
         const auto& note = colQ.front();
         float timeDiff = static_cast<float>(note.time - nowMs);
 
-        // 音符在 approach 窗口内（即将需要判定）
-        // 仅对未过期 note（timeDiff > 0）触发滚动，避免对已过期 note 触发
+        // 仅对未过期 note（timeDiff > 0）且在 approach 窗口内触发滚动
         if (timeDiff <= approachMs && timeDiff > 0) {
-            if (col < neededStart) neededStart = col;
-            if (col > neededEnd) neededEnd = col;
+            if (note.time < earliestNoteTime) {
+                earliestNoteTime = note.time;
+                earliestNoteCol = col;
+            }
         }
     }
 
-    // 如果需要的列超出当前窗口，触发滚动
-    if (neededStart < windowStart || neededEnd > windowEnd) {
-        // 计算新的窗口起始列
-        int32_t targetStart = windowStart;
-
-        // 向右滚动：neededEnd 超出窗口右边界（如 col=4 出现 note，窗口 0-3 → 1-4）
-        if (neededEnd > windowEnd) {
-            targetStart = neededEnd - KEY_COUNT + 1;
-        }
-        // 向左滚动：neededStart 超出窗口左边界
-        // （仅在不需要向右滚动时处理；时间向前流动，优先保证新列进入窗口）
-        if (neededStart < windowStart && neededEnd <= windowEnd) {
-            targetStart = neededStart;
-        }
+    // 如果最早 note 不在当前窗口内，触发滚动到包含它的窗口
+    if (earliestNoteCol >= 0 &&
+        (earliestNoteCol < windowStart || earliestNoteCol > windowEnd)) {
+        // 计算新的窗口起始列：让最早 note 尽量居中
+        int32_t targetStart = earliestNoteCol - (KEY_COUNT / 2);
 
         // 边界约束：窗口不能超出总列数范围
         if (targetStart < 0) targetStart = 0;
@@ -766,22 +765,9 @@ void PlayingState::checkAndTriggerScroll(int64_t nowMs) {
         // 只在窗口确实需要移动时才触发
         if (targetStart != windowStart) {
             // ── 自适应滚动时长 ──
-            // 找到触发滚动的 note 的剩余时间，确保滚动完成后仍有足够击打窗口
-            // 击打窗口 = goodWindow + 10ms（比 good 快区间再快 10ms）
             float od = m_beatmap.difficulty.od;
             int32_t goodW = static_cast<int32_t>(65.0f - 2.6f * od);
             int64_t minRemainingMs = static_cast<int64_t>(goodW) + 10;  // 最小剩余时间
-
-            // 找到最早需要判定的 note 的时间
-            int64_t earliestNoteTime = INT64_MAX;
-            for (int32_t col = 0; col < m_judgeQueue.columnCount(); ++col) {
-                const auto& colQ = m_judgeQueue.columnQueue(col);
-                if (colQ.finished()) continue;
-                if (col < targetStart || col > targetStart + KEY_COUNT - 1) continue;
-                if (colQ.front().time > nowMs && colQ.front().time < earliestNoteTime) {
-                    earliestNoteTime = colQ.front().time;
-                }
-            }
 
             // 默认滚动时长 200ms
             float scrollDuration = 200.0f;
@@ -802,6 +788,8 @@ void PlayingState::checkAndTriggerScroll(int64_t nowMs) {
                         std::to_string(windowStart) + "-" + std::to_string(windowEnd) +
                         " -> " + std::to_string(targetStart) + "-" +
                         std::to_string(targetStart + KEY_COUNT - 1) +
+                        " (earliest note col=" + std::to_string(earliestNoteCol) +
+                        " t=" + std::to_string(earliestNoteTime) + ")" +
                         " at t=" + std::to_string(nowMs) +
                         "ms duration=" + std::to_string(static_cast<int>(scrollDuration)) + "ms");
         }

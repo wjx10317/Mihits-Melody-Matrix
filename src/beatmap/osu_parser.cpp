@@ -343,6 +343,32 @@ std::vector<Formation> OsuParser::generateBreathingFormations(
         }
     }
 
+    // ── 最小变换间隔约束 ──
+    // 密度过小（变换频繁）会导致 note 无法击打（滚动/变换期间锁判定）；
+    // 密度过大（变换稀疏但 note 多）时 gap-based 丢弃会丢太多 note。
+    // 约束：相邻变换间隔 < MIN_TRANSITION_GAP_MS 时合并为一个（保留后者尺寸），
+    //       避免在短时间内频繁切换阵型。
+    constexpr int64_t MIN_TRANSITION_GAP_MS = 2000;
+    if (deduped.size() > 2) {
+        std::vector<Formation> merged;
+        merged.push_back(deduped[0]);
+        for (size_t i = 1; i < deduped.size(); ++i) {
+            // 如果当前变换点与前一个间隔过小，合并（用当前尺寸替换前一个）
+            if (deduped[i].time - merged.back().time < MIN_TRANSITION_GAP_MS) {
+                // 间隔过小：若尺寸相同则跳过（无意义变换）；若不同则合并到后者
+                if (deduped[i].rows == merged.back().rows && deduped[i].cols == merged.back().cols) {
+                    continue;  // 尺寸相同，跳过无意义变换
+                }
+                // 尺寸不同但间隔过小：替换前一个（保留后者尺寸）
+                merged.back().rows = deduped[i].rows;
+                merged.back().cols = deduped[i].cols;
+                continue;
+            }
+            merged.push_back(deduped[i]);
+        }
+        deduped = std::move(merged);
+    }
+
     // ── 第四步：为每个阵型变换计算变换方式 ──
     for (size_t i = 1; i < deduped.size(); ++i) {
         const auto& prev = deduped[i - 1];
