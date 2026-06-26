@@ -343,6 +343,46 @@ std::vector<Formation> OsuParser::generateBreathingFormations(
         }
     }
 
+    // ── 第四步：为每个阵型变换计算变换方式 ──
+    for (size_t i = 1; i < deduped.size(); ++i) {
+        const auto& prev = deduped[i - 1];
+        auto& curr = deduped[i];
+
+        int32_t dRows = curr.rows - prev.rows;
+        int32_t dCols = curr.cols - prev.cols;
+        bool sizeChanged = (curr.blockSize != prev.blockSize);
+
+        bool hasAdd = (dRows > 0 || dCols > 0);
+        bool hasRemove = (dRows < 0 || dCols < 0);
+        int32_t totalAdd = (dRows > 0 ? dRows : 0) + (dCols > 0 ? dCols : 0);
+
+        if (sizeChanged && (hasAdd || hasRemove)) {
+            // 大小+行列同时变化
+            if (totalAdd > 1 || hasRemove) {
+                curr.transformType = MatrixTransformType::ScaleRotate;
+            } else {
+                curr.transformType = MatrixTransformType::ScaleSlide;
+            }
+        } else if (hasRemove) {
+            // 行列减少
+            curr.transformType = MatrixTransformType::SlideOut;
+        } else if (hasAdd) {
+            // 行列增加
+            if (totalAdd > 1) {
+                curr.transformType = MatrixTransformType::Rotate;
+            } else {
+                curr.transformType = MatrixTransformType::Slide;
+            }
+        } else if (sizeChanged) {
+            // 仅大小变化
+            curr.transformType = MatrixTransformType::Scale;
+        } else {
+            // 无变化
+            curr.transformType = MatrixTransformType::Scale;
+        }
+        curr.transformDurationMs = 500;  // 固定500ms
+    }
+
     MM_LOG_INFO("OsuParser", "Generated " + std::to_string(deduped.size()) +
                 " breathing formations (range " +
                 std::to_string(minRows) + "x" + std::to_string(minCols) + " ~ " +

@@ -228,16 +228,16 @@ util::Result<void> MmaParser::parseFormations(const std::vector<std::string>& li
             continue;
         }
 
-        // 可选字段：transitionType (parts[3]) 和 transitionDurationMs (parts[4])
+        // 可选字段：transformType (parts[3]) 和 transformDurationMs (parts[4])
         if (parts.size() >= 4) {
             int32_t tt = 0;
             if (parseInt32(parts[3], tt)) {
-                tt = std::clamp(tt, 0, 2);
-                f.transitionType = static_cast<TransitionType>(tt);
+                tt = std::clamp(tt, 0, 5);
+                f.transformType = static_cast<MatrixTransformType>(tt);
             }
         }
         if (parts.size() >= 5) {
-            parseInt64(parts[4], f.transitionDurationMs);
+            parseInt64(parts[4], f.transformDurationMs);
         }
         // 可选字段：blockSize (parts[5]) 和 noteTransformType (parts[6])
         if (parts.size() >= 6) {

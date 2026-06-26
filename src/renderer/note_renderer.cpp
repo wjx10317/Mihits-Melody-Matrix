@@ -21,13 +21,14 @@ bool NoteRenderer::init() {
         layout(location = 3) in float aTexLayer;  // 纹理层 ID
 
         uniform mat4 uProjection;
+        uniform mat4 uModel;  // 模型变换矩阵（旋转/缩放）
         out vec4 vColor;
         out vec2 vTexCoord;
         out float vTexLayer;
 
         void main() {
             vec2 worldPos = aPos * aInstance.zw + aInstance.xy;
-            gl_Position = uProjection * vec4(worldPos, 0.0, 1.0);
+            gl_Position = uProjection * uModel * vec4(worldPos, 0.0, 1.0);
             vColor = aColor;
             // unit quad 顶点位置直接作为 UV：(0,0)左上 → (1,1)右下
             // 配合 stbi flip_vertically_on_load(1) + Y-down 投影，UV(0,0)对应图像顶部对应屏幕上方
@@ -148,12 +149,8 @@ void NoteRenderer::render(const std::vector<beatmap::Note>& notes, int64_t timeM
 
     if (quads.empty()) return;
 
-    // 应用全局 alpha（休息段渐变隐藏）
-    if (m_globalAlpha < 1.0f) {
-        for (size_t i = 3; i < colors.size(); i += 4) {
-            colors[i] *= m_globalAlpha;
-        }
-    }
+    // 注：m_globalAlpha 与 m_animAlpha 已在 buildNoteVertices 中应用到每个颜色 alpha，
+    // 这里不再重复乘以 m_globalAlpha（避免双重衰减）。
 
     int32_t instanceCount = static_cast<int32_t>(quads.size() / 4);
     instanceCount = std::min(instanceCount, m_maxInstances);
@@ -181,6 +178,17 @@ void NoteRenderer::render(const std::vector<beatmap::Note>& notes, int64_t timeM
     m_shader.use();
     glm::mat4 proj = glm::ortho(0.0f, 1920.0f, 1080.0f, 0.0f, -1.0f, 1.0f);
     m_shader.setMat4("uProjection", &proj[0][0]);
+
+    // 计算模型矩阵（旋转围绕屏幕中心）
+    glm::mat4 model = glm::mat4(1.0f);
+    if (std::abs(m_animRotation) > 0.001f) {
+        glm::vec2 center(1920.0f * 0.5f, 1080.0f * 0.5f);
+        model = glm::translate(model, glm::vec3(center, 0.0f));
+        model = glm::rotate(model, m_animRotation, glm::vec3(0.0f, 0.0f, 1.0f));
+        model = glm::translate(model, glm::vec3(-center, 0.0f));
+    }
+    m_shader.setMat4("uModel", &model[0][0]);
+
     m_shader.setInt("uTexTap", 0);
     m_shader.setInt("uTexSlider", 1);
     m_shader.setInt("uTexOverlay", 2);
@@ -252,10 +260,25 @@ void NoteRenderer::buildNoteVertices(const std::vector<beatmap::Note>& notes, in
                 // 裁剪超出屏幕的列（4列居中时旁边列可能部分超出屏幕边界）
                 if (bx + gw < 0.0f || bx > W) continue;
                 float by = H - margin - (r + 1) * gh;
+
+                // ── Slide 动画偏移：新行从左滑入，新列从顶部滑下 ──
+                float slideOffsetX = 0.0f;
+                if (m_animSlideRows && r >= m_animPrevRows && m_animPrevRows >= 0) {
+                    slideOffsetX = (1.0f - m_animSlideProgress) * (-W);  // 从左侧滑入
+                }
+                float slideOffsetY = 0.0f;
+                if (m_animSlideCols && c >= m_animPrevCols && m_animPrevCols >= 0) {
+                    slideOffsetY = (1.0f - m_animSlideProgress) * (-H);  // 从顶部滑下
+                }
+                bx += slideOffsetX;
+                by += slideOffsetY;
+
                 quads.insert(quads.end(), { bx, by, gw, gh });
                 // 活跃列高亮，非活跃列半透明预览
                 bool isActive = (c >= effStart && c <= effEnd);
                 float blockAlpha = isActive ? 0.85f : 0.35f;
+                // 应用矩阵变换动画 alpha 和全局 alpha
+                blockAlpha *= m_animAlpha * m_globalAlpha;
                 colors.insert(colors.end(), { 1.0f, 1.0f, 1.0f, blockAlpha });
                 layers.push_back(layerBlock);
             }
@@ -305,6 +328,18 @@ void NoteRenderer::buildNoteVertices(const std::vector<beatmap::Note>& notes, in
         if (cellX < -gw || cellX > W + gw) continue;
         float cellY = H - margin - (note.row + 0.5f) * gh;
 
+        // ── Slide 动画偏移：新行从左滑入，新列从顶部滑下 ──
+        float slideOffsetX = 0.0f;
+        if (m_animSlideRows && note.row >= m_animPrevRows && m_animPrevRows >= 0) {
+            slideOffsetX = (1.0f - m_animSlideProgress) * (-W);  // 从左侧滑入
+        }
+        float slideOffsetY = 0.0f;
+        if (m_animSlideCols && note.col >= m_animPrevCols && m_animPrevCols >= 0) {
+            slideOffsetY = (1.0f - m_animSlideProgress) * (-H);  // 从顶部滑下
+        }
+        cellX += slideOffsetX;
+        cellY += slideOffsetY;
+
         // 活跃列高亮，非活跃列灰暗
         // 滚动期间使用目标窗口判断活跃列
         float colDim = 1.0f;
@@ -339,6 +374,9 @@ void NoteRenderer::buildNoteVertices(const std::vector<beatmap::Note>& notes, in
             noteScale = 1.0f;
         }
 
+        // 应用矩阵变换动画 alpha 和全局 alpha（影响 note/overlay/sliderpush）
+        alpha *= m_animAlpha * m_globalAlpha;
+
         // 判定环（overlay.png 缩圈）：从格子边缘收缩到音符边缘
         // overlay.png 是矩形框纹理（中间透明），用单个 quad 替代原来的4条线
         float cellHalfW = gw * 0.5f;
@@ -352,6 +390,7 @@ void NoteRenderer::buildNoteVertices(const std::vector<beatmap::Note>& notes, in
         if (timeDiff <= 0) {
             ringAlpha = 0.0f;  // 过判定时间后环消失
         }
+        ringAlpha *= m_animAlpha * m_globalAlpha;
 
         // ── 绘制判定环（overlay 纹理，单个 quad）──
         if (ringAlpha > 0.01f) {
@@ -420,12 +459,12 @@ void NoteRenderer::buildNoteVertices(const std::vector<beatmap::Note>& notes, in
 
                 // 底图 ring
                 quads.insert(quads.end(), { spX, spY, spW, spH });
-                colors.insert(colors.end(), { 1.0f, 1.0f, 1.0f, 0.5f * colDim });
+                colors.insert(colors.end(), { 1.0f, 1.0f, 1.0f, 0.5f * colDim * m_animAlpha * m_globalAlpha });
                 layers.push_back(layerSPRing);
 
                 // 高亮 full（alpha 随进度从 0 到 1）
                 quads.insert(quads.end(), { spX, spY, spW, spH });
-                colors.insert(colors.end(), { 1.0f, 1.0f, 1.0f, progress * colDim });
+                colors.insert(colors.end(), { 1.0f, 1.0f, 1.0f, progress * colDim * m_animAlpha * m_globalAlpha });
                 layers.push_back(layerSPFull);
             }
         }

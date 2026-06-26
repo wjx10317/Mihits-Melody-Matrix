@@ -50,7 +50,7 @@ bool FormationController::update(int64_t nowMs) {
             evt.previous = m_formations[m_currentIndex];
             evt.current = m_formations[newIndex];
             evt.transitionStartMs = nowMs;
-            evt.transitionEndMs = nowMs + m_transitionDurationMs;
+            evt.transitionEndMs = nowMs + m_formations[newIndex].transformDurationMs;
             onFormationChanged(evt);
         }
 
@@ -69,17 +69,21 @@ bool FormationController::update(int64_t nowMs) {
 float FormationController::transitionProgress(int64_t nowMs) const {
     if (m_transitionStartMs == 0) return 1.0f;
 
+    int64_t durationMs = m_formations.empty() ? m_transitionDurationMs
+                                                : m_formations[m_currentIndex].transformDurationMs;
     int64_t elapsed = nowMs - m_transitionStartMs;
-    if (elapsed >= m_transitionDurationMs) return 1.0f;
+    if (elapsed >= durationMs) return 1.0f;
     if (elapsed <= 0) return 0.0f;
 
-    float t = static_cast<float>(elapsed) / static_cast<float>(m_transitionDurationMs);
+    float t = static_cast<float>(elapsed) / static_cast<float>(durationMs);
     return easeInOutCubic(t);
 }
 
 bool FormationController::inTransition(int64_t nowMs) const {
     if (m_transitionStartMs == 0) return false;
-    return (nowMs - m_transitionStartMs) < m_transitionDurationMs;
+    int64_t durationMs = m_formations.empty() ? m_transitionDurationMs
+                                                : m_formations[m_currentIndex].transformDurationMs;
+    return (nowMs - m_transitionStartMs) < durationMs;
 }
 
 void FormationController::cellToScreen(int row, int col, int rows, int cols,

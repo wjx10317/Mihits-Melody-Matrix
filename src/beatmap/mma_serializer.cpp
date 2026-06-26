@@ -82,11 +82,11 @@ std::string MmaSerializer::serialize(const Beatmap& beatmap, const std::string& 
     oss << "[Formations]\n";
     for (const auto& f : beatmap.formations) {
         oss << f.time << "," << f.rows << "," << f.cols;
-        // 输出过渡类型、持续时间、块大小、note变换类型（仅非默认值时输出）
-        if (f.transitionType != TransitionType::Fade || f.transitionDurationMs != 300 ||
+        // 输出变换方式、变换时长、块大小、note变换类型（仅非默认值时输出）
+        if (f.transformType != MatrixTransformType::Scale || f.transformDurationMs != 500 ||
             f.blockSize != 0.9f || f.noteTransformType != NoteTransformType::Scale) {
-            oss << "," << static_cast<int32_t>(f.transitionType)
-                << "," << f.transitionDurationMs
+            oss << "," << static_cast<int32_t>(f.transformType)
+                << "," << f.transformDurationMs
                 << "," << f.blockSize
                 << "," << static_cast<int32_t>(f.noteTransformType);
         }

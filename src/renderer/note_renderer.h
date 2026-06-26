@@ -49,6 +49,23 @@ public:
     /// 设置全局 alpha（用于休息段渐变隐藏，0=隐藏, 1=显示，默认1）
     void setGlobalAlpha(float alpha) { m_globalAlpha = std::max(0.0f, std::min(1.0f, alpha)); }
 
+    /// 设置矩阵变换动画参数（由 Renderer 在阵型过渡时调用）
+    /// rotation: 旋转角度（弧度）；alpha: 动画 alpha（淡入/淡出）
+    /// prevRows/prevCols: 前一阵型行列（-1=无动画）
+    /// slideProgress: 滑入进度（0=新行/列在屏幕外，1=到位）
+    /// slideRows/slideCols: 新行从左滑入/新列从顶部滑下
+    void setAnimParams(float rotation, float alpha,
+                       int32_t prevRows, int32_t prevCols,
+                       float slideProgress, bool slideRows, bool slideCols) {
+        m_animRotation = rotation;
+        m_animAlpha = alpha;
+        m_animPrevRows = prevRows;
+        m_animPrevCols = prevCols;
+        m_animSlideProgress = slideProgress;
+        m_animSlideRows = slideRows;
+        m_animSlideCols = slideCols;
+    }
+
 private:
     void buildNoteVertices(const std::vector<beatmap::Note>& notes, int64_t timeMs,
                            int rows, int cols, float ar,
@@ -80,6 +97,15 @@ private:
     // note 图片相对格子的缩放比例（来自 Formation.blockSize）
     float m_blockSize = 0.9f;
     float m_globalAlpha = 1.0f;  ///< 全局 alpha（休息段渐变用）
+
+    // 矩阵变换动画参数（由 setAnimParams 设置）
+    float m_animRotation = 0.0f;      ///< 旋转角度（弧度）
+    float m_animAlpha = 1.0f;         ///< 动画 alpha（淡入/淡出）
+    int32_t m_animPrevRows = -1;      ///< 前一阵型行数（-1=无动画）
+    int32_t m_animPrevCols = -1;      ///< 前一阵型列数
+    float m_animSlideProgress = 1.0f; ///< 滑入进度（0=新行/列在屏幕外，1=到位）
+    bool m_animSlideRows = false;     ///< 新行从左滑入
+    bool m_animSlideCols = false;     ///< 新列从顶部滑下
 };
 
 } // namespace melody_matrix::renderer

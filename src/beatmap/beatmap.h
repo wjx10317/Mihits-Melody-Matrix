@@ -8,11 +8,14 @@
 
 namespace melody_matrix::beatmap {
 
-/// 阵型过渡类型
-enum class TransitionType : int32_t {
-    Fade    = 0,  ///< 交叉淡入淡出：旧网格淡出 + 新网格淡入 + 音符位置插值
-    Insert  = 1,  ///< 渐入插入：现有行/列平滑缩放，新增行/列渐入
-    Rotate  = 2,  ///< 矩阵旋转：前半段旧矩阵旋转到半角，切换，后半段新矩阵继续旋转
+/// 矩阵变换方式（控制行列变化时的动画类型）
+enum class MatrixTransformType : int32_t {
+    Scale       = 0,  ///< 缩放：行列不变，仅格子大小平滑变换
+    Slide       = 1,  ///< 滑入：新行从左滑入/新列从顶部滑下
+    Rotate      = 2,  ///< 旋转一周：半周时变换矩阵，半周归位
+    SlideOut    = 3,  ///< 滑出+旋转：行列减少时同时滑出和旋转
+    ScaleSlide  = 4,  ///< 先缩放后滑入（大小+行列同时变化，单行/列添加）
+    ScaleRotate = 5,  ///< 先缩放后旋转（大小+行列同时变化，多行/列添加）
 };
 
 /// note 图片出现方式（独立于矩阵过渡，控制单个note贴图的入场动画）
@@ -27,8 +30,8 @@ struct Formation {
     int64_t time = 0;                  ///< 此阵型生效的时间（毫秒）
     int32_t rows = 0;                  ///< 网格行数
     int32_t cols = 0;                  ///< 网格列数
-    TransitionType transitionType = TransitionType::Fade;       ///< 过渡类型
-    int64_t transitionDurationMs = 300; ///< 过渡持续时间（毫秒），0=瞬间切换
+    MatrixTransformType transformType = MatrixTransformType::Scale;  ///< 矩阵变换方式
+    int64_t transformDurationMs = 500; ///< 矩阵变换动画持续时间（毫秒），固定500ms
     float blockSize = 0.9f;            ///< note图片相对格子的缩放比例（1.0=占满格子，0.9=90%留间距）
     NoteTransformType noteTransformType = NoteTransformType::Scale;  ///< note图片出现方式
 };

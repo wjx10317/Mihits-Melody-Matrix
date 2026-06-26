@@ -266,38 +266,55 @@ void PlayingState::initGameplay() {
         }
     }
 
-    // ── 矩阵变换前后250ms保护区间：变换点 ±250ms 内不允许有note，有则丢弃 ──
-    // 矩阵变换（行数/列数变化）会导致网格重建，此时段内的note会判定/渲染错位
-    // 滚动±100ms丢弃待失效列note由上面的scroll discard simulation处理
+    // ── 矩阵变换 gap-based 丢弃：确保变换前后note间距 > 变换动画时长 ──
+    // 规则：变换前最后一个note的lateGood 与 变换后第一个note的earlyGood 之间的gap
+    //       必须大于变换动画时长(500ms)，否则丢弃变换前的note
     if (m_beatmap.formations.size() > 1) {
-        std::vector<int64_t> transitionTimes;
-        transitionTimes.reserve(m_beatmap.formations.size() - 1);
-        for (size_t i = 1; i < m_beatmap.formations.size(); ++i) {
-            transitionTimes.push_back(m_beatmap.formations[i].time);
-        }
+        float od = m_beatmap.difficulty.od;
+        int32_t goodW = static_cast<int32_t>(65.0f - 2.6f * od);
 
-        std::vector<beatmap::Note> protectedNotes;
-        protectedNotes.reserve(m_beatmap.notes.size());
-        size_t guardDiscarded = 0;
+        std::vector<beatmap::Note> filteredNotes;
+        filteredNotes.reserve(m_beatmap.notes.size());
+
+        // 为每个变换点检查gap
         for (const auto& note : m_beatmap.notes) {
-            bool inGuardZone = false;
-            for (int64_t t : transitionTimes) {
-                if (note.time >= t - 250 && note.time <= t + 250) {
-                    inGuardZone = true;
-                    break;
+            bool discard = false;
+            for (size_t i = 1; i < m_beatmap.formations.size(); ++i) {
+                int64_t T = m_beatmap.formations[i].time;
+                int64_t animDur = m_beatmap.formations[i].transformDurationMs;
+
+                // 如果note在变换点之前，检查它与变换后第一个note的gap
+                if (note.time < T) {
+                    // 找变换后第一个note
+                    int64_t firstAfterTime = INT64_MAX;
+                    for (const auto& n : m_beatmap.notes) {
+                        if (n.time >= T && n.time < firstAfterTime) {
+                            firstAfterTime = n.time;
+                        }
+                    }
+                    if (firstAfterTime != INT64_MAX) {
+                        int64_t lateGood = note.time + goodW;
+                        int64_t earlyGood = firstAfterTime - goodW;
+                        if (earlyGood - lateGood < animDur) {
+                            discard = true;
+                            MM_LOG_INFO("Playing", "Discarding note at t=" + std::to_string(note.time) +
+                                        " (gap to formation transition at T=" + std::to_string(T) +
+                                        " < animDur=" + std::to_string(animDur) + "ms)");
+                            break;
+                        }
+                    }
                 }
             }
-            if (inGuardZone) {
-                ++guardDiscarded;
-            } else {
-                protectedNotes.push_back(note);
+            if (!discard) {
+                filteredNotes.push_back(note);
             }
         }
 
-        if (guardDiscarded > 0) {
-            MM_LOG_INFO("Playing", "Discarded " + std::to_string(guardDiscarded) +
-                        " notes in formation transition guard zones (±250ms)");
-            m_beatmap.notes = std::move(protectedNotes);
+        size_t gapDiscarded = m_beatmap.notes.size() - filteredNotes.size();
+        if (gapDiscarded > 0) {
+            MM_LOG_INFO("Playing", "Discarded " + std::to_string(gapDiscarded) +
+                        " notes in formation transition gap violations");
+            m_beatmap.notes = std::move(filteredNotes);
         }
     }
 
@@ -532,8 +549,8 @@ GameState PlayingState::update(float dt) {
     if (inScroll && m_scrollWindow.finished(nowMs)) {
         completeScroll();
     }
-    // 检查是否需要触发滚动
-    if (!inScroll) {
+    // 检查是否需要触发滚动（滚动与变换不能重叠）
+    if (!inScroll && !inTransition) {
         checkAndTriggerScroll(nowMs);
     }
     // 同步滚动状态到渲染器。scrollOffset 由 renderer 内部根据 scrollProgress 和 m_gridCols 统一计算，
@@ -590,11 +607,13 @@ GameState PlayingState::update(float dt) {
         const auto& prev = m_formationCtrl.formationAt(
             m_formationCtrl.currentIndex() > 0 ? m_formationCtrl.currentIndex() - 1 : 0);
         const auto& next = m_formationCtrl.current();
-        int64_t durationMs = next.transitionDurationMs;
+        int64_t durationMs = next.transformDurationMs;
         if (durationMs > 0) {
             // 启动过渡动画
             m_formationCtrl.setTransitionDuration(durationMs);
-            kernel.renderer().beginFormationTransition(prev.rows, prev.cols, next.rows, next.cols);
+            kernel.renderer().beginFormationTransition(prev.rows, prev.cols, prev.blockSize,
+                                                       next.rows, next.cols, next.blockSize,
+                                                       next.transformType);
         } else {
             // 瞬间切换
             kernel.renderer().setFormation(next.rows, next.cols, next.blockSize, next.noteTransformType);

@@ -180,12 +180,16 @@ void Renderer::setFormation(int32_t rows, int32_t cols,
     m_transition.active = false;
 }
 
-void Renderer::beginFormationTransition(int32_t prevRows, int32_t prevCols,
-                                          int32_t nextRows, int32_t nextCols) {
+void Renderer::beginFormationTransition(int32_t prevRows, int32_t prevCols, float prevBlockSize,
+                                          int32_t nextRows, int32_t nextCols, float nextBlockSize,
+                                          beatmap::MatrixTransformType transformType) {
     m_transition.prevRows = prevRows;
     m_transition.prevCols = prevCols;
+    m_transition.prevBlockSize = prevBlockSize;
     m_transition.nextRows = nextRows;
     m_transition.nextCols = nextCols;
+    m_transition.nextBlockSize = nextBlockSize;
+    m_transition.transformType = transformType;
     m_transition.progress = 0.0f;
     m_transition.active = true;
 }
@@ -338,14 +342,172 @@ void Renderer::renderNotes(int64_t timeMs) {
 
     if (m_transition.active) {
         float p = m_transition.progress;
-        int32_t rows = p < 0.5f ? m_transition.prevRows : m_transition.nextRows;
-        int32_t cols = p < 0.5f ? m_transition.prevCols : m_transition.nextCols;
-        m_noteRenderer->render(m_notes, timeMs, rows, cols, m_ar,
-                               m_activeStartCol, m_activeEndCol,
-                               m_colHeads, m_colHeadCount,
-                               m_scrollOffset, m_scrolling, m_scrollProgress,
-                               m_targetStartCol, m_targetEndCol);
+        auto tt = m_transition.transformType;
+
+        // 计算缓动（ease-in-out）
+        float easedP = p < 0.5f ? 2.0f * p * p : 1.0f - (-2.0f * p + 2.0f) * (-2.0f * p + 2.0f) / 2.0f;
+
+        const float PI = 3.14159265358979f;
+        const float W = 1920.0f, H = 1080.0f;
+        (void)W; (void)H;
+
+        switch (tt) {
+        case beatmap::MatrixTransformType::Scale: {
+            // 缩放：行列不变，仅格子大小平滑变换
+            float interpBlockSize = m_transition.prevBlockSize +
+                (m_transition.nextBlockSize - m_transition.prevBlockSize) * easedP;
+            m_noteRenderer->setBlockSize(interpBlockSize);
+            m_noteRenderer->setAnimParams(0.0f, 1.0f, -1, -1, 1.0f, false, false);
+            m_noteRenderer->render(m_notes, timeMs, m_transition.nextRows, m_transition.nextCols, m_ar,
+                                   m_activeStartCol, m_activeEndCol,
+                                   m_colHeads, m_colHeadCount,
+                                   m_scrollOffset, m_scrolling, m_scrollProgress,
+                                   m_targetStartCol, m_targetEndCol);
+            break;
+        }
+        case beatmap::MatrixTransformType::Slide: {
+            // 滑入：新行从左/新列从顶部
+            bool slideRows = (m_transition.nextRows > m_transition.prevRows);
+            bool slideCols = (m_transition.nextCols > m_transition.prevCols);
+            m_noteRenderer->setBlockSize(m_transition.nextBlockSize);
+            m_noteRenderer->setAnimParams(0.0f, 1.0f,
+                                          m_transition.prevRows, m_transition.prevCols,
+                                          easedP, slideRows, slideCols);
+            m_noteRenderer->render(m_notes, timeMs, m_transition.nextRows, m_transition.nextCols, m_ar,
+                                   m_activeStartCol, m_activeEndCol,
+                                   m_colHeads, m_colHeadCount,
+                                   m_scrollOffset, m_scrolling, m_scrollProgress,
+                                   m_targetStartCol, m_targetEndCol);
+            break;
+        }
+        case beatmap::MatrixTransformType::Rotate: {
+            // 旋转一周：前半段旧矩阵旋转0→180°淡出，后半段新矩阵旋转180°→360°淡入
+            float angle = p * 2.0f * PI;
+            if (p < 0.5f) {
+                m_noteRenderer->setBlockSize(m_transition.prevBlockSize);
+                m_noteRenderer->setAnimParams(angle, 1.0f - easedP * 2.0f, -1, -1, 1.0f, false, false);
+                m_noteRenderer->render(m_notes, timeMs, m_transition.prevRows, m_transition.prevCols, m_ar,
+                                       m_activeStartCol, m_activeEndCol,
+                                       m_colHeads, m_colHeadCount,
+                                       m_scrollOffset, m_scrolling, m_scrollProgress,
+                                       m_targetStartCol, m_targetEndCol);
+            } else {
+                m_noteRenderer->setBlockSize(m_transition.nextBlockSize);
+                m_noteRenderer->setAnimParams(angle, (easedP - 0.5f) * 2.0f, -1, -1, 1.0f, false, false);
+                m_noteRenderer->render(m_notes, timeMs, m_transition.nextRows, m_transition.nextCols, m_ar,
+                                       m_activeStartCol, m_activeEndCol,
+                                       m_colHeads, m_colHeadCount,
+                                       m_scrollOffset, m_scrolling, m_scrollProgress,
+                                       m_targetStartCol, m_targetEndCol);
+            }
+            break;
+        }
+        case beatmap::MatrixTransformType::SlideOut: {
+            // 滑出+旋转：旧矩阵滑出+旋转淡出，新矩阵淡入
+            float angle = p * PI;
+            if (p < 0.5f) {
+                m_noteRenderer->setBlockSize(m_transition.prevBlockSize);
+                m_noteRenderer->setAnimParams(angle, 1.0f - easedP * 2.0f, -1, -1, 1.0f, false, false);
+                m_noteRenderer->render(m_notes, timeMs, m_transition.prevRows, m_transition.prevCols, m_ar,
+                                       m_activeStartCol, m_activeEndCol,
+                                       m_colHeads, m_colHeadCount,
+                                       m_scrollOffset, m_scrolling, m_scrollProgress,
+                                       m_targetStartCol, m_targetEndCol);
+            } else {
+                m_noteRenderer->setBlockSize(m_transition.nextBlockSize);
+                m_noteRenderer->setAnimParams(0.0f, (easedP - 0.5f) * 2.0f, -1, -1, 1.0f, false, false);
+                m_noteRenderer->render(m_notes, timeMs, m_transition.nextRows, m_transition.nextCols, m_ar,
+                                       m_activeStartCol, m_activeEndCol,
+                                       m_colHeads, m_colHeadCount,
+                                       m_scrollOffset, m_scrolling, m_scrollProgress,
+                                       m_targetStartCol, m_targetEndCol);
+            }
+            break;
+        }
+        case beatmap::MatrixTransformType::ScaleSlide: {
+            // 先缩放(前半)后滑入(后半)
+            if (p < 0.5f) {
+                float localP = p * 2.0f;
+                float localEased = localP < 0.5f ? 2.0f * localP * localP : 1.0f - (-2.0f * localP + 2.0f) * (-2.0f * localP + 2.0f) / 2.0f;
+                float interpBlockSize = m_transition.prevBlockSize +
+                    (m_transition.nextBlockSize - m_transition.prevBlockSize) * localEased;
+                m_noteRenderer->setBlockSize(interpBlockSize);
+                m_noteRenderer->setAnimParams(0.0f, 1.0f, -1, -1, 1.0f, false, false);
+                m_noteRenderer->render(m_notes, timeMs, m_transition.prevRows, m_transition.prevCols, m_ar,
+                                       m_activeStartCol, m_activeEndCol,
+                                       m_colHeads, m_colHeadCount,
+                                       m_scrollOffset, m_scrolling, m_scrollProgress,
+                                       m_targetStartCol, m_targetEndCol);
+            } else {
+                float localP = (p - 0.5f) * 2.0f;
+                float localEased = localP < 0.5f ? 2.0f * localP * localP : 1.0f - (-2.0f * localP + 2.0f) * (-2.0f * localP + 2.0f) / 2.0f;
+                bool slideRows = (m_transition.nextRows > m_transition.prevRows);
+                bool slideCols = (m_transition.nextCols > m_transition.prevCols);
+                m_noteRenderer->setBlockSize(m_transition.nextBlockSize);
+                m_noteRenderer->setAnimParams(0.0f, 1.0f,
+                                              m_transition.prevRows, m_transition.prevCols,
+                                              localEased, slideRows, slideCols);
+                m_noteRenderer->render(m_notes, timeMs, m_transition.nextRows, m_transition.nextCols, m_ar,
+                                       m_activeStartCol, m_activeEndCol,
+                                       m_colHeads, m_colHeadCount,
+                                       m_scrollOffset, m_scrolling, m_scrollProgress,
+                                       m_targetStartCol, m_targetEndCol);
+            }
+            break;
+        }
+        case beatmap::MatrixTransformType::ScaleRotate: {
+            // 先缩放(前半)后旋转(后半)
+            if (p < 0.5f) {
+                float localP = p * 2.0f;
+                float localEased = localP < 0.5f ? 2.0f * localP * localP : 1.0f - (-2.0f * localP + 2.0f) * (-2.0f * localP + 2.0f) / 2.0f;
+                float interpBlockSize = m_transition.prevBlockSize +
+                    (m_transition.nextBlockSize - m_transition.prevBlockSize) * localEased;
+                m_noteRenderer->setBlockSize(interpBlockSize);
+                m_noteRenderer->setAnimParams(0.0f, 1.0f, -1, -1, 1.0f, false, false);
+                m_noteRenderer->render(m_notes, timeMs, m_transition.prevRows, m_transition.prevCols, m_ar,
+                                       m_activeStartCol, m_activeEndCol,
+                                       m_colHeads, m_colHeadCount,
+                                       m_scrollOffset, m_scrolling, m_scrollProgress,
+                                       m_targetStartCol, m_targetEndCol);
+            } else {
+                float localP = (p - 0.5f) * 2.0f;
+                float angle = localP * 2.0f * PI;
+                if (localP < 0.5f) {
+                    m_noteRenderer->setBlockSize(m_transition.nextBlockSize);
+                    m_noteRenderer->setAnimParams(angle, 1.0f - localP * 2.0f, -1, -1, 1.0f, false, false);
+                    m_noteRenderer->render(m_notes, timeMs, m_transition.prevRows, m_transition.prevCols, m_ar,
+                                           m_activeStartCol, m_activeEndCol,
+                                           m_colHeads, m_colHeadCount,
+                                           m_scrollOffset, m_scrolling, m_scrollProgress,
+                                           m_targetStartCol, m_targetEndCol);
+                } else {
+                    m_noteRenderer->setBlockSize(m_transition.nextBlockSize);
+                    m_noteRenderer->setAnimParams(angle, (localP - 0.5f) * 2.0f, -1, -1, 1.0f, false, false);
+                    m_noteRenderer->render(m_notes, timeMs, m_transition.nextRows, m_transition.nextCols, m_ar,
+                                           m_activeStartCol, m_activeEndCol,
+                                           m_colHeads, m_colHeadCount,
+                                           m_scrollOffset, m_scrolling, m_scrollProgress,
+                                           m_targetStartCol, m_targetEndCol);
+                }
+            }
+            break;
+        }
+        default: {
+            // 默认：切换式（与原逻辑一致）
+            int32_t rows = p < 0.5f ? m_transition.prevRows : m_transition.nextRows;
+            int32_t cols = p < 0.5f ? m_transition.prevCols : m_transition.nextCols;
+            m_noteRenderer->setAnimParams(0.0f, 1.0f, -1, -1, 1.0f, false, false);
+            m_noteRenderer->render(m_notes, timeMs, rows, cols, m_ar,
+                                   m_activeStartCol, m_activeEndCol,
+                                   m_colHeads, m_colHeadCount,
+                                   m_scrollOffset, m_scrolling, m_scrollProgress,
+                                   m_targetStartCol, m_targetEndCol);
+            break;
+        }
+        }
     } else {
+        m_noteRenderer->setBlockSize(m_blockSize);
+        m_noteRenderer->setAnimParams(0.0f, 1.0f, -1, -1, 1.0f, false, false);
         m_noteRenderer->render(m_notes, timeMs, m_gridRows, m_gridCols, m_ar,
                                m_activeStartCol, m_activeEndCol,
                                m_colHeads, m_colHeadCount,
