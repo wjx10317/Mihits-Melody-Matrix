@@ -251,7 +251,7 @@ void NoteRenderer::buildNoteVertices(const std::vector<beatmap::Note>& notes, in
                 float bx = W * 0.5f + (c - activeStartCol - blockCenterOffset) * gw + scrollOffset;
                 // 裁剪超出屏幕的列（4列居中时旁边列可能部分超出屏幕边界）
                 if (bx + gw < 0.0f || bx > W) continue;
-                float by = margin + r * gh;
+                float by = H - margin - (r + 1) * gh;
                 quads.insert(quads.end(), { bx, by, gw, gh });
                 // 活跃列高亮，非活跃列半透明预览
                 bool isActive = (c >= effStart && c <= effEnd);
@@ -303,7 +303,7 @@ void NoteRenderer::buildNoteVertices(const std::vector<beatmap::Note>& notes, in
         float cellX = W * 0.5f + (note.col - activeStartCol - noteCenterOffset) * gw + scrollOffset;
         // 裁剪超出屏幕的 note（旁边列可能部分超出屏幕边界）
         if (cellX < -gw || cellX > W + gw) continue;
-        float cellY = margin + (note.row + 0.5f) * gh;
+        float cellY = H - margin - (note.row + 0.5f) * gh;
 
         // 活跃列高亮，非活跃列灰暗
         // 滚动期间使用目标窗口判断活跃列

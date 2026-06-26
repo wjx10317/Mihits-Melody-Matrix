@@ -600,15 +600,19 @@ GameState PlayingState::update(float dt) {
             kernel.renderer().setFormation(next.rows, next.cols, next.blockSize, next.noteTransformType);
         }
 
-        // 阵型变化时重置滚动窗口
+        // 阵型变化时保留滚动状态（不重置为0，clamp到新列范围）
         int32_t newCols = next.cols;
-        if (newCols > KEY_COUNT) {
-            m_scrollWindow.startCol = 0;
-            m_scrollWindow.endCol = KEY_COUNT - 1;
-        } else {
+        if (newCols <= KEY_COUNT) {
             m_scrollWindow.startCol = 0;
             m_scrollWindow.endCol = newCols - 1;
+        } else {
+            // 保留当前 startCol，clamp 到新范围 [0, newCols - KEY_COUNT]
+            int32_t maxStart = newCols - KEY_COUNT;
+            m_scrollWindow.startCol = std::max(0, std::min(m_scrollWindow.startCol, maxStart));
+            m_scrollWindow.endCol = m_scrollWindow.startCol + KEY_COUNT - 1;
         }
+        m_scrollWindow.targetStartCol = m_scrollWindow.startCol;
+        m_scrollWindow.targetEndCol = m_scrollWindow.endCol;
         m_scrollWindow.scrolling = false;
     }
 
