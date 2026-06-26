@@ -1012,8 +1012,54 @@ void PlayingState::renderImGuiOverlay() {
         return;
     }
 
+    // ── Top-center: Debug Info (define macro) ──
+    {
+        auto& kernel = Kernel::instance();
+        int64_t nowMs = kernel.clock().interpolatedNowMs();
+
+        int64_t nextFormationTime = m_formationCtrl.nextFormationTime();
+
+        int64_t nextScrollTime = INT64_MAX;
+        if (m_formationCtrl.currentCols() > KEY_COUNT) {
+            float approachMs = 1800.0f - m_beatmap.difficulty.ar * 120.0f;
+            if (approachMs < 300.0f) approachMs = 300.0f;
+
+            int32_t windowStart = m_scrollWindow.startCol;
+            int32_t windowEnd = m_scrollWindow.endCol;
+
+            for (int32_t col = 0; col < m_judgeQueue.columnCount(); ++col) {
+                const auto& colQ = m_judgeQueue.columnQueue(col);
+                if (colQ.finished()) continue;
+                const auto& note = colQ.front();
+                float timeDiff = static_cast<float>(note.time - nowMs);
+                if (timeDiff <= approachMs && timeDiff > 0) {
+                    if (col < windowStart || col > windowEnd) {
+                        int64_t scrollTriggerTime = note.time - static_cast<int64_t>(approachMs);
+                        if (scrollTriggerTime > nowMs && scrollTriggerTime < nextScrollTime) {
+                            nextScrollTime = scrollTriggerTime;
+                        }
+                    }
+                }
+            }
+        }
+
+        ImGui::SetNextWindowPos(ImVec2(ImGui::GetIO().DisplaySize.x / 2 - 300, 20));
+        ImGui::SetNextWindowSize(ImVec2(600, 60));
+        ImGui::Begin("##DebugInfo", nullptr, flags);
+
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.8f, 0.2f, 1.0f));
+        ImGui::SetWindowFontScale(1.2f);
+        ImGui::Text("当前时间点:%lldms - 下一次矩阵变换:%lldms - 下一次滚动:%lldms",
+                    nowMs,
+                    nextFormationTime == INT64_MAX ? -1 : nextFormationTime,
+                    nextScrollTime == INT64_MAX ? -1 : nextScrollTime);
+        ImGui::PopStyleColor();
+        ImGui::SetWindowFontScale(1.0f);
+        ImGui::End();
+    }
+
     // ── Top-left: Score ──
-    ImGui::SetNextWindowPos(ImVec2(20, 20));
+    ImGui::SetNextWindowPos(ImVec2(20, 80));
     ImGui::SetNextWindowSize(ImVec2(300, 80));
 
     ImGui::Begin("##ScoreHUD", nullptr, flags);

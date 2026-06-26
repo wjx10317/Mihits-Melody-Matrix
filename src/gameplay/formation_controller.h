@@ -44,6 +44,14 @@ public:
     /// 获取指定索引的阵型
     const beatmap::Formation& formationAt(size_t idx) const { return m_formations[idx]; }
 
+    /// 获取下一次阵型变换时间（无后续变换返回 INT64_MAX）
+    int64_t nextFormationTime() const {
+        if (m_currentIndex + 1 < m_formations.size()) {
+            return m_formations[m_currentIndex + 1].time;
+        }
+        return INT64_MAX;
+    }
+
     /// 计算转换进度（0.0 = 刚刚开始，1.0 = 完成）
     float transitionProgress(int64_t nowMs) const;
 
