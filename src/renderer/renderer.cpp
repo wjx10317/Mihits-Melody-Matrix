@@ -403,11 +403,10 @@ void Renderer::renderNotes(int64_t timeMs) {
             break;
         }
         case beatmap::MatrixTransformType::SlideOut: {
-            // 滑出+旋转：旧矩阵滑出+旋转淡出，新矩阵淡入
-            float angle = p * PI;
+            // 滑出：旧矩阵淡出，新矩阵淡入（行列减少时使用）
             if (p < 0.5f) {
                 m_noteRenderer->setBlockSize(m_transition.prevBlockSize);
-                m_noteRenderer->setAnimParams(angle, 1.0f - easedP * 2.0f, -1, -1, 1.0f, false, false);
+                m_noteRenderer->setAnimParams(0.0f, 1.0f - easedP * 2.0f, -1, -1, 1.0f, false, false);
                 m_noteRenderer->render(m_notes, timeMs, m_transition.prevRows, m_transition.prevCols, m_ar,
                                        m_activeStartCol, m_activeEndCol,
                                        m_colHeads, m_colHeadCount,
