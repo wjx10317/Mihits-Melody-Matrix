@@ -278,9 +278,11 @@ void NoteRenderer::buildNoteVertices(const std::vector<beatmap::Note>& notes, in
                     encountered++;
                     continue;
                 }
-                // 按住期间：不 continue，继续渲染该 Hold
+                // 按住期间：不 continue，不 encountered++（避免后续 note 误判为已遇到）
+            } else {
+                // 未到 head 的 note（encountered >= colHeads）正常计数
+                encountered++;
             }
-            encountered++;
         }
 
         float timeDiff = static_cast<float>(note.time - timeMs);

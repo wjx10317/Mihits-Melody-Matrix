@@ -50,12 +50,29 @@ void JudgeQueue::setStrategy(std::unique_ptr<IJudgeStrategy> strategy) {
 
 void JudgeQueue::update(int64_t nowMs, float od) {
     const int64_t miss = m_strategy->missThreshold(od);
+    const int32_t gw = m_strategy->goodWindow(od);
+
+    // ── Hold 超时兜底：玩家按下后未释放，超过 holdEnd + goodWindow 判 Miss ──
+    // head 已在按下时 commitHit+advance，这里只触发 onMiss 回调，不 advance
+    for (int32_t c = 0; c < m_columnCount; ++c) {
+        auto& hold = m_activeHolds[c];
+        if (hold.holding && nowMs > hold.holdEndTimeMs + gw) {
+            hold.holding = false;
+            if (onMiss) {
+                NoteMissEvent evt;
+                evt.time = hold.holdEndTimeMs;
+                evt.row  = hold.row;
+                evt.col  = hold.col;
+                onMiss(evt);
+            }
+        }
+    }
 
     for (int32_t c = 0; c < m_columnCount; ++c) {
         auto& col = m_columns[c];
         // 自动 Miss：跳过已过期的音符
         while (!col.finished() && nowMs >= col.front().time + miss) {
-            // 如果是 Hold 且正在按住中，不判定 Miss
+            // 如果是 Hold 且正在按住中，不判定 Miss（等待释放或超时兜底）
             if (col.front().type == beatmap::NoteType::Hold && m_activeHolds[c].holding) {
                 break;
             }

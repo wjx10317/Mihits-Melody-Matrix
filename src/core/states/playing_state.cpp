@@ -502,7 +502,7 @@ GameState PlayingState::update(float dt) {
                 if (activeHold && nowMs >= activeHold->holdEnd) {
                     // Autoplay：以 holdEnd 作为 releaseTime，保证 dt=0 落在 perfect 窗口内
                     auto holdResult = m_judgeQueue.onKeyRelease(activeHold->holdEnd, c, od);
-                    handleHoldReleaseResult(holdResult);
+                    handleHoldReleaseResult(holdResult, c);
                     continue;
                 }
                 if (activeHold) continue;  // 正在按住，等待释放
@@ -911,7 +911,7 @@ void PlayingState::processInput() {
             MM_LOG_INFO("Playing", "KeyUp: col=" + std::to_string(column) +
                         " nowMs=" + std::to_string(nowMs) +
                         " result=" + std::to_string(static_cast<int>(holdResult)));
-            handleHoldReleaseResult(holdResult);
+            handleHoldReleaseResult(holdResult, column);
         }
     }
 }
@@ -960,13 +960,27 @@ void PlayingState::handlePressResult(gameplay::JudgmentResult result, int32_t co
     m_popups.push_back({column, result, JudgePopup::DURATION});
 }
 
-void PlayingState::handleHoldReleaseResult(gameplay::HoldReleaseResult result) {
+void PlayingState::handleHoldReleaseResult(gameplay::HoldReleaseResult result, int32_t column) {
     switch (result) {
     case gameplay::HoldReleaseResult::Perfect:
+        // 尾部释放额外加一次 combo（头部+尾部各一次）
+        m_perfectCount++;
+        m_hitNotes++;
+        m_comboManager.onHit();
         m_scoreManager.addScore(gameplay::JudgmentResult::Perfect, m_comboManager.current());
+        m_hpManager.onJudgment(gameplay::JudgmentResult::Perfect);
+        m_audio.playSfx(audio::SfxType::HitNormal);
+        m_popups.push_back({column, gameplay::JudgmentResult::Perfect, JudgePopup::DURATION});
         break;
     case gameplay::HoldReleaseResult::Good:
+        // 尾部释放额外加一次 combo（头部+尾部各一次）
+        m_goodCount++;
+        m_hitNotes++;
+        m_comboManager.onHit();
         m_scoreManager.addScore(gameplay::JudgmentResult::Good, m_comboManager.current());
+        m_hpManager.onJudgment(gameplay::JudgmentResult::Good);
+        m_audio.playSfx(audio::SfxType::HitNormal);
+        m_popups.push_back({column, gameplay::JudgmentResult::Good, JudgePopup::DURATION});
         break;
     case gameplay::HoldReleaseResult::Miss:
         m_missCount++;
@@ -974,6 +988,7 @@ void PlayingState::handleHoldReleaseResult(gameplay::HoldReleaseResult result) {
         m_comboManager.onMiss();
         m_hpManager.onJudgment(gameplay::JudgmentResult::Miss);
         m_scoreManager.addScore(gameplay::JudgmentResult::Miss, 0);
+        m_popups.push_back({column, gameplay::JudgmentResult::Miss, JudgePopup::DURATION});
         break;
     case gameplay::HoldReleaseResult::Ignored:
         break;

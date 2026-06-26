@@ -57,7 +57,7 @@ private:
 
     void handlePressResult(gameplay::JudgmentResult result, int32_t column,
                            int64_t pressTime, int64_t noteTime);
-    void handleHoldReleaseResult(gameplay::HoldReleaseResult result);
+    void handleHoldReleaseResult(gameplay::HoldReleaseResult result, int32_t column);
 
     // ── 游戏子系统 ──
     audio::AudioEngine m_audio;
