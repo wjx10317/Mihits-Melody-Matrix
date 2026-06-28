@@ -369,7 +369,13 @@ std::vector<Formation> OsuParser::generateBreathingFormations(
         deduped = std::move(merged);
     }
 
-    // ── 第四步：为每个阵型变换计算变换方式 ──
+    // ── 第四步：为每个阵型变换计算变换方式（v2 宏编号）──
+    // 依据 MMA_FORMAT_V2.md 第9节判定规则：
+    //   - 行列不变仅 blockSize 变 → SCALE_ONLY
+    //   - 仅行变化 → SLIDE_ROW_*（增/减，单/多行用 _TOP/_BOTTOM/_BOTH）
+    //   - 仅列变化 → SLIDE_COL_*（增/减，单/多列用 _LEFT/_RIGHT/_BOTH）
+    //   - 行列同时变化 → ROTATE_ROWS_COLS_*（按增减方向选择）
+    //   - 特殊情况 → ROTATE_COMPLEX
     for (size_t i = 1; i < deduped.size(); ++i) {
         const auto& prev = deduped[i - 1];
         auto& curr = deduped[i];
@@ -378,33 +384,40 @@ std::vector<Formation> OsuParser::generateBreathingFormations(
         int32_t dCols = curr.cols - prev.cols;
         bool sizeChanged = (curr.blockSize != prev.blockSize);
 
-        bool hasAdd = (dRows > 0 || dCols > 0);
-        bool hasRemove = (dRows < 0 || dCols < 0);
-        int32_t totalAdd = (dRows > 0 ? dRows : 0) + (dCols > 0 ? dCols : 0);
-
-        if (sizeChanged && (hasAdd || hasRemove)) {
-            // 大小+行列同时变化
-            if (totalAdd > 1 || hasRemove) {
-                curr.transformType = MatrixTransformType::ScaleRotate;
-            } else {
-                curr.transformType = MatrixTransformType::ScaleSlide;
-            }
-        } else if (hasRemove) {
-            // 行列减少
-            curr.transformType = MatrixTransformType::SlideOut;
-        } else if (hasAdd) {
-            // 行列增加
-            if (totalAdd > 1) {
-                curr.transformType = MatrixTransformType::Rotate;
-            } else {
-                curr.transformType = MatrixTransformType::Slide;
-            }
-        } else if (sizeChanged) {
-            // 仅大小变化
-            curr.transformType = MatrixTransformType::Scale;
+        if (dRows == 0 && dCols == 0) {
+            // 行列不变：仅缩放
+            curr.transformType = sizeChanged ? MatrixTransform::SCALE_ONLY : MatrixTransform::NONE;
+        } else if (dRows > 0 && dCols == 0) {
+            // 仅行增加
+            curr.transformType = (dRows > 1) ? MatrixTransform::SLIDE_ROW_ADD_BOTH
+                                             : MatrixTransform::SLIDE_ROW_ADD_BOTTOM;
+        } else if (dRows < 0 && dCols == 0) {
+            // 仅行减少
+            curr.transformType = (dRows < -1) ? MatrixTransform::SLIDE_ROW_REMOVE_BOTH
+                                              : MatrixTransform::SLIDE_ROW_REMOVE_BOTTOM;
+        } else if (dRows == 0 && dCols > 0) {
+            // 仅列增加
+            curr.transformType = (dCols > 1) ? MatrixTransform::SLIDE_COL_ADD_BOTH
+                                             : MatrixTransform::SLIDE_COL_ADD_RIGHT;
+        } else if (dRows == 0 && dCols < 0) {
+            // 仅列减少
+            curr.transformType = (dCols < -1) ? MatrixTransform::SLIDE_COL_REMOVE_BOTH
+                                              : MatrixTransform::SLIDE_COL_REMOVE_RIGHT;
+        } else if (dRows > 0 && dCols > 0) {
+            // 行增加且列增加
+            curr.transformType = MatrixTransform::ROTATE_ROWS_COLS_ADD;
+        } else if (dRows > 0 && dCols < 0) {
+            // 行增加且列减少
+            curr.transformType = MatrixTransform::ROTATE_ROWS_ADD_COLS_REMOVE;
+        } else if (dRows < 0 && dCols > 0) {
+            // 行减少且列增加
+            curr.transformType = MatrixTransform::ROTATE_ROWS_REMOVE_COLS_ADD;
+        } else if (dRows < 0 && dCols < 0) {
+            // 行减少且列减少
+            curr.transformType = MatrixTransform::ROTATE_ROWS_COLS_REMOVE;
         } else {
-            // 无变化
-            curr.transformType = MatrixTransformType::Scale;
+            // 特殊情况（不应到达）
+            curr.transformType = MatrixTransform::ROTATE_COMPLEX;
         }
         curr.transformDurationMs = 500;  // 固定500ms
     }

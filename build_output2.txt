@@ -1,0 +1,115 @@
+**********************************************************************
+** Visual Studio 2022 Developer Command Prompt v17.13.2
+** Copyright (c) 2022 Microsoft Corporation
+**********************************************************************
+[vcvarsall.bat] Environment initialized for: 'x64'
+-- Selecting Windows SDK version 10.0.22621.0 to target Windows 10.0.26200.
+-- The CXX compiler identification is MSVC 19.43.34808.0
+-- The C compiler identification is MSVC 19.43.34808.0
+-- Detecting CXX compiler ABI info
+-- Detecting CXX compiler ABI info - done
+-- Check for working CXX compiler: C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.43.34808/bin/Hostx64/x64/cl.exe - skipped
+-- Detecting CXX compile features
+-- Detecting CXX compile features - done
+-- Detecting C compiler ABI info
+-- Detecting C compiler ABI info - done
+-- Check for working C compiler: C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.43.34808/bin/Hostx64/x64/cl.exe - skipped
+-- Detecting C compile features
+-- Detecting C compile features - done
+-- GLM: Version 1.0.1
+-- GLM: Build with C++ features auto detection
+-- GLAD not found in third_party/. Generating minimal GL loader...
+-- Configuring done (21.3s)
+-- Generating done (0.6s)
+-- Build files have been written to: D:/colin/Melody-Matrix/build-vs
+适用于 .NET Framework MSBuild 版本 17.13.15+18b3035f6
+
+  1>Checking Build System
+  Building Custom Rule D:/colin/Melody-Matrix/CMakeLists.txt
+  glad.c
+  glad_gl33_core.vcxproj -> D:\colin\Melody-Matrix\build-vs\lib\Debug\glad_gl33_core.lib
+  Building Custom Rule D:/colin/Melody-Matrix/third_party/glm/glm/CMakeLists.txt
+  glm.cpp
+  glm.vcxproj -> D:\colin\Melody-Matrix\build-vs\lib\Debug\glm.lib
+  Building Custom Rule D:/colin/Melody-Matrix/CMakeLists.txt
+  imgui.cpp
+  imgui_demo.cpp
+  imgui_draw.cpp
+  imgui_tables.cpp
+  imgui_widgets.cpp
+  imgui_impl_sdl2.cpp
+  imgui_impl_opengl3.cpp
+  正在生成代码...
+  imgui.vcxproj -> D:\colin\Melody-Matrix\build-vs\lib\Debug\imgui.lib
+  Building Custom Rule D:/colin/Melody-Matrix/CMakeLists.txt
+  audio_engine.cpp
+D:\colin\Melody-Matrix\src\audio\audio_engine.cpp(17,14): warning C4505: "melody_matrix::audio::mm_max": 已删除具有内部链接的未引用函数 [D:\colin\Melody-Matrix\build-vs\melody_matrix.vcxproj]
+D:\colin\Melody-Matrix\src\audio\audio_engine.cpp(21,16): warning C4505: "melody_matrix::audio::mm_clamp_i64": 已删除具有内部链接的未引用函数 [D:\colin\Melody-Matrix\build-vs\melody_matrix.vcxproj]
+  beatmap_builder.cpp
+  mma_parser.cpp
+  mma_serializer.cpp
+D:\colin\Melody-Matrix\src\beatmap\mma_serializer.cpp(18,20): warning C4505: "melody_matrix::beatmap::sanitizeFilename": 已删除具有内部链接的未引用函数 [D:\colin\Melody-Matrix\build-vs\melody_matrix.vcxproj]
+D:\colin\Melody-Matrix\src\beatmap\mma_serializer.cpp(35,20): warning C4505: "melody_matrix::beatmap::truncateFilename": 已删除具有内部链接的未引用函数 [D:\colin\Melody-Matrix\build-vs\melody_matrix.vcxproj]
+  note_factory.cpp
+  note_pool.cpp
+  osu_parser.cpp
+  asset_loader.cpp
+  clock.cpp
+  kernel.cpp
+D:\colin\Melody-Matrix\src\core\kernel.cpp(112,60): warning C4100: “height”: 未引用的形参 [D:\colin\Melody-Matrix\build-vs\melody_matrix.vcxproj]
+D:\colin\Melody-Matrix\src\core\kernel.cpp(112,49): warning C4100: “width”: 未引用的形参 [D:\colin\Melody-Matrix\build-vs\melody_matrix.vcxproj]
+  scene_transition.cpp
+  state_manager.cpp
+  boot_state.cpp
+  main_menu_state.cpp
+D:\colin\Melody-Matrix\src\core\states\main_menu_state.cpp(268,37): warning C4456: “ext”的声明隐藏了上一个本地声明 [D:\colin\Melody-Matrix\build-vs\melody_matrix.vcxproj]
+      D:\colin\Melody-Matrix\src\core\states\main_menu_state.cpp(177,17):
+      参见“ext”的声明
+  
+  paused_state.cpp
+D:\colin\Melody-Matrix\src\core\states\paused_state.cpp(21,37): warning C4100: “dt”: 未引用的形参 [D:\colin\Melody-Matrix\build-vs\melody_matrix.vcxproj]
+  playing_state.cpp
+  result_state.cpp
+D:\colin\Melody-Matrix\src\core\states\result_state.cpp(22,37): warning C4100: “dt”: 未引用的形参 [D:\colin\Melody-Matrix\build-vs\melody_matrix.vcxproj]
+  song_select_state.cpp
+  combo_manager.cpp
+  formation_controller.cpp
+  正在生成代码...
+  正在编译...
+  hp_manager.cpp
+  judge_queue.cpp
+  score_manager.cpp
+  input_manager.cpp
+  main.cpp
+D:\colin\Melody-Matrix\src\main.cpp(22,14): warning C4100: “argc”: 未引用的形参 [D:\colin\Melody-Matrix\build-vs\melody_matrix.vcxproj]
+  config.cpp
+  file_dialog.cpp
+  file_system.cpp
+  zip_extract.cpp
+D:\colin\Melody-Matrix\src\platform\zip_extract.cpp(120,20): warning C4505: "melody_matrix::platform::utf8ToWide": 已删除具有内部链接的未引用函数 [D:\colin\Melody-Matrix\build-vs\melody_matrix.vcxproj]
+  border_renderer.cpp
+D:\colin\Melody-Matrix\src\renderer\border_renderer.cpp(54,37): warning C4100: “timeMs”: 未引用的形参 [D:\colin\Melody-Matrix\build-vs\melody_matrix.vcxproj]
+D:\colin\Melody-Matrix\src\renderer\border_renderer.cpp(58,17): warning C4189: “gw”: 局部变量已初始化但不引用 [D:\colin\Melody-Matrix\build-vs\melody_matrix.vcxproj]
+D:\colin\Melody-Matrix\src\renderer\border_renderer.cpp(59,17): warning C4189: “gh”: 局部变量已初始化但不引用 [D:\colin\Melody-Matrix\build-vs\melody_matrix.vcxproj]
+  effect_renderer.cpp
+D:\colin\Melody-Matrix\src\renderer\effect_renderer.cpp(165,47): warning C4100: “combo”: 未引用的形参 [D:\colin\Melody-Matrix\build-vs\melody_matrix.vcxproj]
+  hud_renderer.cpp
+D:\colin\Melody-Matrix\src\renderer\hud_renderer.cpp(55,72): warning C4100: “accuracy”: 未引用的形参 [D:\colin\Melody-Matrix\build-vs\melody_matrix.vcxproj]
+D:\colin\Melody-Matrix\src\renderer\hud_renderer.cpp(55,49): warning C4100: “combo”: 未引用的形参 [D:\colin\Melody-Matrix\build-vs\melody_matrix.vcxproj]
+D:\colin\Melody-Matrix\src\renderer\hud_renderer.cpp(55,34): warning C4100: “score”: 未引用的形参 [D:\colin\Melody-Matrix\build-vs\melody_matrix.vcxproj]
+D:\colin\Melody-Matrix\src\renderer\hud_renderer.cpp(106,11): warning C4189: “b”: 局部变量已初始化但不引用 [D:\colin\Melody-Matrix\build-vs\melody_matrix.vcxproj]
+  note_renderer.cpp
+  renderer.cpp
+D:\colin\Melody-Matrix\src\renderer\renderer.cpp(268,43): error C2065: “KEY_COUNT_RENDER”: 未声明的标识符 [D:\colin\Melody-Matrix\build-vs\melody_matrix.vcxproj]
+  shader.cpp
+  stb_image_impl.cpp
+  texture.cpp
+  texture_cache.cpp
+  theme.cpp
+  ui_manager.cpp
+  正在生成代码...
+  正在编译...
+  hash.cpp
+  logger.cpp
+  正在生成代码...
+BUILD FAILED

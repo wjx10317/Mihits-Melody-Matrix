@@ -1,0 +1,138 @@
+﻿閫傜敤浜?.NET Framework MSBuild 鐗堟湰 17.13.15+18b3035f6
+
+  1>Checking Build System
+  Building Custom Rule D:/colin/Melody-Matrix/CMakeLists.txt
+  glad.c
+  glad_gl33_core.vcxproj -> D:\colin\Melody-Matrix\build\lib\Release\glad_gl33_core.lib
+  Building Custom Rule D:/colin/Melody-Matrix/third_party/glm/glm/CMakeLists.txt
+  glm.cpp
+  glm.vcxproj -> D:\colin\Melody-Matrix\build\lib\Release\glm.lib
+  Building Custom Rule D:/colin/Melody-Matrix/CMakeLists.txt
+  imgui.cpp
+  imgui_demo.cpp
+  imgui_draw.cpp
+  imgui_tables.cpp
+  imgui_widgets.cpp
+  imgui_impl_sdl2.cpp
+  imgui_impl_opengl3.cpp
+  姝ｅ湪鐢熸垚浠ｇ爜...
+  imgui.vcxproj -> D:\colin\Melody-Matrix\build\lib\Release\imgui.lib
+  Building Custom Rule D:/colin/Melody-Matrix/CMakeLists.txt
+  audio_engine.cpp
+D:\colin\Melody-Matrix\src\audio\audio_engine.cpp(17,14): warning C4505: "melody_matrix::audio::mm_max": 宸插垹闄ゅ叿鏈夊唴閮ㄩ摼鎺ョ殑鏈紩鐢ㄥ嚱鏁?[D:\colin\Melody-Matrix\build\melody_matrix.vcxproj]
+  beatmap_builder.cpp
+D:\colin\Melody-Matrix\src\audio\audio_engine.cpp(21,16): warning C4505: "melody_matrix::audio::mm_clamp_i64": 宸插垹闄ゅ叿鏈夊唴閮ㄩ摼鎺ョ殑鏈紩鐢ㄥ嚱鏁?[D:\colin\Melody-Matrix\build\melody_matrix.vcxproj]
+  mma_parser.cpp
+  mma_serializer.cpp
+D:\colin\Melody-Matrix\src\beatmap\mma_serializer.cpp(18,20): warning C4505: "melody_matrix::beatmap::sanitizeFilename": 宸插垹闄ゅ叿鏈夊唴閮ㄩ摼鎺ョ殑鏈紩鐢ㄥ嚱鏁?[D:\colin\Melody-Matrix\build\melody_matrix.vcxproj]
+D:\colin\Melody-Matrix\src\beatmap\mma_serializer.cpp(35,20): warning C4505: "melody_matrix::beatmap::truncateFilename": 宸插垹闄ゅ叿鏈夊唴閮ㄩ摼鎺ョ殑鏈紩鐢ㄥ嚱鏁?[D:\colin\Melody-Matrix\build\melody_matrix.vcxproj]
+  note_factory.cpp
+  note_pool.cpp
+  osu_parser.cpp
+  asset_loader.cpp
+  clock.cpp
+  kernel.cpp
+D:\colin\Melody-Matrix\src\core\kernel.cpp(112,60): warning C4100: 鈥渉eight鈥? 鏈紩鐢ㄧ殑褰㈠弬 [D:\colin\Melody-Matrix\build\melody_matrix.vcxproj]
+D:\colin\Melody-Matrix\src\core\kernel.cpp(112,49): warning C4100: 鈥渨idth鈥? 鏈紩鐢ㄧ殑褰㈠弬 [D:\colin\Melody-Matrix\build\melody_matrix.vcxproj]
+C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.43.34808\include\memory(3298,27): error C2027: 浣跨敤浜嗘湭瀹氫箟绫诲瀷鈥渕elody_matrix::renderer::NoteRenderer鈥?[D:\colin\Melody-Matrix\build\melody_matrix.vcxproj]
+  (缂栬瘧婧愭枃浠垛€?./src/core/kernel.cpp鈥?
+      D:\colin\Melody-Matrix\src\renderer\renderer.h(18,7):
+      鍙傝鈥渕elody_matrix::renderer::NoteRenderer鈥濈殑澹版槑
+      C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.43.34808\include\memory(3298,27):
+      妯℃澘瀹炰緥鍖栦笂涓嬫枃(鏈€鏃╃殑瀹炰緥鍖栦笂涓嬫枃)涓?
+          D:\colin\Melody-Matrix\src\renderer\renderer.h(58,35):
+          鏌ョ湅瀵规鍦ㄧ紪璇戠殑 绫?妯℃澘 瀹炰緥鍖栤€渟td::unique_ptr<melody_matrix::renderer::NoteRenderer,std::default_delete<melody_matrix::renderer::NoteRenderer>>鈥濈殑寮曠敤
+          C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.43.34808\include\memory(3334,92):
+          鏌ョ湅瀵规鍦ㄧ紪璇戠殑 绫?妯℃澘 瀹炰緥鍖栤€渟td::default_delete<melody_matrix::renderer::NoteRenderer>鈥濈殑寮曠敤
+          C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.43.34808\include\memory(3297,23):
+          鍦ㄧ紪璇?绫?妯℃澘 鎴愬憳鍑芥暟鈥渧oid std::default_delete<melody_matrix::renderer::NoteRenderer>::operator ()(_Ty *) noexcept const鈥濇椂
+          with
+          [
+              _Ty=melody_matrix::renderer::NoteRenderer
+          ]
+              C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.43.34808\include\memory(3409,33):
+              璇峰弬闃?"std::unique_ptr<melody_matrix::renderer::NoteRenderer,std::default_delete<melody_matrix::renderer::NoteRenderer>>::~unique_ptr" 涓 "std::default_delete<melody_matrix::renderer::NoteRenderer>::operator ()" 鐨勭涓€涓紩鐢?
+              D:\colin\Melody-Matrix\src\renderer\renderer.h(27,5):
+              璇峰弬闃?"melody_matrix::renderer::Renderer::Renderer" 涓 "std::unique_ptr<melody_matrix::renderer::NoteRenderer,std::default_delete<melody_matrix::renderer::NoteRenderer>>::~unique_ptr" 鐨勭涓€涓紩鐢?
+  
+C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.43.34808\include\memory(3298,25): error C2338: static_assert failed: 'can't delete an incomplete type' [D:\colin\Melody-Matrix\build\melody_matrix.vcxproj]
+  (缂栬瘧婧愭枃浠垛€?./src/core/kernel.cpp鈥?
+  
+C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.43.34808\include\memory(3299,9): warning C4150: 鍒犻櫎鎸囧悜涓嶅畬鏁粹€渕elody_matrix::renderer::NoteRenderer鈥濈被鍨嬬殑鎸囬拡锛涙病鏈夎皟鐢ㄦ瀽鏋勫嚱鏁?[D:\colin\Melody-Matrix\build\melody_matrix.vcxproj]
+  (缂栬瘧婧愭枃浠垛€?./src/core/kernel.cpp鈥?
+      D:\colin\Melody-Matrix\src\renderer\renderer.h(18,7):
+      鍙傝鈥渕elody_matrix::renderer::NoteRenderer鈥濈殑澹版槑
+  
+  scene_transition.cpp
+  state_manager.cpp
+  boot_state.cpp
+  main_menu_state.cpp
+D:\colin\Melody-Matrix\src\core\states\main_menu_state.cpp(267,37): warning C4456: 鈥渆xt鈥濈殑澹版槑闅愯棌浜嗕笂涓€涓湰鍦板０鏄?[D:\colin\Melody-Matrix\build\melody_matrix.vcxproj]
+      D:\colin\Melody-Matrix\src\core\states\main_menu_state.cpp(176,17):
+      鍙傝鈥渆xt鈥濈殑澹版槑
+  
+  paused_state.cpp
+D:\colin\Melody-Matrix\src\gameplay\hp_manager.h(19,61): warning C4100: 鈥渞esult鈥? 鏈紩鐢ㄧ殑褰㈠弬 [D:\colin\Melody-Matrix\build\melody_matrix.vcxproj]
+  (缂栬瘧婧愭枃浠垛€?./src/core/states/paused_state.cpp鈥?
+  
+D:\colin\Melody-Matrix\src\core\states\paused_state.cpp(21,37): warning C4100: 鈥渄t鈥? 鏈紩鐢ㄧ殑褰㈠弬 [D:\colin\Melody-Matrix\build\melody_matrix.vcxproj]
+  playing_state.cpp
+D:\colin\Melody-Matrix\src\gameplay\hp_manager.h(19,61): warning C4100: 鈥渞esult鈥? 鏈紩鐢ㄧ殑褰㈠弬 [D:\colin\Melody-Matrix\build\melody_matrix.vcxproj]
+  (缂栬瘧婧愭枃浠垛€?./src/core/states/playing_state.cpp鈥?
+  
+D:\colin\Melody-Matrix\src\core\states\playing_state.cpp(131,65): warning C4100: 鈥渆vt鈥? 鏈紩鐢ㄧ殑褰㈠弬 [D:\colin\Melody-Matrix\build\melody_matrix.vcxproj]
+  result_state.cpp
+D:\colin\Melody-Matrix\src\gameplay\hp_manager.h(19,61): warning C4100: 鈥渞esult鈥? 鏈紩鐢ㄧ殑褰㈠弬 [D:\colin\Melody-Matrix\build\melody_matrix.vcxproj]
+  (缂栬瘧婧愭枃浠垛€?./src/core/states/result_state.cpp鈥?
+  
+D:\colin\Melody-Matrix\src\core\states\result_state.cpp(22,37): warning C4100: 鈥渄t鈥? 鏈紩鐢ㄧ殑褰㈠弬 [D:\colin\Melody-Matrix\build\melody_matrix.vcxproj]
+  song_select_state.cpp
+D:\colin\Melody-Matrix\src\gameplay\hp_manager.h(19,61): warning C4100: 鈥渞esult鈥? 鏈紩鐢ㄧ殑褰㈠弬 [D:\colin\Melody-Matrix\build\melody_matrix.vcxproj]
+  (缂栬瘧婧愭枃浠垛€?./src/core/states/song_select_state.cpp鈥?
+  
+  combo_manager.cpp
+  formation_controller.cpp
+  姝ｅ湪鐢熸垚浠ｇ爜...
+  姝ｅ湪缂栬瘧...
+  hp_manager.cpp
+D:\colin\Melody-Matrix\src\gameplay\hp_manager.h(19,61): warning C4100: 鈥渞esult鈥? 鏈紩鐢ㄧ殑褰㈠弬 [D:\colin\Melody-Matrix\build\melody_matrix.vcxproj]
+  (缂栬瘧婧愭枃浠垛€?./src/gameplay/hp_manager.cpp鈥?
+  
+  judge_queue.cpp
+  score_manager.cpp
+  input_manager.cpp
+  main.cpp
+D:\colin\Melody-Matrix\src\gameplay\hp_manager.h(19,61): warning C4100: 鈥渞esult鈥? 鏈紩鐢ㄧ殑褰㈠弬 [D:\colin\Melody-Matrix\build\melody_matrix.vcxproj]
+  (缂栬瘧婧愭枃浠垛€?./src/main.cpp鈥?
+  
+D:\colin\Melody-Matrix\src\main.cpp(22,14): warning C4100: 鈥渁rgc鈥? 鏈紩鐢ㄧ殑褰㈠弬 [D:\colin\Melody-Matrix\build\melody_matrix.vcxproj]
+  config.cpp
+  file_dialog.cpp
+  file_system.cpp
+  zip_extract.cpp
+D:\colin\Melody-Matrix\src\platform\zip_extract.cpp(120,20): warning C4505: "melody_matrix::platform::utf8ToWide": 宸插垹闄ゅ叿鏈夊唴閮ㄩ摼鎺ョ殑鏈紩鐢ㄥ嚱鏁?[D:\colin\Melody-Matrix\build\melody_matrix.vcxproj]
+  border_renderer.cpp
+D:\colin\Melody-Matrix\src\renderer\border_renderer.cpp(54,37): warning C4100: 鈥渢imeMs鈥? 鏈紩鐢ㄧ殑褰㈠弬 [D:\colin\Melody-Matrix\build\melody_matrix.vcxproj]
+D:\colin\Melody-Matrix\src\renderer\border_renderer.cpp(58,17): warning C4189: 鈥済w鈥? 灞€閮ㄥ彉閲忓凡鍒濆鍖栦絾涓嶅紩鐢?[D:\colin\Melody-Matrix\build\melody_matrix.vcxproj]
+D:\colin\Melody-Matrix\src\renderer\border_renderer.cpp(59,17): warning C4189: 鈥済h鈥? 灞€閮ㄥ彉閲忓凡鍒濆鍖栦絾涓嶅紩鐢?[D:\colin\Melody-Matrix\build\melody_matrix.vcxproj]
+  effect_renderer.cpp
+D:\colin\Melody-Matrix\src\renderer\effect_renderer.cpp(165,47): warning C4100: 鈥渃ombo鈥? 鏈紩鐢ㄧ殑褰㈠弬 [D:\colin\Melody-Matrix\build\melody_matrix.vcxproj]
+  hud_renderer.cpp
+D:\colin\Melody-Matrix\src\renderer\hud_renderer.cpp(55,72): warning C4100: 鈥渁ccuracy鈥? 鏈紩鐢ㄧ殑褰㈠弬 [D:\colin\Melody-Matrix\build\melody_matrix.vcxproj]
+D:\colin\Melody-Matrix\src\renderer\hud_renderer.cpp(55,49): warning C4100: 鈥渃ombo鈥? 鏈紩鐢ㄧ殑褰㈠弬 [D:\colin\Melody-Matrix\build\melody_matrix.vcxproj]
+D:\colin\Melody-Matrix\src\renderer\hud_renderer.cpp(55,34): warning C4100: 鈥渟core鈥? 鏈紩鐢ㄧ殑褰㈠弬 [D:\colin\Melody-Matrix\build\melody_matrix.vcxproj]
+D:\colin\Melody-Matrix\src\renderer\hud_renderer.cpp(106,11): warning C4189: 鈥渂鈥? 灞€閮ㄥ彉閲忓凡鍒濆鍖栦絾涓嶅紩鐢?[D:\colin\Melody-Matrix\build\melody_matrix.vcxproj]
+  note_renderer.cpp
+  renderer.cpp
+D:\colin\Melody-Matrix\src\renderer\renderer.cpp(201,35): warning C4100: 鈥渢imeMs鈥? 鏈紩鐢ㄧ殑褰㈠弬 [D:\colin\Melody-Matrix\build\melody_matrix.vcxproj]
+  shader.cpp
+  stb_image_impl.cpp
+  texture.cpp
+  texture_cache.cpp
+  theme.cpp
+  ui_manager.cpp
+  姝ｅ湪鐢熸垚浠ｇ爜...
+  姝ｅ湪缂栬瘧...
+  hash.cpp
+  logger.cpp
+  姝ｅ湪鐢熸垚浠ｇ爜...

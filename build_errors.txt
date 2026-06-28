@@ -1,0 +1,24 @@
+CMake Error at C:/Program Files/Microsoft Visual Studio/2022/Community/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.30/Modules/CMakeTestCXXCompiler.cmake:73 (message):
+  The C++ compiler
+
+    "C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.43.34808/bin/Hostx64/x64/cl.exe"
+
+  is not able to compile a simple test program.
+
+  It fails with the following output:
+
+    Change Dir: 'D:/colin/Melody-Matrix/build-ninja/CMakeFiles/CMakeScratch/TryCompile-4ty2m9'
+    
+    Run Build Command(s): "C:/Program Files/Microsoft Visual Studio/2022/Community/Common7/IDE/CommonExtensions/Microsoft/CMake/Ninja/ninja.exe" -v cmTC_64c15
+    ninja: fatal: GetOverlappedResult: The operation completed successfully.
+    
+    
+    
+
+  
+
+  CMake will not be able to correctly generate this project.
+Call Stack (most recent call first):
+  CMakeLists.txt:2 (project)
+
+

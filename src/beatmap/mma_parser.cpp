@@ -76,7 +76,7 @@ util::Result<void> MmaParser::parse(const std::string& content, BeatmapBuilder& 
     std::istringstream stream(content);
     std::string line;
 
-    enum class Section { None, General, Difficulty, Meta, Formations, Notes };
+    enum class Section { None, General, Difficulty, Meta, FormationTransformMacros, Formations, Notes };
     Section currentSection = Section::None;
     std::vector<std::string> sectionLines;
     bool firstLine = true;
@@ -94,6 +94,10 @@ util::Result<void> MmaParser::parse(const std::string& content, BeatmapBuilder& 
             break;
         case Section::Meta:
             result = parseMeta(sectionLines, builder);
+            break;
+        case Section::FormationTransformMacros:
+            // v2 宏定义段：仅解析校验，不存储（transformType 直接用 int32 保存）
+            result = parseTransformMacros(sectionLines, builder);
             break;
         case Section::Formations:
             result = parseFormations(sectionLines, builder);
@@ -120,12 +124,15 @@ util::Result<void> MmaParser::parse(const std::string& content, BeatmapBuilder& 
         // First line must be the format version
         if (firstLine) {
             firstLine = false;
-            if (line != "MMA1") {
+            if (line == "MMA1") {
+                builder.setFormatVersion("MMA1");
+            } else if (line == "MMA2") {
+                builder.setFormatVersion("MMA2");
+            } else {
                 return util::Result<void>(
                     static_cast<int32_t>(util::ErrorCode::ERROR_BEATMAP_VERSION),
-                    "Expected MMA1 version header, got: " + line);
+                    "Expected MMA1 or MMA2 version header, got: " + line);
             }
-            builder.setFormatVersion("MMA1");
             continue;
         }
 
@@ -134,11 +141,12 @@ util::Result<void> MmaParser::parse(const std::string& content, BeatmapBuilder& 
             flushSection();
             std::string sectionName = line.substr(1, line.size() - 2);
 
-            if (sectionName == "General")          currentSection = Section::General;
-            else if (sectionName == "Difficulty")   currentSection = Section::Difficulty;
-            else if (sectionName == "Meta")          currentSection = Section::Meta;
-            else if (sectionName == "Formations")    currentSection = Section::Formations;
-            else if (sectionName == "Notes")         currentSection = Section::Notes;
+            if (sectionName == "General")                   currentSection = Section::General;
+            else if (sectionName == "Difficulty")            currentSection = Section::Difficulty;
+            else if (sectionName == "Meta")                  currentSection = Section::Meta;
+            else if (sectionName == "FormationTransformMacros") currentSection = Section::FormationTransformMacros;
+            else if (sectionName == "Formations")            currentSection = Section::Formations;
+            else if (sectionName == "Notes")                 currentSection = Section::Notes;
             else {
                 MM_LOG_WARN("MmaParser", "Unknown section: [" + sectionName + "]");
                 currentSection = Section::None;
@@ -212,6 +220,28 @@ util::Result<void> MmaParser::parseMeta(const std::vector<std::string>& lines, B
     return util::success();
 }
 
+util::Result<void> MmaParser::parseTransformMacros(const std::vector<std::string>& lines, BeatmapBuilder& builder) {
+    // v2 [FormationTransformMacros] 段：KEY=VALUE 形式定义宏名到整数。
+    // 解析器只做记录日志，transformType 在 Formation 中直接以 int32 保存。
+    // 解析时允许跳过未识别的宏（仅记录 warning）。
+    int32_t macroCount = 0;
+    for (const auto& line : lines) {
+        std::string key, value;
+        if (!parseKeyValue(line, key, value)) {
+            MM_LOG_WARN("MmaParser", "Invalid macro line: " + line);
+            continue;
+        }
+        int32_t v = 0;
+        if (!parseInt32(value, v)) {
+            MM_LOG_WARN("MmaParser", "Invalid macro value: " + line);
+            continue;
+        }
+        ++macroCount;
+    }
+    MM_LOG_INFO("MmaParser", "Parsed " + std::to_string(macroCount) + " transform macros");
+    return util::success();
+}
+
 util::Result<void> MmaParser::parseFormations(const std::vector<std::string>& lines, BeatmapBuilder& builder) {
     for (const auto& line : lines) {
         auto parts = split(line, ',');
@@ -228,18 +258,18 @@ util::Result<void> MmaParser::parseFormations(const std::vector<std::string>& li
             continue;
         }
 
-        // 可选字段：transformType (parts[3]) 和 transformDurationMs (parts[4])
+        // v2 标准6字段：time,rows,cols,transformType,transformDurationMs,blockSize
+        // v2 短格式默认值：transformType=NONE(0), transformDurationMs=0, blockSize=1.0
+        // 兼容旧 MMA1 的 7 字段格式（第7位 noteTransformType 已废弃，忽略）
         if (parts.size() >= 4) {
             int32_t tt = 0;
             if (parseInt32(parts[3], tt)) {
-                tt = std::clamp(tt, 0, 5);
-                f.transformType = static_cast<MatrixTransformType>(tt);
+                f.transformType = tt;
             }
         }
         if (parts.size() >= 5) {
             parseInt64(parts[4], f.transformDurationMs);
         }
-        // 可选字段：blockSize (parts[5]) 和 noteTransformType (parts[6])
         if (parts.size() >= 6) {
             float bs = 1.0f;
             if (parseFloat(parts[5], bs)) {
@@ -247,12 +277,15 @@ util::Result<void> MmaParser::parseFormations(const std::vector<std::string>& li
                 f.blockSize = std::clamp(bs, 0.1f, 2.0f);
             }
         }
-        if (parts.size() >= 7) {
-            int32_t ntt = 0;
-            if (parseInt32(parts[6], ntt)) {
-                ntt = std::clamp(ntt, 0, 2);
-                f.noteTransformType = static_cast<NoteTransformType>(ntt);
-            }
+        // parts[6] (noteTransformType) 在 v2 中已删除，旧文件存在时直接忽略
+
+        // 校验：rows 范围 1-4，cols 范围 3-6
+        f.rows = std::clamp(f.rows, 1, 4);
+        f.cols = std::clamp(f.cols, 3, 6);
+        // transformDurationMs >= 0
+        if (f.transformDurationMs < 0) {
+            MM_LOG_WARN("MmaParser", "Negative transformDurationMs, clamped to 0: " + line);
+            f.transformDurationMs = 0;
         }
 
         builder.addFormation(f);

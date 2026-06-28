@@ -1,0 +1,104 @@
+﻿閫傜敤浜?.NET Framework MSBuild 鐗堟湰 17.13.15+18b3035f6
+
+  glad_gl33_core.vcxproj -> D:\colin\Melody-Matrix\build-vs\lib\Debug\glad_gl33_core.lib
+  glm.vcxproj -> D:\colin\Melody-Matrix\build-vs\lib\Debug\glm.lib
+  imgui.vcxproj -> D:\colin\Melody-Matrix\build-vs\lib\Debug\imgui.lib
+  kernel.cpp
+  state_manager.cpp
+  boot_state.cpp
+  main_menu_state.cpp
+  paused_state.cpp
+D:\colin\Melody-Matrix\src\core\states\playing_state.h(82,51): error C2065: 鈥淪DLK_d鈥? 鏈０鏄庣殑鏍囪瘑绗?[D:\colin\Melody-Matrix\build-vs\melody_matrix.vcxproj]
+  (缂栬瘧婧愭枃浠垛€?./src/core/states/paused_state.cpp鈥?
+  
+D:\colin\Melody-Matrix\src\core\states\playing_state.h(82,59): error C2065: 鈥淪DLK_f鈥? 鏈０鏄庣殑鏍囪瘑绗?[D:\colin\Melody-Matrix\build-vs\melody_matrix.vcxproj]
+  (缂栬瘧婧愭枃浠垛€?./src/core/states/paused_state.cpp鈥?
+  
+D:\colin\Melody-Matrix\src\core\states\playing_state.h(82,67): error C2065: 鈥淪DLK_j鈥? 鏈０鏄庣殑鏍囪瘑绗?[D:\colin\Melody-Matrix\build-vs\melody_matrix.vcxproj]
+  (缂栬瘧婧愭枃浠垛€?./src/core/states/paused_state.cpp鈥?
+  
+D:\colin\Melody-Matrix\src\core\states\playing_state.h(82,75): error C2065: 鈥淪DLK_k鈥? 鏈０鏄庣殑鏍囪瘑绗?[D:\colin\Melody-Matrix\build-vs\melody_matrix.vcxproj]
+  (缂栬瘧婧愭枃浠垛€?./src/core/states/paused_state.cpp鈥?
+  
+D:\colin\Melody-Matrix\src\core\states\playing_state.h(82,49): error C2131: 琛ㄨ揪寮忕殑璁＄畻缁撴灉涓嶆槸甯告暟 [D:\colin\Melody-Matrix\build-vs\melody_matrix.vcxproj]
+  (缂栬瘧婧愭枃浠垛€?./src/core/states/paused_state.cpp鈥?
+      D:\colin\Melody-Matrix\src\core\states\playing_state.h(82,49):
+      璇诲彇鏈垵濮嬪寲绗﹀彿瀵艰嚧澶辫触
+  
+  playing_state.cpp
+D:\colin\Melody-Matrix\src\core\states\playing_state.h(82,51): error C2065: 鈥淪DLK_d鈥? 鏈０鏄庣殑鏍囪瘑绗?[D:\colin\Melody-Matrix\build-vs\melody_matrix.vcxproj]
+  (缂栬瘧婧愭枃浠垛€?./src/core/states/playing_state.cpp鈥?
+  
+D:\colin\Melody-Matrix\src\core\states\playing_state.h(82,59): error C2065: 鈥淪DLK_f鈥? 鏈０鏄庣殑鏍囪瘑绗?[D:\colin\Melody-Matrix\build-vs\melody_matrix.vcxproj]
+  (缂栬瘧婧愭枃浠垛€?./src/core/states/playing_state.cpp鈥?
+  
+D:\colin\Melody-Matrix\src\core\states\playing_state.h(82,67): error C2065: 鈥淪DLK_j鈥? 鏈０鏄庣殑鏍囪瘑绗?[D:\colin\Melody-Matrix\build-vs\melody_matrix.vcxproj]
+  (缂栬瘧婧愭枃浠垛€?./src/core/states/playing_state.cpp鈥?
+  
+D:\colin\Melody-Matrix\src\core\states\playing_state.h(82,75): error C2065: 鈥淪DLK_k鈥? 鏈０鏄庣殑鏍囪瘑绗?[D:\colin\Melody-Matrix\build-vs\melody_matrix.vcxproj]
+  (缂栬瘧婧愭枃浠垛€?./src/core/states/playing_state.cpp鈥?
+  
+D:\colin\Melody-Matrix\src\core\states\playing_state.h(82,49): error C2131: 琛ㄨ揪寮忕殑璁＄畻缁撴灉涓嶆槸甯告暟 [D:\colin\Melody-Matrix\build-vs\melody_matrix.vcxproj]
+  (缂栬瘧婧愭枃浠垛€?./src/core/states/playing_state.cpp鈥?
+      D:\colin\Melody-Matrix\src\core\states\playing_state.h(82,49):
+      璇诲彇鏈垵濮嬪寲绗﹀彿瀵艰嚧澶辫触
+  
+D:\colin\Melody-Matrix\src\core\states\playing_state.cpp(21,29): error C2737: 鈥渕elody_matrix::core::PlayingState::KEY_CODES鈥? 蹇呴』鍒濆鍖?constexpr 瀵硅薄 [D:\colin\Melody-Matrix\build-vs\melody_matrix.vcxproj]
+D:\colin\Melody-Matrix\src\core\states\playing_state.cpp(21,29): error C2734: 鈥渕elody_matrix::core::PlayingState::KEY_CODES鈥? 濡傛灉涓嶆槸澶栭儴鐨勶紝鍒欏繀椤诲垵濮嬪寲甯搁噺瀵硅薄 [D:\colin\Melody-Matrix\build-vs\melody_matrix.vcxproj]
+D:\colin\Melody-Matrix\src\core\states\playing_state.cpp(198,5): error C2065: 鈥渕_rendererDataSynced鈥? 鏈０鏄庣殑鏍囪瘑绗?[D:\colin\Melody-Matrix\build-vs\melody_matrix.vcxproj]
+  result_state.cpp
+D:\colin\Melody-Matrix\src\core\states\playing_state.h(82,51): error C2065: 鈥淪DLK_d鈥? 鏈０鏄庣殑鏍囪瘑绗?[D:\colin\Melody-Matrix\build-vs\melody_matrix.vcxproj]
+  (缂栬瘧婧愭枃浠垛€?./src/core/states/result_state.cpp鈥?
+  
+D:\colin\Melody-Matrix\src\core\states\playing_state.h(82,59): error C2065: 鈥淪DLK_f鈥? 鏈０鏄庣殑鏍囪瘑绗?[D:\colin\Melody-Matrix\build-vs\melody_matrix.vcxproj]
+  (缂栬瘧婧愭枃浠垛€?./src/core/states/result_state.cpp鈥?
+  
+D:\colin\Melody-Matrix\src\core\states\playing_state.h(82,67): error C2065: 鈥淪DLK_j鈥? 鏈０鏄庣殑鏍囪瘑绗?[D:\colin\Melody-Matrix\build-vs\melody_matrix.vcxproj]
+  (缂栬瘧婧愭枃浠垛€?./src/core/states/result_state.cpp鈥?
+  
+D:\colin\Melody-Matrix\src\core\states\playing_state.h(82,75): error C2065: 鈥淪DLK_k鈥? 鏈０鏄庣殑鏍囪瘑绗?[D:\colin\Melody-Matrix\build-vs\melody_matrix.vcxproj]
+  (缂栬瘧婧愭枃浠垛€?./src/core/states/result_state.cpp鈥?
+  
+D:\colin\Melody-Matrix\src\core\states\playing_state.h(82,49): error C2131: 琛ㄨ揪寮忕殑璁＄畻缁撴灉涓嶆槸甯告暟 [D:\colin\Melody-Matrix\build-vs\melody_matrix.vcxproj]
+  (缂栬瘧婧愭枃浠垛€?./src/core/states/result_state.cpp鈥?
+      D:\colin\Melody-Matrix\src\core\states\playing_state.h(82,49):
+      璇诲彇鏈垵濮嬪寲绗﹀彿瀵艰嚧澶辫触
+  
+  song_select_state.cpp
+D:\colin\Melody-Matrix\src\core\states\playing_state.h(82,51): error C2065: 鈥淪DLK_d鈥? 鏈０鏄庣殑鏍囪瘑绗?[D:\colin\Melody-Matrix\build-vs\melody_matrix.vcxproj]
+  (缂栬瘧婧愭枃浠垛€?./src/core/states/song_select_state.cpp鈥?
+  
+D:\colin\Melody-Matrix\src\core\states\playing_state.h(82,59): error C2065: 鈥淪DLK_f鈥? 鏈０鏄庣殑鏍囪瘑绗?[D:\colin\Melody-Matrix\build-vs\melody_matrix.vcxproj]
+  (缂栬瘧婧愭枃浠垛€?./src/core/states/song_select_state.cpp鈥?
+  
+D:\colin\Melody-Matrix\src\core\states\playing_state.h(82,67): error C2065: 鈥淪DLK_j鈥? 鏈０鏄庣殑鏍囪瘑绗?[D:\colin\Melody-Matrix\build-vs\melody_matrix.vcxproj]
+  (缂栬瘧婧愭枃浠垛€?./src/core/states/song_select_state.cpp鈥?
+  
+D:\colin\Melody-Matrix\src\core\states\playing_state.h(82,75): error C2065: 鈥淪DLK_k鈥? 鏈０鏄庣殑鏍囪瘑绗?[D:\colin\Melody-Matrix\build-vs\melody_matrix.vcxproj]
+  (缂栬瘧婧愭枃浠垛€?./src/core/states/song_select_state.cpp鈥?
+  
+D:\colin\Melody-Matrix\src\core\states\playing_state.h(82,49): error C2131: 琛ㄨ揪寮忕殑璁＄畻缁撴灉涓嶆槸甯告暟 [D:\colin\Melody-Matrix\build-vs\melody_matrix.vcxproj]
+  (缂栬瘧婧愭枃浠垛€?./src/core/states/song_select_state.cpp鈥?
+      D:\colin\Melody-Matrix\src\core\states\playing_state.h(82,49):
+      璇诲彇鏈垵濮嬪寲绗﹀彿瀵艰嚧澶辫触
+  
+  main.cpp
+D:\colin\Melody-Matrix\src\core\states\playing_state.h(82,51): error C2065: 鈥淪DLK_d鈥? 鏈０鏄庣殑鏍囪瘑绗?[D:\colin\Melody-Matrix\build-vs\melody_matrix.vcxproj]
+  (缂栬瘧婧愭枃浠垛€?./src/main.cpp鈥?
+  
+D:\colin\Melody-Matrix\src\core\states\playing_state.h(82,59): error C2065: 鈥淪DLK_f鈥? 鏈０鏄庣殑鏍囪瘑绗?[D:\colin\Melody-Matrix\build-vs\melody_matrix.vcxproj]
+  (缂栬瘧婧愭枃浠垛€?./src/main.cpp鈥?
+  
+D:\colin\Melody-Matrix\src\core\states\playing_state.h(82,67): error C2065: 鈥淪DLK_j鈥? 鏈０鏄庣殑鏍囪瘑绗?[D:\colin\Melody-Matrix\build-vs\melody_matrix.vcxproj]
+  (缂栬瘧婧愭枃浠垛€?./src/main.cpp鈥?
+  
+D:\colin\Melody-Matrix\src\core\states\playing_state.h(82,75): error C2065: 鈥淪DLK_k鈥? 鏈０鏄庣殑鏍囪瘑绗?[D:\colin\Melody-Matrix\build-vs\melody_matrix.vcxproj]
+  (缂栬瘧婧愭枃浠垛€?./src/main.cpp鈥?
+  
+D:\colin\Melody-Matrix\src\core\states\playing_state.h(82,49): error C2131: 琛ㄨ揪寮忕殑璁＄畻缁撴灉涓嶆槸甯告暟 [D:\colin\Melody-Matrix\build-vs\melody_matrix.vcxproj]
+  (缂栬瘧婧愭枃浠垛€?./src/main.cpp鈥?
+      D:\colin\Melody-Matrix\src\core\states\playing_state.h(82,49):
+      璇诲彇鏈垵濮嬪寲绗﹀彿瀵艰嚧澶辫触
+  
+  renderer.cpp
+  姝ｅ湪鐢熸垚浠ｇ爜...

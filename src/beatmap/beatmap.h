@@ -8,32 +8,63 @@
 
 namespace melody_matrix::beatmap {
 
-/// 矩阵变换方式（控制行列变化时的动画类型）
-enum class MatrixTransformType : int32_t {
-    Scale       = 0,  ///< 缩放：行列不变，仅格子大小平滑变换
-    Slide       = 1,  ///< 滑入：新行从左滑入/新列从顶部滑下
-    Rotate      = 2,  ///< 旋转一周：半周时变换矩阵，半周归位
-    SlideOut    = 3,  ///< 滑出+旋转：行列减少时同时滑出和旋转
-    ScaleSlide  = 4,  ///< 先缩放后滑入（大小+行列同时变化，单行/列添加）
-    ScaleRotate = 5,  ///< 先缩放后旋转（大小+行列同时变化，多行/列添加）
-};
+/// ── 矩阵变换类型宏（v2）──
+/// 对应 [FormationTransformMacros] 段定义的整数值。
+/// 解析/序列化时直接使用 int32_t 存储，渲染层按数值分类分发动画。
+/// 0   = MATRIX_TRANSFORM_NONE
+/// 100 = MATRIX_TRANSFORM_SCALE_ONLY
+/// 201~206 = SLIDE_ROW_ADD/REMOVE（_TOP/_BOTTOM/_BOTH）
+/// 221~226 = SLIDE_COL_ADD/REMOVE（_LEFT/_RIGHT/_BOTH）
+/// 299 = SLIDE_SINGLE_AXIS_COMPLEX
+/// 301~304 = ROTATE_ROWS_COLS_ADD / ROWS_ADD_COLS_REMOVE / ROWS_REMOVE_COLS_ADD / ROWS_COLS_REMOVE
+/// 399 = ROTATE_COMPLEX
+namespace MatrixTransform {
+    constexpr int32_t NONE                         = 0;
+    constexpr int32_t SCALE_ONLY                   = 100;
+    constexpr int32_t SLIDE_ROW_ADD_TOP            = 201;
+    constexpr int32_t SLIDE_ROW_ADD_BOTTOM         = 202;
+    constexpr int32_t SLIDE_ROW_ADD_BOTH           = 203;
+    constexpr int32_t SLIDE_ROW_REMOVE_TOP         = 204;
+    constexpr int32_t SLIDE_ROW_REMOVE_BOTTOM      = 205;
+    constexpr int32_t SLIDE_ROW_REMOVE_BOTH        = 206;
+    constexpr int32_t SLIDE_COL_ADD_LEFT           = 221;
+    constexpr int32_t SLIDE_COL_ADD_RIGHT          = 222;
+    constexpr int32_t SLIDE_COL_ADD_BOTH           = 223;
+    constexpr int32_t SLIDE_COL_REMOVE_LEFT       = 224;
+    constexpr int32_t SLIDE_COL_REMOVE_RIGHT      = 225;
+    constexpr int32_t SLIDE_COL_REMOVE_BOTH       = 226;
+    constexpr int32_t SLIDE_SINGLE_AXIS_COMPLEX    = 299;
+    constexpr int32_t ROTATE_ROWS_COLS_ADD         = 301;
+    constexpr int32_t ROTATE_ROWS_ADD_COLS_REMOVE  = 302;
+    constexpr int32_t ROTATE_ROWS_REMOVE_COLS_ADD = 303;
+    constexpr int32_t ROTATE_ROWS_COLS_REMOVE     = 304;
+    constexpr int32_t ROTATE_COMPLEX               = 399;
 
-/// note 图片出现方式（独立于矩阵过渡，控制单个note贴图的入场动画）
-enum class NoteTransformType : int32_t {
-    Scale  = 0,  ///< 缩放渐入（默认）：note从0缩放到blockSize
-    Fade   = 1,  ///< 淡入：note透明度从0到1，尺寸不变
-    Rotate = 2,  ///< 旋转入场：note从-90°旋转到0°同时缩放
-};
+    /// 判定宏类别：'N'=NONE, 'S'=SCALE, 'L'=SLIDE, 'R'=ROTATE
+    inline char category(int32_t t) {
+        if (t == NONE)                          return 'N';
+        if (t == SCALE_ONLY)                     return 'S';
+        if (t >= 201 && t <= 299)                return 'L';
+        if (t >= 301 && t <= 399)                return 'R';
+        return 'N';
+    }
+    inline bool isSlideRow(int32_t t)    { return t >= 201 && t <= 206; }
+    inline bool isSlideCol(int32_t t)    { return t >= 221 && t <= 226; }
+    inline bool isSlideRowAdd(int32_t t) { return t >= 201 && t <= 203; }
+    inline bool isSlideRowRemove(int32_t t) { return t >= 204 && t <= 206; }
+    inline bool isSlideColAdd(int32_t t) { return t >= 221 && t <= 223; }
+    inline bool isSlideColRemove(int32_t t) { return t >= 224 && t <= 226; }
+    inline bool isRotate(int32_t t)      { return t >= 301 && t <= 399; }
+}
 
-/// 阵型定义 — 描述特定时间点的网格布局
+/// 阵型定义 — 描述特定时间点的网格布局（v2 标准6字段）
 struct Formation {
     int64_t time = 0;                  ///< 此阵型生效的时间（毫秒）
     int32_t rows = 0;                  ///< 网格行数
     int32_t cols = 0;                  ///< 网格列数
-    MatrixTransformType transformType = MatrixTransformType::Scale;  ///< 矩阵变换方式
-    int64_t transformDurationMs = 500; ///< 矩阵变换动画持续时间（毫秒），固定500ms
-    float blockSize = 0.9f;            ///< note图片相对格子的缩放比例（1.0=占满格子，0.9=90%留间距）
-    NoteTransformType noteTransformType = NoteTransformType::Scale;  ///< note图片出现方式
+    int32_t transformType = MatrixTransform::NONE;  ///< 矩阵变换类型宏（见 [FormationTransformMacros]）
+    int64_t transformDurationMs = 0;   ///< 变换动画时长（毫秒），v2 短格式默认0=立即切换
+    float blockSize = 1.0f;            ///< 格子缩放比例（1.0=占满，0.9=90%留间距）
 };
 
 /// 谱面难度参数

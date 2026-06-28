@@ -423,7 +423,7 @@ void PlayingState::initGameplay() {
     // 设置初始阵型
     if (!m_beatmap.formations.empty()) {
         const auto& f = m_beatmap.formations[0];
-        renderer.setFormation(f.rows, f.cols, f.blockSize, f.noteTransformType);
+        renderer.setFormation(f.rows, f.cols, f.blockSize);
     }
 
     // 设置音符数据
@@ -620,7 +620,7 @@ GameState PlayingState::update(float dt) {
                                                        next.transformType);
         } else {
             // 瞬间切换
-            kernel.renderer().setFormation(next.rows, next.cols, next.blockSize, next.noteTransformType);
+            kernel.renderer().setFormation(next.rows, next.cols, next.blockSize);
         }
 
         // 阵型变化时保留滚动状态（不重置为0，clamp到新列范围）
@@ -1021,9 +1021,6 @@ void PlayingState::renderImGuiOverlay() {
 
         int64_t nextScrollTime = INT64_MAX;
         if (m_formationCtrl.currentCols() > KEY_COUNT) {
-            float approachMs = 1800.0f - m_beatmap.difficulty.ar * 120.0f;
-            if (approachMs < 300.0f) approachMs = 300.0f;
-
             int32_t windowStart = m_scrollWindow.startCol;
             int32_t windowEnd = m_scrollWindow.endCol;
 
@@ -1031,13 +1028,9 @@ void PlayingState::renderImGuiOverlay() {
                 const auto& colQ = m_judgeQueue.columnQueue(col);
                 if (colQ.finished()) continue;
                 const auto& note = colQ.front();
-                float timeDiff = static_cast<float>(note.time - nowMs);
-                if (timeDiff <= approachMs && timeDiff > 0) {
-                    if (col < windowStart || col > windowEnd) {
-                        int64_t scrollTriggerTime = note.time - static_cast<int64_t>(approachMs);
-                        if (scrollTriggerTime > nowMs && scrollTriggerTime < nextScrollTime) {
-                            nextScrollTime = scrollTriggerTime;
-                        }
+                if (note.time > nowMs && (col < windowStart || col > windowEnd)) {
+                    if (note.time < nextScrollTime) {
+                        nextScrollTime = note.time;
                     }
                 }
             }
@@ -1049,7 +1042,7 @@ void PlayingState::renderImGuiOverlay() {
 
         ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.8f, 0.2f, 1.0f));
         ImGui::SetWindowFontScale(1.2f);
-        ImGui::Text("当前时间点:%lldms - 下一次矩阵变换:%lldms - 下一次滚动:%lldms",
+        ImGui::Text("NOW:%lldms - NEXT_FORM:%lldms - NEXT_SCROLL:%lldms",
                     nowMs,
                     nextFormationTime == INT64_MAX ? -1 : nextFormationTime,
                     nextScrollTime == INT64_MAX ? -1 : nextScrollTime);

@@ -1,0 +1,8 @@
+﻿閫傜敤浜?.NET Framework MSBuild 鐗堟湰 17.13.15+18b3035f6
+
+  glad_gl33_core.vcxproj -> D:\colin\Melody-Matrix\build-vs\lib\Debug\glad_gl33_core.lib
+  glm.vcxproj -> D:\colin\Melody-Matrix\build-vs\lib\Debug\glm.lib
+  imgui.vcxproj -> D:\colin\Melody-Matrix\build-vs\lib\Debug\imgui.lib
+  renderer.cpp
+  melody_matrix.vcxproj -> D:\colin\Melody-Matrix\build-vs\bin\Debug\melody_matrix.exe
+  Copying SDL2.dll	Copying assets to output directory	Copying res to output directory

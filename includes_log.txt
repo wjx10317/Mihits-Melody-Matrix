@@ -1,0 +1,8 @@
+﻿paused_state.cpp
+注意: 包含文件:  d:\colin\Melody-Matrix\src\core\states\paused_state.h
+d:\colin\Melody-Matrix\src\core\states\paused_state.h(1): warning C4819: 该文件包含不能在当前代码页(936)中表示的字符。请将该文件保存为 Unicode 格式以防止数据丢失
+注意: 包含文件:   d:\colin\Melody-Matrix\src\core/game_state_base.h
+d:\colin\Melody-Matrix\src\core/game_state_base.h(1): warning C4819: 该文件包含不能在当前代码页(936)中表示的字符。请将该文件保存为 Unicode 格式以防止数据丢失
+注意: 包含文件:    d:\colin\Melody-Matrix\src\core\game_state.h
+d:\colin\Melody-Matrix\src\core\game_state.h(1): warning C4819: 该文件包含不能在当前代码页(936)中表示的字符。请将该文件保存为 Unicode 格式以防止数据丢失
+d:\colin\Melody-Matrix\src\core\game_state.h(3): fatal error C1083: 无法打开包括文件: “string”: No such file or directory

@@ -44,8 +44,8 @@ static std::string truncateFilename(const std::string& name, size_t maxLen = 200
 std::string MmaSerializer::serialize(const Beatmap& beatmap, const std::string& sourceHash) {
     std::ostringstream oss;
 
-    // ── 版本头 ──
-    oss << "MMA1\n";
+    // ── 版本头（v2）──
+    oss << "MMA2\n";
 
     // ── source_hash 注释（用于导入去重）──
     if (!sourceHash.empty()) {
@@ -78,17 +78,41 @@ std::string MmaSerializer::serialize(const Beatmap& beatmap, const std::string& 
     oss << "AR=" << beatmap.difficulty.ar << "\n";
     oss << "\n";
 
-    // ── [Formations] ──
+    // ── [FormationTransformMacros]（v2 新增）──
+    oss << "[FormationTransformMacros]\n";
+    oss << "MATRIX_TRANSFORM_NONE=0\n";
+    oss << "MATRIX_TRANSFORM_SCALE_ONLY=100\n";
+    oss << "MATRIX_TRANSFORM_SLIDE_ROW_ADD_TOP=201\n";
+    oss << "MATRIX_TRANSFORM_SLIDE_ROW_ADD_BOTTOM=202\n";
+    oss << "MATRIX_TRANSFORM_SLIDE_ROW_ADD_BOTH=203\n";
+    oss << "MATRIX_TRANSFORM_SLIDE_ROW_REMOVE_TOP=204\n";
+    oss << "MATRIX_TRANSFORM_SLIDE_ROW_REMOVE_BOTTOM=205\n";
+    oss << "MATRIX_TRANSFORM_SLIDE_ROW_REMOVE_BOTH=206\n";
+    oss << "MATRIX_TRANSFORM_SLIDE_COL_ADD_LEFT=221\n";
+    oss << "MATRIX_TRANSFORM_SLIDE_COL_ADD_RIGHT=222\n";
+    oss << "MATRIX_TRANSFORM_SLIDE_COL_ADD_BOTH=223\n";
+    oss << "MATRIX_TRANSFORM_SLIDE_COL_REMOVE_LEFT=224\n";
+    oss << "MATRIX_TRANSFORM_SLIDE_COL_REMOVE_RIGHT=225\n";
+    oss << "MATRIX_TRANSFORM_SLIDE_COL_REMOVE_BOTH=226\n";
+    oss << "MATRIX_TRANSFORM_SLIDE_SINGLE_AXIS_COMPLEX=299\n";
+    oss << "MATRIX_TRANSFORM_ROTATE_ROWS_COLS_ADD=301\n";
+    oss << "MATRIX_TRANSFORM_ROTATE_ROWS_ADD_COLS_REMOVE=302\n";
+    oss << "MATRIX_TRANSFORM_ROTATE_ROWS_REMOVE_COLS_ADD=303\n";
+    oss << "MATRIX_TRANSFORM_ROTATE_ROWS_COLS_REMOVE=304\n";
+    oss << "MATRIX_TRANSFORM_ROTATE_COMPLEX=399\n";
+    oss << "\n";
+
+    // ── [Formations]（v2 标准6字段）──
     oss << "[Formations]\n";
     for (const auto& f : beatmap.formations) {
         oss << f.time << "," << f.rows << "," << f.cols;
-        // 输出变换方式、变换时长、块大小、note变换类型（仅非默认值时输出）
-        if (f.transformType != MatrixTransformType::Scale || f.transformDurationMs != 500 ||
-            f.blockSize != 0.9f || f.noteTransformType != NoteTransformType::Scale) {
-            oss << "," << static_cast<int32_t>(f.transformType)
+        // v2 短格式：transformType=0 && transformDurationMs=0 && blockSize=1.0 时只输出前3字段
+        if (f.transformType != MatrixTransform::NONE ||
+            f.transformDurationMs != 0 ||
+            f.blockSize != 1.0f) {
+            oss << "," << f.transformType
                 << "," << f.transformDurationMs
-                << "," << f.blockSize
-                << "," << static_cast<int32_t>(f.noteTransformType);
+                << "," << f.blockSize;
         }
         oss << "\n";
     }

@@ -4,11 +4,11 @@
 
 namespace melody_matrix::beatmap {
 
-/// 原生 .mma 谱面格式的解析器。
+/// 原生 .mma 谱面格式的解析器（v2）。
 ///
-/// .mma 文件格式规范：
+/// .mma v2 文件格式规范：
 /// ─────────────────────────────────
-/// 第 1 行："MMA1"（格式版本）
+/// 第 1 行："MMA1" 或 "MMA2"（格式版本，推荐 MMA2）
 /// 空行和以 '#' 开头的行为注释
 /// 段落由 [SectionName] 标记
 ///
@@ -28,13 +28,22 @@ namespace melody_matrix::beatmap {
 ///     Creator=<字符串>
 ///     Version=<字符串>
 ///
+///   [FormationTransformMacros]  (v2 新增)
+///     <宏名>=<整数值>
+///     用于定义 transformType 的文件级宏。解析器只做校验，
+///     Formation.transformType 直接以 int32 保存。
+///     推荐宏值：0=NONE, 100=SCALE_ONLY,
+///              201~206=SLIDE_ROW_ADD/REMOVE(_TOP/_BOTTOM/_BOTH),
+///              221~226=SLIDE_COL_ADD/REMOVE(_LEFT/_RIGHT/_BOTH),
+///              299=SLIDE_SINGLE_AXIS_COMPLEX,
+///              301~304=ROTATE_ROWS_COLS_ADD/ROWS_ADD_COLS_REMOVE/ROWS_REMOVE_COLS_ADD/ROWS_COLS_REMOVE,
+///              399=ROTATE_COMPLEX
+///
 ///   [Formations]
-///     <时间>,<行数>,<列数>[,<变换方式>,<变换时长>][,<块大小>,<note变换类型>]
-///     变换方式: 0=Scale(默认), 1=Slide, 2=Rotate, 3=SlideOut, 4=ScaleSlide, 5=ScaleRotate
-///     变换时长: 毫秒(默认500)
-///     块大小: 浮点，note图片相对格子的缩放比例(默认0.9留10%间距，1.0=占满)
-///     note变换类型: 0=Scale缩放渐入(默认), 1=Fade淡入, 2=Rotate旋转入场
-///     注意: 字段按顺序解析，跳过中间字段需显式写出默认值
+///     v2 标准6字段：<时间>,<行数>,<列数>,<transformType>,<变换时长>,<块大小>
+///     v2 短格式：<时间>,<行数>,<列数>  (transformType=0, transformDurationMs=0, blockSize=1.0)
+///     兼容旧 MMA1 的 7 字段格式（第7位 noteTransformType 已废弃，忽略）
+///     rows 范围 1-4，cols 范围 3-6
 ///
 ///   [Notes]
 ///     <时间>,<行>,<列>,<类型>
@@ -51,6 +60,7 @@ private:
     util::Result<void> parseGeneral(const std::vector<std::string>& lines, BeatmapBuilder& builder);
     util::Result<void> parseDifficulty(const std::vector<std::string>& lines, BeatmapBuilder& builder);
     util::Result<void> parseMeta(const std::vector<std::string>& lines, BeatmapBuilder& builder);
+    util::Result<void> parseTransformMacros(const std::vector<std::string>& lines, BeatmapBuilder& builder);
     util::Result<void> parseFormations(const std::vector<std::string>& lines, BeatmapBuilder& builder);
     util::Result<void> parseNotes(const std::vector<std::string>& lines, BeatmapBuilder& builder);
 };

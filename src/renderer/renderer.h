@@ -23,9 +23,9 @@ struct FormationTransition {
     int32_t prevCols = 0;
     int32_t nextRows = 0;
     int32_t nextCols = 0;
-    float prevBlockSize = 0.9f;
-    float nextBlockSize = 0.9f;
-    beatmap::MatrixTransformType transformType = beatmap::MatrixTransformType::Scale;
+    float prevBlockSize = 1.0f;
+    float nextBlockSize = 1.0f;
+    int32_t transformType = 0;  ///< v2 宏编号（见 beatmap::MatrixTransform）
     float progress = 0.0f;     ///< 0.0 = 旧阵型, 1.0 = 新阵型
     bool active = false;
 };
@@ -45,11 +45,10 @@ public:
     void setGameplayRendering(bool enabled);
     void setBackgroundPath(const std::string& path);
     void setFormation(int32_t rows, int32_t cols,
-                      float blockSize = 0.9f,
-                      beatmap::NoteTransformType noteTransformType = beatmap::NoteTransformType::Scale);
+                      float blockSize = 1.0f);
     void beginFormationTransition(int32_t prevRows, int32_t prevCols, float prevBlockSize,
                                   int32_t nextRows, int32_t nextCols, float nextBlockSize,
-                                  beatmap::MatrixTransformType transformType);
+                                  int32_t transformType);
     void updateFormationTransition(float progress);
     void setNotes(const std::vector<beatmap::Note>& notes, float ar);
     /// 设置滚动状态。scrollOffset 由 renderer 内部根据 scrollProgress 和 m_gridCols 统一计算，
@@ -94,8 +93,6 @@ private:
     int32_t m_gridRows = 3;
     int32_t m_gridCols = 4;
     float m_blockSize = 0.9f;  ///< note图片相对格子的缩放比例（来自 Formation.blockSize）
-    beatmap::NoteTransformType m_noteTransformType = beatmap::NoteTransformType::Scale;  ///< note图片出现方式
-
     FormationTransition m_transition;
 
     float m_bgDim = 0.67f;  ///< 背景遮罩透明度（默认67%）
