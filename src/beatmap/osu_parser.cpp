@@ -52,14 +52,11 @@ static void parseSliderCurve(const std::string& curveStr,
 
 void OsuParser::pixelToGrid(int x, int y, int32_t rows, int32_t cols,
                              int32_t& outRow, int32_t& outCol) {
-    // osu! playfield: 512×384 (internal resolution)
-    const float cellW = 512.0f / cols;
-    const float cellH = 384.0f / rows;
-
-    outCol = static_cast<int32_t>(std::floor(x / cellW));
-    outRow = static_cast<int32_t>(std::floor(y / cellH));
-
-    // Clamp to valid range
+    // 对齐参考转换器：用 511.999/383.999 clamp，避免边界像素溢出
+    const double clampedX = std::max(0.0, std::min(511.999, static_cast<double>(x)));
+    const double clampedY = std::max(0.0, std::min(383.999, static_cast<double>(y)));
+    outCol = static_cast<int32_t>(std::floor(clampedX / 512.0 * cols));
+    outRow = static_cast<int32_t>(std::floor(clampedY / 384.0 * rows));
     outCol = std::max(0, std::min(outCol, cols - 1));
     outRow = std::max(0, std::min(outRow, rows - 1));
 }
@@ -177,259 +174,228 @@ void OsuParser::parseHitObjects(const std::vector<std::string>& lines) {
     MM_LOG_INFO("OsuParser", "Parsed " + std::to_string(m_rawObjects.size()) + " hit objects");
 }
 
-// ── Slider curve interpolation (simplified: linear between control points) ──
+// ── 转换辅助（对齐参考转换器 osz_to_mma.cpp）──
 
-void OsuParser::interpolateSliderPosition(const RawHitObject& obj, float progress,
-                                           int& outX, int& outY) const {
-    // 构建路径点序列：起始点 + 控制点
-    std::vector<std::pair<int,int>> path;
-    path.push_back({obj.x, obj.y});
-    for (const auto& pt : obj.curvePoints) {
-        path.push_back(pt);
-    }
-
-    if (path.size() < 2) {
-        outX = obj.x;
-        outY = obj.y;
-        return;
-    }
-
-    // 计算各段长度和总长度
-    struct Segment { int x1, y1, x2, y2; double len; };
-    std::vector<Segment> segments;
-    double totalLen = 0.0;
-    for (size_t i = 1; i < path.size(); ++i) {
-        Segment seg;
-        seg.x1 = path[i-1].first;  seg.y1 = path[i-1].second;
-        seg.x2 = path[i].first;    seg.y2 = path[i].second;
-        seg.len = std::sqrt(static_cast<double>((seg.x2-seg.x1)*(seg.x2-seg.x1) +
-                                                  (seg.y2-seg.y1)*(seg.y2-seg.y1)));
-        segments.push_back(seg);
-        totalLen += seg.len;
-    }
-
-    if (totalLen < 1.0) {
-        outX = obj.x;
-        outY = obj.y;
-        return;
-    }
-
-    // 沿路径插值
-    double targetDist = progress * totalLen;
-    double accumulated = 0.0;
-    for (const auto& seg : segments) {
-        if (accumulated + seg.len >= targetDist) {
-            double t = (seg.len > 0.0) ? (targetDist - accumulated) / seg.len : 0.0;
-            outX = static_cast<int>(seg.x1 + t * (seg.x2 - seg.x1));
-            outY = static_cast<int>(seg.y1 + t * (seg.y2 - seg.y1));
-            return;
+double OsuParser::getSliderVelocityAt(int64_t time) const {
+    // 获取继承型 TimingPoint 的 SV 倍率（-100 / msPerBeat）
+    double sliderVelocity = 1.0;
+    for (const auto& tp : m_timingPoints) {
+        if (tp.offset > time) break;
+        if (!tp.uninherited && tp.msPerBeat < 0.0) {
+            sliderVelocity = std::max(0.1, -100.0 / tp.msPerBeat);
         }
-        accumulated += seg.len;
     }
-
-    // 退化：返回最后一个点
-    outX = path.back().first;
-    outY = path.back().second;
+    return sliderVelocity;
 }
 
-// ── Dynamic Breathing Formation (non-square: rows by y-spread, cols by x-spread) ──
+OsuParser::NoteWindow OsuParser::makeWindow(int64_t time) const {
+    // 计算 note 的显示/判定时间窗口（对齐参考转换器 makeWindow）
+    double approachMs = std::max(0.0, 1800.0 - m_ar * 120.0);
+    double goodW = std::max(0.0, 65.0 - 2.6 * m_od);
+    double missW = goodW + 50.0;
+    NoteWindow w;
+    w.displayStart = time - static_cast<int64_t>(approachMs);
+    w.earliestHit = time - static_cast<int64_t>(missW);
+    w.latestHit = time + static_cast<int64_t>(missW);
+    return w;
+}
 
-std::vector<Formation> OsuParser::generateBreathingFormations(
-    const std::vector<RawHitObject>& objects,
-    int64_t windowMs,
-    int32_t minRows, int32_t maxRows,
-    int32_t minCols, int32_t maxCols,
-    int32_t hysteresis) const
-{
-    if (objects.empty()) {
-        return {Formation{0, minRows, minCols}};
+int64_t OsuParser::estimateSliderEndTime(const RawHitObject& obj) const {
+    // 对齐参考转换器 estimateSliderEndTime 公式
+    double beatLength = getMsPerBeatAt(obj.time);
+    double sliderVelocity = getSliderVelocityAt(obj.time);
+    double denominator = std::max(0.001, m_sliderMultiplier * 100.0 * sliderVelocity);
+    double beats = obj.length * std::max(1, obj.slides) / denominator;
+    int64_t duration = static_cast<int64_t>(std::llround(beats * beatLength));
+    return obj.time + std::max<int64_t>(1, duration);
+}
+
+std::vector<OsuParser::ConvertedNote> OsuParser::makeConvertedNotes() const {
+    // RawHitObject → ConvertedNote（含窗口计算 + slider endTime 估算）
+    std::vector<ConvertedNote> notes;
+    notes.reserve(m_rawObjects.size());
+    for (const auto& obj : m_rawObjects) {
+        ConvertedNote n;
+        n.x = obj.x;
+        n.y = obj.y;
+        n.time = obj.time;
+        if (obj.type & 1) {
+            // HitCircle → Tap
+            n.type = 'T';
+            n.endTime = obj.time;
+        } else if (obj.type & 2) {
+            // Slider → Hold
+            n.type = 'H';
+            n.endTime = estimateSliderEndTime(obj);
+        } else if (obj.type & 4) {
+            // Spinner → Tap（转盘渲染成 tap）
+            n.type = 'T';
+            n.endTime = obj.time;
+        }
+        n.window = makeWindow(n.time);
+        notes.push_back(n);
     }
+    return notes;
+}
 
-    // ── 第一步：滑动窗口分析 Note 空间分布 ──
-    // x 方向扩散 → cols，y 方向扩散 → rows（独立映射，支持非正方形）
-    struct WindowInfo {
-        int64_t time;
-        double meanDx = 0.0;   ///< x 方向归一化扩散 [0,1]
-        double meanDy = 0.0;   ///< y 方向归一化扩散 [0,1]
-        int     count = 0;
-    };
-
-    std::vector<WindowInfo> windows;
-    const int64_t stepMs = 500;
-    const int64_t halfWin = windowMs / 2;
-
-    int64_t startTime = objects.front().time;
-    int64_t endTime = objects.back().time;
-
-    for (int64_t t = startTime; t <= endTime + halfWin; t += stepMs) {
-        double sumDx = 0.0, sumDy = 0.0;
-        int count = 0;
-        for (const auto& obj : objects) {
-            if (obj.time < t - halfWin) continue;
-            if (obj.time > t + halfWin) break;
-            if (obj.type & 4) continue;  // 跳过 Spinner
-
-            sumDx += std::abs(obj.x - 256.0) / 256.0;
-            sumDy += std::abs(obj.y - 192.0) / 192.0;
-            count++;
-        }
-
-        WindowInfo wi;
-        wi.time = t;
-        wi.count = count;
-        if (count > 0) {
-            wi.meanDx = sumDx / count;
-            wi.meanDy = sumDy / count;
-            // 不再缩放：直接用原始扩散值，配合 sqrt 映射让中等扩散也能达到高 cols/rows
-        }
-        windows.push_back(wi);
+OsuParser::MatrixShape OsuParser::targetShapeForDensity(const std::vector<ConvertedNote>& notes, size_t index) const {
+    // 基于 ±1500ms 窗口内 note 数量映射目标阵型
+    if (notes.empty()) return {kBaseRows, kBaseCols};
+    const int64_t window = 1500;
+    int64_t t = notes[index].time;
+    int count = 0;
+    for (const auto& n : notes) {
+        if (n.time >= t - window && n.time <= t + window) ++count;
     }
+    double dps = count / 3.0;  // density per second（窗口=3000ms）
+    MatrixShape s;
+    if (dps < 1.5)      s = {2, 3};
+    else if (dps < 2.5) s = {3, 4};
+    else if (dps < 4.0) s = {4, 5};
+    else                s = {4, 6};
+    return s;
+}
 
-    // ── 第二步：分别映射到 rows/cols，带迟滞 ──
-    // 用 sqrt 映射：meanDx=0.5 → sqrt(0.5)=0.707 → cols=3+round(0.707*3)=5
-    //              meanDx=0.77 → sqrt(0.77)=0.877 → cols=3+round(0.877*3)=6
-    // 这样常见的扩散水平也能触发6列，体现滚动效果
-    struct FormationCandidate {
-        int64_t time;
-        int32_t rows;
-        int32_t cols;
-    };
-
-    std::vector<FormationCandidate> candidates;
-    int32_t curRows = minRows;
-    int32_t curCols = minCols;
-
-    for (const auto& wi : windows) {
-        int32_t targetRows = minRows + static_cast<int32_t>(std::round(std::sqrt(wi.meanDy) * (maxRows - minRows)));
-        int32_t targetCols = minCols + static_cast<int32_t>(std::round(std::sqrt(wi.meanDx) * (maxCols - minCols)));
-
-        // 迟滞：差距超过阈值才切换；向大方向更敏感
-        if (std::abs(targetRows - curRows) > hysteresis || (targetRows > curRows && targetRows - curRows >= 1)) {
-            curRows = targetRows;
-        }
-        if (std::abs(targetCols - curCols) > hysteresis || (targetCols > curCols && targetCols - curCols >= 1)) {
-            curCols = targetCols;
-        }
-
-        curRows = std::max(minRows, std::min(maxRows, curRows));
-        curCols = std::max(minCols, std::min(maxCols, curCols));
-
-        candidates.push_back({wi.time, curRows, curCols});
+int OsuParser::transformTypeFor(const MatrixShape& from, const MatrixShape& to) {
+    // 根据行列变化计算 transformType（对齐参考转换器，使用 beatmap.h MatrixTransform 常量）
+    int rowDelta = to.rows - from.rows;
+    int colDelta = to.cols - from.cols;
+    if (rowDelta == 0 && colDelta == 0) {
+        return MatrixTransform::NONE;
     }
+    if (rowDelta > 0 && colDelta == 0) {
+        return rowDelta == 1 ? MatrixTransform::SLIDE_ROW_ADD_BOTTOM : MatrixTransform::SLIDE_ROW_ADD_BOTH;
+    }
+    if (rowDelta < 0 && colDelta == 0) {
+        return (-rowDelta) == 1 ? MatrixTransform::SLIDE_ROW_REMOVE_BOTTOM : MatrixTransform::SLIDE_ROW_REMOVE_BOTH;
+    }
+    if (colDelta > 0 && rowDelta == 0) {
+        return colDelta == 1 ? MatrixTransform::SLIDE_COL_ADD_RIGHT : MatrixTransform::SLIDE_COL_ADD_BOTH;
+    }
+    if (colDelta < 0 && rowDelta == 0) {
+        return (-colDelta) == 1 ? MatrixTransform::SLIDE_COL_REMOVE_RIGHT : MatrixTransform::SLIDE_COL_REMOVE_BOTH;
+    }
+    if (rowDelta > 0 && colDelta > 0) {
+        return MatrixTransform::ROTATE_ROWS_COLS_ADD;
+    }
+    if (rowDelta > 0 && colDelta < 0) {
+        return MatrixTransform::ROTATE_ROWS_ADD_COLS_REMOVE;
+    }
+    if (rowDelta < 0 && colDelta > 0) {
+        return MatrixTransform::ROTATE_ROWS_REMOVE_COLS_ADD;
+    }
+    if (rowDelta < 0 && colDelta < 0) {
+        return MatrixTransform::ROTATE_ROWS_COLS_REMOVE;
+    }
+    return MatrixTransform::ROTATE_COMPLEX;
+}
 
-    // ── 第三步：合并连续相同尺寸的时间段 ──
+bool OsuParser::scheduleTransitionBefore(std::vector<ConvertedNote>& notes, size_t noteIndex,
+                                          int64_t durationMs, bool includesFormation,
+                                          int64_t lastTransitionEnd, int64_t& startMs) const {
+    // 在 note 窗口前安排过渡，丢弃冲突 note（对齐参考转换器丢弃逻辑）
+    const auto& note = notes[noteIndex];
+    // 过渡安排在 note 的 displayStart（变换）或 earliestHit（滚动）之前
+    int64_t anchor = includesFormation ? note.window.displayStart : note.window.earliestHit;
+    startMs = anchor - durationMs;
+    if (startMs < lastTransitionEnd) {
+        startMs = lastTransitionEnd;
+    }
+    // 如果过渡结束时间晚于 note 的 latestHit，丢弃 note
+    if (startMs + durationMs > note.window.latestHit) {
+        notes[noteIndex].dropped = true;
+        return false;
+    }
+    // 如果与前一个 note 的 latestHit 冲突，丢弃前一个 note
+    for (size_t i = 0; i < notes.size(); ++i) {
+        if (i == noteIndex) continue;
+        if (notes[i].dropped) continue;
+        if (notes[i].window.latestHit > startMs && notes[i].time < note.time) {
+            notes[i].dropped = true;
+        }
+    }
+    return true;
+}
+
+std::vector<Formation> OsuParser::generateFormationsAndFilter(std::vector<ConvertedNote>& notes) {
+    // 合并滚动和变换预计算（对齐参考转换器 generateFormationsAndFilter）
     std::vector<Formation> formations;
-    if (candidates.empty()) {
-        formations.push_back({0, minRows, minCols});
+    if (notes.empty()) {
+        formations.push_back({0, kBaseRows, kBaseCols});
+        formations.back().transformType = MatrixTransform::NONE;
+        formations.back().transformDurationMs = 0;
+        formations.back().blockSize = 1.0f;
         return formations;
     }
+    // 初始 formation
+    formations.push_back({0, kBaseRows, kBaseCols});
+    formations.back().transformType = MatrixTransform::NONE;
+    formations.back().transformDurationMs = 0;
+    formations.back().blockSize = 1.0f;
 
-    formations.push_back({0, candidates.front().rows, candidates.front().cols});
-    for (size_t i = 1; i < candidates.size(); ++i) {
-        const auto& prev = candidates[i - 1];
-        const auto& curr = candidates[i];
-        if (curr.rows != prev.rows || curr.cols != prev.cols) {
-            formations.push_back({curr.time, curr.rows, curr.cols});
+    MatrixShape current{kBaseRows, kBaseCols};
+    int32_t activeStart = 0;
+    int32_t activeEnd = kActiveCols - 1;
+    int64_t lastTransitionEnd = 0;
+
+    for (size_t i = 0; i < notes.size(); ++i) {
+        if (notes[i].dropped) continue;
+        MatrixShape target = targetShapeForDensity(notes, i);
+        bool needsFormation = (target.rows != current.rows || target.cols != current.cols);
+        int32_t newActiveStart = activeStart;
+        if (target.cols > kActiveCols) {
+            int32_t noteCol = static_cast<int32_t>(std::floor(static_cast<double>(notes[i].x) / 512.0 * target.cols));
+            noteCol = std::max(0, std::min(noteCol, target.cols - 1));
+            if (noteCol > activeEnd) newActiveStart = noteCol - kActiveCols + 1;
+            else if (noteCol < activeStart) newActiveStart = noteCol;
+            if (newActiveStart < 0) newActiveStart = 0;
+            if (newActiveStart + kActiveCols > target.cols) newActiveStart = target.cols - kActiveCols;
+        } else {
+            newActiveStart = 0;
         }
+        bool needsScroll = (newActiveStart != activeStart);
+        int64_t duration = 0;
+        if (needsFormation) duration = std::max(duration, (int64_t)kFormationDurationMs);
+        if (needsScroll) duration = std::max(duration, (int64_t)kScrollDurationMs);
+        if (duration == 0) continue;
+        int64_t startMs = 0;
+        bool ok = scheduleTransitionBefore(notes, i, duration, needsFormation, lastTransitionEnd, startMs);
+        if (!ok) continue;
+        if (needsFormation) {
+            int tt = transformTypeFor(current, target);
+            Formation f;
+            f.time = startMs;
+            f.rows = target.rows;
+            f.cols = target.cols;
+            f.transformType = tt;
+            f.transformDurationMs = kFormationDurationMs;
+            f.blockSize = static_cast<float>(kDefaultBlockSize);
+            formations.push_back(f);
+            current = target;
+        }
+        if (needsScroll) {
+            activeStart = newActiveStart;
+            activeEnd = newActiveStart + kActiveCols - 1;
+        }
+        lastTransitionEnd = startMs + duration;
     }
-
-    // 去重
+    // 去重相邻相同 time
     std::vector<Formation> deduped;
     for (const auto& f : formations) {
-        if (deduped.empty() || deduped.back().time != f.time) {
-            deduped.push_back(f);
-        } else {
-            deduped.back() = f;
-        }
+        if (deduped.empty() || deduped.back().time != f.time) deduped.push_back(f);
     }
-
-    // ── 最小变换间隔约束 ──
-    // 密度过小（变换频繁）会导致 note 无法击打（滚动/变换期间锁判定）；
-    // 密度过大（变换稀疏但 note 多）时 gap-based 丢弃会丢太多 note。
-    // 约束：相邻变换间隔 < MIN_TRANSITION_GAP_MS 时合并为一个（保留后者尺寸），
-    //       避免在短时间内频繁切换阵型。
-    constexpr int64_t MIN_TRANSITION_GAP_MS = 2000;
-    if (deduped.size() > 2) {
-        std::vector<Formation> merged;
-        merged.push_back(deduped[0]);
-        for (size_t i = 1; i < deduped.size(); ++i) {
-            // 如果当前变换点与前一个间隔过小，合并（用当前尺寸替换前一个）
-            if (deduped[i].time - merged.back().time < MIN_TRANSITION_GAP_MS) {
-                // 间隔过小：若尺寸相同则跳过（无意义变换）；若不同则合并到后者
-                if (deduped[i].rows == merged.back().rows && deduped[i].cols == merged.back().cols) {
-                    continue;  // 尺寸相同，跳过无意义变换
-                }
-                // 尺寸不同但间隔过小：替换前一个（保留后者尺寸）
-                merged.back().rows = deduped[i].rows;
-                merged.back().cols = deduped[i].cols;
-                continue;
-            }
-            merged.push_back(deduped[i]);
-        }
-        deduped = std::move(merged);
-    }
-
-    // ── 第四步：为每个阵型变换计算变换方式（v2 宏编号）──
-    // 依据 MMA_FORMAT_V2.md 第9节判定规则：
-    //   - 行列不变仅 blockSize 变 → SCALE_ONLY
-    //   - 仅行变化 → SLIDE_ROW_*（增/减，单/多行用 _TOP/_BOTTOM/_BOTH）
-    //   - 仅列变化 → SLIDE_COL_*（增/减，单/多列用 _LEFT/_RIGHT/_BOTH）
-    //   - 行列同时变化 → ROTATE_ROWS_COLS_*（按增减方向选择）
-    //   - 特殊情况 → ROTATE_COMPLEX
-    for (size_t i = 1; i < deduped.size(); ++i) {
-        const auto& prev = deduped[i - 1];
-        auto& curr = deduped[i];
-
-        int32_t dRows = curr.rows - prev.rows;
-        int32_t dCols = curr.cols - prev.cols;
-        bool sizeChanged = (curr.blockSize != prev.blockSize);
-
-        if (dRows == 0 && dCols == 0) {
-            // 行列不变：仅缩放
-            curr.transformType = sizeChanged ? MatrixTransform::SCALE_ONLY : MatrixTransform::NONE;
-        } else if (dRows > 0 && dCols == 0) {
-            // 仅行增加
-            curr.transformType = (dRows > 1) ? MatrixTransform::SLIDE_ROW_ADD_BOTH
-                                             : MatrixTransform::SLIDE_ROW_ADD_BOTTOM;
-        } else if (dRows < 0 && dCols == 0) {
-            // 仅行减少
-            curr.transformType = (dRows < -1) ? MatrixTransform::SLIDE_ROW_REMOVE_BOTH
-                                              : MatrixTransform::SLIDE_ROW_REMOVE_BOTTOM;
-        } else if (dRows == 0 && dCols > 0) {
-            // 仅列增加
-            curr.transformType = (dCols > 1) ? MatrixTransform::SLIDE_COL_ADD_BOTH
-                                             : MatrixTransform::SLIDE_COL_ADD_RIGHT;
-        } else if (dRows == 0 && dCols < 0) {
-            // 仅列减少
-            curr.transformType = (dCols < -1) ? MatrixTransform::SLIDE_COL_REMOVE_BOTH
-                                              : MatrixTransform::SLIDE_COL_REMOVE_RIGHT;
-        } else if (dRows > 0 && dCols > 0) {
-            // 行增加且列增加
-            curr.transformType = MatrixTransform::ROTATE_ROWS_COLS_ADD;
-        } else if (dRows > 0 && dCols < 0) {
-            // 行增加且列减少
-            curr.transformType = MatrixTransform::ROTATE_ROWS_ADD_COLS_REMOVE;
-        } else if (dRows < 0 && dCols > 0) {
-            // 行减少且列增加
-            curr.transformType = MatrixTransform::ROTATE_ROWS_REMOVE_COLS_ADD;
-        } else if (dRows < 0 && dCols < 0) {
-            // 行减少且列减少
-            curr.transformType = MatrixTransform::ROTATE_ROWS_COLS_REMOVE;
-        } else {
-            // 特殊情况（不应到达）
-            curr.transformType = MatrixTransform::ROTATE_COMPLEX;
-        }
-        curr.transformDurationMs = 500;  // 固定500ms
-        // 非初始 formation 使用默认 blockSize=0.9（与 v2 规范示例及参考转换器 kDefaultBlockSize 一致）
-        // 初始 formation 保留默认 1.0（短格式）
-        curr.blockSize = 0.9f;
-    }
-
-    MM_LOG_INFO("OsuParser", "Generated " + std::to_string(deduped.size()) +
-                " breathing formations (range " +
-                std::to_string(minRows) + "x" + std::to_string(minCols) + " ~ " +
-                std::to_string(maxRows) + "x" + std::to_string(maxCols) + ")");
+    MM_LOG_INFO("OsuParser", "Generated " + std::to_string(deduped.size()) + " formations");
     return deduped;
+}
+
+OsuParser::MatrixShape OsuParser::shapeAtTime(const std::vector<Formation>& formations, int64_t time) {
+    // 查找指定时间的阵型形状
+    MatrixShape s{kBaseRows, kBaseCols};
+    for (const auto& f : formations) {
+        if (f.time <= time) { s.rows = f.rows; s.cols = f.cols; }
+        else break;
+    }
+    return s;
 }
 
 // ── Main parse ──
@@ -543,77 +509,27 @@ util::Result<void> OsuParser::parse(const std::string& content, BeatmapBuilder& 
     // ── 解析 HitObjects ──
     parseHitObjects(hitObjectLines);
 
-    // ── 生成动态呼吸矩阵 ──
-    auto formations = generateBreathingFormations(m_rawObjects);
+    // ── 生成 formations 并过滤冲突 note（对齐参考转换器）──
+    auto convertedNotes = makeConvertedNotes();
+    auto formations = generateFormationsAndFilter(convertedNotes);
 
-    // ── 辅助：根据时间查找活动阵型 ──
-    auto findFormationAt = [&formations](int64_t t) -> const Formation* {
-        const Formation* result = nullptr;
-        for (const auto& f : formations) {
-            if (f.time <= t) { result = &f; } else break;
-        }
-        return result ? result : &formations.front();
-    };
-
-    // ── 将 HitObject 转换为 Note ──
-    for (const auto& obj : m_rawObjects) {
-        // Bit 0 (1): HitCircle — 单个音符，时间与对象一致，直接查找
-        if (obj.type & 1) {
-            const Formation* af = findFormationAt(obj.time);
-            int32_t row, col;
-            pixelToGrid(obj.x, obj.y, af->rows, af->cols, row, col);
-            Note note;
-            note.time = obj.time;
-            note.row = row;
-            note.col = col;
-            note.type = NoteType::Tap;
-            builder.addNote(note);
-        }
-
-        // Bit 1 (2): Slider → Hold（slider 长按，起点位置，长按期间渲染边缘进度条贴图）
-        else if (obj.type & 2) {
-            double msPerBeat = getMsPerBeatAt(obj.time);
-            const TimingPoint* baseTP = getBaseTimingPoint(obj.time);
-            double baseMsPerBeat = baseTP ? baseTP->msPerBeat : msPerBeat;
-            double sv = m_sliderMultiplier * baseMsPerBeat / 1000.0;
-            if (sv < 0.01) sv = 0.4;
-
-            double totalDurationMs = 0.0;
-            if (obj.length > 0) {
-                totalDurationMs = obj.slides * obj.length / sv;
-            } else {
-                totalDurationMs = msPerBeat;
-            }
-            // 限制 slider 最小/最大时长
-            totalDurationMs = std::max(100.0, std::min(totalDurationMs, 5000.0));
-
-            const Formation* af = findFormationAt(obj.time);
-            int32_t row, col;
-            // 用 slider 起点位置
-            pixelToGrid(obj.x, obj.y, af->rows, af->cols, row, col);
-
-            Note note;
-            note.time = obj.time;
-            note.row = row;
-            note.col = col;
+    // ── 将 ConvertedNote 转换为 Note（跳过 dropped）──
+    for (const auto& cn : convertedNotes) {
+        if (cn.dropped) continue;
+        MatrixShape shape = shapeAtTime(formations, cn.time);
+        int32_t row, col;
+        pixelToGrid(cn.x, cn.y, shape.rows, shape.cols, row, col);
+        Note note;
+        note.time = cn.time;
+        note.row = row;
+        note.col = col;
+        if (cn.type == 'H') {
             note.type = NoteType::Hold;
-            note.holdEnd = obj.time + static_cast<int64_t>(totalDurationMs);
-            builder.addNote(note);
-        }
-
-        // Bit 2 (4): Spinner → Tap（转盘渲染成 tap，放在中心位置，避免触发矩阵变换/滚动）
-        else if (obj.type & 4) {
-            const Formation* af = findFormationAt(obj.time);
-            // 中心位置，尽量在不需要变换矩阵/滚动的区域
-            int32_t centerRow = af->rows / 2;
-            int32_t centerCol = af->cols / 2;
-            Note note;
-            note.time = obj.time;
-            note.row = centerRow;
-            note.col = centerCol;
+            note.holdEnd = cn.endTime;
+        } else {
             note.type = NoteType::Tap;
-            builder.addNote(note);
         }
+        builder.addNote(note);
     }
 
     // ── 添加 Formation 序列 ──
