@@ -389,9 +389,7 @@ bool OsuParser::scheduleTransitionBefore(std::vector<ConvertedNote>& notes, size
             startMs = std::max(earliestStart, endLimit - durationMs);
             return true;
         }
-        if (prevIndex >= 0 &&
-            maxDrops > 0 &&
-            !isDenseRhythmAround(notes, static_cast<size_t>(prevIndex))) {
+        if (prevIndex >= 0 && maxDrops > 0) {
             notes[prevIndex].dropped = true;
             droppedForAttempt.push_back(static_cast<size_t>(prevIndex));
             --maxDrops;
