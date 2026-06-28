@@ -154,174 +154,6 @@ void PlayingState::initGameplay() {
     }
     m_beatmap = std::move(buildResult.value());
 
-    // ── 铺面导入丢弃：丢弃会在滚动过程中变得不可击打的 note ──
-    // 当列数 > KEY_COUNT 时，滚动期间锁判定。
-    // 如果一个 note 在滚动期间到达 miss 阈值，或处于离开窗口的列中，
-    // 玩家/autoplay 无法击打却被判 miss，不公平。在导入时模拟滚动触发，丢弃这些 note。
-    if (m_beatmap.formations.size() > 0) {
-        int32_t maxCols = 0;
-        for (const auto& f : m_beatmap.formations) {
-            if (f.cols > maxCols) maxCols = f.cols;
-        }
-        if (maxCols > KEY_COUNT) {
-            float od = m_beatmap.difficulty.od;
-            int32_t goodW = static_cast<int32_t>(65.0f - 2.6f * od);
-            int64_t missThr = static_cast<int64_t>(goodW) + 50;
-            float approachMs = 1800.0f - m_beatmap.difficulty.ar * 120.0f;
-            if (approachMs < 300.0f) approachMs = 300.0f;
-            // 使用实际最大滚动时长（与 checkAndTriggerScroll 的上限一致，丢弃模拟用 100ms 保守估计）
-            int64_t scrollDuration = 100;
-
-            // 按时间排序，确保模拟与实际运行时一致
-            std::vector<beatmap::Note> sortedNotes = m_beatmap.notes;
-            std::sort(sortedNotes.begin(), sortedNotes.end(),
-                      [](const beatmap::Note& a, const beatmap::Note& b) { return a.time < b.time; });
-
-            std::vector<bool> discard(sortedNotes.size(), false);
-
-            int32_t currentStart = 0;
-            int32_t currentEnd = KEY_COUNT - 1;
-            int64_t lastScrollEnd = 0;
-
-            for (size_t i = 0; i < sortedNotes.size(); ++i) {
-                if (discard[i]) continue;
-                const auto& note = sortedNotes[i];
-
-                // 检查此 note 是否需要滚动（col 超出当前窗口）
-                if (note.col > currentEnd || note.col < currentStart) {
-                    int32_t newStart = currentStart;
-                    if (note.col > currentEnd) {
-                        newStart = note.col - KEY_COUNT + 1;
-                    } else {
-                        newStart = note.col;
-                    }
-                    if (newStart < 0) newStart = 0;
-                    if (newStart + KEY_COUNT > maxCols) newStart = maxCols - KEY_COUNT;
-
-                    int64_t scrollStart = note.time - static_cast<int64_t>(approachMs);
-                    if (scrollStart < lastScrollEnd) scrollStart = lastScrollEnd;
-                    int64_t scrollEnd = scrollStart + scrollDuration;
-
-                    // 检查触发滚动的 note 是否会在滚动期间 miss
-                    if (scrollEnd >= note.time + missThr) {
-                        discard[i] = true;
-                        MM_LOG_INFO("Playing", "Discarding note at t=" + std::to_string(note.time) +
-                                    " col=" + std::to_string(note.col) + " (would miss during scroll)");
-                        continue;
-                    }
-
-                    // 检查离开窗口列中尚未击打的 note 是否会变得不可击打
-                    int32_t leaveStart = -1, leaveEnd = -1;
-                    if (newStart > currentStart) {
-                        // 右滚：[currentStart, newStart-1] 离开窗口
-                        leaveStart = currentStart;
-                        leaveEnd = newStart - 1;
-                    } else if (newStart < currentStart) {
-                        // 左滚：[newStart+KEY_COUNT, currentEnd] 离开窗口
-                        leaveStart = newStart + KEY_COUNT;
-                        leaveEnd = currentEnd;
-                    }
-
-                    if (leaveStart >= 0) {
-                        for (size_t j = i + 1; j < sortedNotes.size(); ++j) {
-                            if (discard[j]) continue;
-                            const auto& n = sortedNotes[j];
-                            if (n.col >= leaveStart && n.col <= leaveEnd) {
-                                // 该 note 在离开窗口的列中
-                                // 检查 note 的判定区间是否与滚动区间重叠
-                                // hold note 的判定区间延伸到 holdEnd + goodW（释放窗口）
-                                int64_t noteJudgeEnd = (n.type == beatmap::NoteType::Hold)
-                                                          ? n.holdEnd : n.time;
-                                if (noteJudgeEnd > scrollStart) {
-                                    discard[j] = true;
-                                    MM_LOG_INFO("Playing", "Discarding note at t=" + std::to_string(n.time) +
-                                                " col=" + std::to_string(n.col) +
-                                                " (in leaving column during scroll)");
-                                }
-                            }
-                        }
-                    }
-
-                    currentStart = newStart;
-                    currentEnd = newStart + KEY_COUNT - 1;
-                    lastScrollEnd = scrollEnd;
-                }
-            }
-
-            // 执行过滤
-            std::vector<beatmap::Note> filteredNotes;
-            filteredNotes.reserve(sortedNotes.size());
-            size_t discarded = 0;
-            for (size_t i = 0; i < sortedNotes.size(); ++i) {
-                if (discard[i]) {
-                    ++discarded;
-                } else {
-                    filteredNotes.push_back(sortedNotes[i]);
-                }
-            }
-
-            if (discarded > 0) {
-                MM_LOG_INFO("Playing", "Discarded " + std::to_string(discarded) +
-                            " notes that would be unplayable during scroll");
-                m_beatmap.notes = std::move(filteredNotes);
-            }
-        }
-    }
-
-    // ── 矩阵变换 gap-based 丢弃：确保变换前后note间距 > 变换动画时长 ──
-    // 规则：变换前最后一个note的lateGood 与 变换后第一个note的earlyGood 之间的gap
-    //       必须大于变换动画时长(500ms)，否则丢弃变换前的note
-    if (m_beatmap.formations.size() > 1) {
-        float od = m_beatmap.difficulty.od;
-        int32_t goodW = static_cast<int32_t>(65.0f - 2.6f * od);
-
-        std::vector<beatmap::Note> filteredNotes;
-        filteredNotes.reserve(m_beatmap.notes.size());
-
-        // 为每个变换点检查gap
-        for (const auto& note : m_beatmap.notes) {
-            bool discard = false;
-            for (size_t i = 1; i < m_beatmap.formations.size(); ++i) {
-                int64_t T = m_beatmap.formations[i].time;
-                int64_t animDur = m_beatmap.formations[i].transformDurationMs;
-
-                // 如果note在变换点之前，检查它与变换后第一个note的gap
-                if (note.time < T) {
-                    // 找变换后第一个note
-                    int64_t firstAfterTime = INT64_MAX;
-                    for (const auto& n : m_beatmap.notes) {
-                        if (n.time >= T && n.time < firstAfterTime) {
-                            firstAfterTime = n.time;
-                        }
-                    }
-                    if (firstAfterTime != INT64_MAX) {
-                        // hold note 的判定区间延伸到 holdEnd + goodW（释放窗口）
-                        int64_t noteEnd = (note.type == beatmap::NoteType::Hold) ? note.holdEnd : note.time;
-                        int64_t lateGood = noteEnd + goodW;
-                        int64_t earlyGood = firstAfterTime - goodW;
-                        if (earlyGood - lateGood < animDur) {
-                            discard = true;
-                            MM_LOG_INFO("Playing", "Discarding note at t=" + std::to_string(note.time) +
-                                        " (gap to formation transition at T=" + std::to_string(T) +
-                                        " < animDur=" + std::to_string(animDur) + "ms)");
-                            break;
-                        }
-                    }
-                }
-            }
-            if (!discard) {
-                filteredNotes.push_back(note);
-            }
-        }
-
-        size_t gapDiscarded = m_beatmap.notes.size() - filteredNotes.size();
-        if (gapDiscarded > 0) {
-            MM_LOG_INFO("Playing", "Discarded " + std::to_string(gapDiscarded) +
-                        " notes in formation transition gap violations");
-            m_beatmap.notes = std::move(filteredNotes);
-        }
-    }
-
     // ── Init judge ──
     m_judgeQueue.setStrategy(std::make_unique<gameplay::StandardJudgeStrategy>());
     m_judgeQueue.loadNotes(m_beatmap.notes);
@@ -623,16 +455,19 @@ GameState PlayingState::update(float dt) {
             kernel.renderer().setFormation(next.rows, next.cols, next.blockSize);
         }
 
-        // 阵型变化时保留滚动状态（不重置为0，clamp到新列范围）
-        int32_t newCols = next.cols;
-        if (newCols <= KEY_COUNT) {
-            m_scrollWindow.startCol = 0;
-            m_scrollWindow.endCol = newCols - 1;
-        } else {
-            // 保留当前 startCol，clamp 到新范围 [0, newCols - KEY_COUNT]
-            int32_t maxStart = newCols - KEY_COUNT;
-            m_scrollWindow.startCol = std::max(0, std::min(m_scrollWindow.startCol, maxStart));
-            m_scrollWindow.endCol = m_scrollWindow.startCol + KEY_COUNT - 1;
+        // 矩阵变换后有效列直接改变到目标列（居中），避免多余滚动
+        {
+            int32_t newCols = next.cols;
+            if (newCols > KEY_COUNT) {
+                // 居中：startCol = (newCols - KEY_COUNT) / 2
+                int32_t centerStart = (newCols - KEY_COUNT) / 2;
+                m_scrollWindow.startCol = centerStart;
+                m_scrollWindow.endCol = centerStart + KEY_COUNT - 1;
+            } else {
+                // 列数 <= KEY_COUNT，全部显示
+                m_scrollWindow.startCol = 0;
+                m_scrollWindow.endCol = newCols - 1;
+            }
         }
         m_scrollWindow.targetStartCol = m_scrollWindow.startCol;
         m_scrollWindow.targetEndCol = m_scrollWindow.endCol;
