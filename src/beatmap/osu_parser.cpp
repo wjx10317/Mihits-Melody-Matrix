@@ -245,7 +245,7 @@ OsuParser::MatrixShape OsuParser::targetShapeForDensity(const std::vector<Conver
     int64_t t = notes[index].time;
     int count = 0;
     for (const auto& n : notes) {
-        if (n.time >= t - window && n.time <= t + window) ++count;
+        if (!n.dropped && n.time >= t - window && n.time <= t + window) ++count;
     }
     double dps = count / 3.0;  // density per second（窗口=3000ms）
     MatrixShape s;
@@ -290,102 +290,223 @@ int OsuParser::transformTypeFor(const MatrixShape& from, const MatrixShape& to) 
     return MatrixTransform::ROTATE_COMPLEX;
 }
 
-bool OsuParser::scheduleTransitionBefore(std::vector<ConvertedNote>& notes, size_t noteIndex,
-                                          int64_t durationMs, bool includesFormation,
-                                          int64_t lastTransitionEnd, int64_t& startMs) const {
-    // 在 note 窗口前安排过渡，丢弃冲突 note（对齐参考转换器丢弃逻辑）
-    const auto& note = notes[noteIndex];
-    // 过渡安排在 note 的 displayStart（变换）或 earliestHit（滚动）之前
-    int64_t anchor = includesFormation ? note.window.displayStart : note.window.earliestHit;
-    startMs = anchor - durationMs;
-    if (startMs < lastTransitionEnd) {
-        startMs = lastTransitionEnd;
+int OsuParser::previousKeptIndex(const std::vector<ConvertedNote>& notes, size_t before) {
+    // 向前查找最近一个未丢弃的 note 索引
+    for (size_t i = before; i > 0; --i) {
+        const size_t index = i - 1;
+        if (!notes[index].dropped) {
+            return static_cast<int>(index);
+        }
     }
-    // 如果过渡结束时间晚于 note 的 latestHit，丢弃 note
-    if (startMs + durationMs > note.window.latestHit) {
-        notes[noteIndex].dropped = true;
-        return false;
+    return -1;
+}
+
+int OsuParser::nextKeptIndex(const std::vector<ConvertedNote>& notes, size_t after) {
+    // 向后查找最近一个未丢弃的 note 索引
+    for (size_t i = after + 1; i < notes.size(); ++i) {
+        if (!notes[i].dropped) {
+            return static_cast<int>(i);
+        }
     }
-    // 如果与前一个 note 的 latestHit 冲突，丢弃前一个 note
-    for (size_t i = 0; i < notes.size(); ++i) {
-        if (i == noteIndex) continue;
+    return -1;
+}
+
+int64_t OsuParser::blockingLatestHit(const ConvertedNote& note) {
+    // Hold 取释放窗口的 latestHit，Tap 取判定窗口的 latestHit
+    return note.type == 'H' ? note.releaseWindow.latestHit : note.window.latestHit;
+}
+
+bool OsuParser::isDenseRhythmAround(const std::vector<ConvertedNote>& notes, size_t index) const {
+    // 判断当前 note 与相邻 note 的时间间隔是否小于密集判定阈值
+    const int prevIndex = previousKeptIndex(notes, index);
+    if (prevIndex >= 0 && notes[index].time - notes[prevIndex].time <= kDenseGapMs) {
+        return true;
+    }
+    const int nextIndex = nextKeptIndex(notes, index);
+    if (nextIndex >= 0 && notes[nextIndex].time - notes[index].time <= kDenseGapMs) {
+        return true;
+    }
+    return false;
+}
+
+bool OsuParser::keepsRowsStableNearTransition(const std::vector<ConvertedNote>& notes, size_t index,
+                                                const MatrixShape& current, const MatrixShape& target) const {
+    // 检查过渡前瞻窗口内 note 的行号在变换前后是否保持稳定
+    if (current.rows == target.rows) {
+        return true;
+    }
+    const int64_t end = notes[index].time + kRowStabilityLookaheadMs;
+    for (size_t i = index; i < notes.size(); ++i) {
         if (notes[i].dropped) continue;
-        if (notes[i].window.latestHit > startMs && notes[i].time < note.time) {
-            notes[i].dropped = true;
+        if (notes[i].time > end) break;
+        const double clampedY = std::max(0.0, std::min(383.999, static_cast<double>(notes[i].y)));
+        int rowBefore = static_cast<int>(std::floor(clampedY / 384.0 * current.rows));
+        int rowAfter = static_cast<int>(std::floor(clampedY / 384.0 * target.rows));
+        rowBefore = std::max(0, std::min(rowBefore, current.rows - 1));
+        rowAfter = std::max(0, std::min(rowAfter, target.rows - 1));
+        if (rowBefore != rowAfter) {
+            return false;
         }
     }
     return true;
 }
 
-std::vector<Formation> OsuParser::generateFormationsAndFilter(std::vector<ConvertedNote>& notes) {
-    // 合并滚动和变换预计算（对齐参考转换器 generateFormationsAndFilter）
-    std::vector<Formation> formations;
-    if (notes.empty()) {
-        formations.push_back({0, kBaseRows, kBaseCols});
-        formations.back().transformType = MatrixTransform::NONE;
-        formations.back().transformDurationMs = 0;
-        formations.back().blockSize = 1.0f;
-        return formations;
+bool OsuParser::hasStableFormationTarget(const std::vector<ConvertedNote>& notes, size_t index,
+                                          const MatrixShape& current, const MatrixShape& target) const {
+    // 检查前瞻窗口内是否有足够多数 note 稳定指向同一目标阵型
+    if (target.rows == current.rows && target.cols == current.cols) {
+        return false;
     }
+    const int64_t end = notes[index].time + kFormationStabilityLookaheadMs;
+    int considered = 0;
+    int targetVotes = 0;
+    for (size_t i = index; i < notes.size(); ++i) {
+        if (notes[i].dropped) continue;
+        if (notes[i].time > end) break;
+        if (isDenseRhythmAround(notes, i)) {
+            return false;
+        }
+        const MatrixShape candidate = targetShapeForDensity(notes, i);
+        ++considered;
+        if (candidate.rows == target.rows && candidate.cols == target.cols) {
+            ++targetVotes;
+        }
+    }
+    return considered >= kMinStableTargetNotes && targetVotes * 2 >= considered + 1;
+}
+
+bool OsuParser::scheduleTransitionBefore(std::vector<ConvertedNote>& notes, size_t noteIndex,
+                                           int64_t durationMs, bool includesFormation,
+                                           int64_t lastTransitionEnd, int maxDrops, int64_t& startMs) const {
+    // 在 note 窗口前安排过渡：循环丢弃冲突 note，失败时恢复丢弃（对齐参考转换器）
+    const int64_t endLimit = includesFormation
+        ? notes[noteIndex].window.displayStart
+        : notes[noteIndex].window.earliestHit;
+    std::vector<size_t> droppedForAttempt;
+
+    while (true) {
+        const int prevIndex = previousKeptIndex(notes, noteIndex);
+        const int64_t safeAfter = prevIndex >= 0 ? blockingLatestHit(notes[prevIndex]) : 0;
+        const int64_t earliestStart = std::max(safeAfter, lastTransitionEnd);
+        if (endLimit - earliestStart >= durationMs) {
+            startMs = std::max(earliestStart, endLimit - durationMs);
+            return true;
+        }
+        if (prevIndex >= 0 &&
+            maxDrops > 0 &&
+            notes[prevIndex].type != 'H' &&
+            !isDenseRhythmAround(notes, static_cast<size_t>(prevIndex))) {
+            notes[prevIndex].dropped = true;
+            droppedForAttempt.push_back(static_cast<size_t>(prevIndex));
+            --maxDrops;
+            continue;
+        }
+        if (endLimit >= durationMs && lastTransitionEnd <= endLimit - durationMs) {
+            startMs = std::max<int64_t>(lastTransitionEnd, endLimit - durationMs);
+            return true;
+        }
+        // 无法安排：恢复本次尝试丢弃的 note
+        for (size_t index : droppedForAttempt) {
+            notes[index].dropped = false;
+        }
+        return false;
+    }
+}
+
+std::vector<Formation> OsuParser::generateFormationsAndFilter(std::vector<ConvertedNote>& notes) {
+    // 生成 formations 并过滤冲突 note（对齐参考转换器：稳定性检查 + 居中 + maxDrops + 排序）
+    std::vector<Formation> formations;
     // 初始 formation
-    formations.push_back({0, kBaseRows, kBaseCols});
-    formations.back().transformType = MatrixTransform::NONE;
-    formations.back().transformDurationMs = 0;
-    formations.back().blockSize = 1.0f;
+    {
+        Formation f;
+        f.time = 0;
+        f.rows = kBaseRows;
+        f.cols = kBaseCols;
+        f.transformType = MatrixTransform::NONE;
+        f.transformDurationMs = 0;
+        f.blockSize = 1.0f;
+        formations.push_back(f);
+    }
 
     MatrixShape current{kBaseRows, kBaseCols};
-    int32_t activeStart = 0;
-    int32_t activeEnd = kActiveCols - 1;
+    int activeStart = 0;
     int64_t lastTransitionEnd = 0;
+    int64_t lastFormationTime = 0;
 
     for (size_t i = 0; i < notes.size(); ++i) {
         if (notes[i].dropped) continue;
+
         MatrixShape target = targetShapeForDensity(notes, i);
-        bool needsFormation = (target.rows != current.rows || target.cols != current.cols);
-        int32_t newActiveStart = activeStart;
-        if (target.cols > kActiveCols) {
-            int32_t noteCol = static_cast<int32_t>(std::floor(static_cast<double>(notes[i].x) / 512.0 * target.cols));
-            noteCol = std::max(0, std::min(noteCol, target.cols - 1));
-            if (noteCol > activeEnd) newActiveStart = noteCol - kActiveCols + 1;
-            else if (noteCol < activeStart) newActiveStart = noteCol;
-            if (newActiveStart < 0) newActiveStart = 0;
-            if (newActiveStart + kActiveCols > target.cols) newActiveStart = target.cols - kActiveCols;
-        } else {
-            newActiveStart = 0;
+        const bool denseRhythm = isDenseRhythmAround(notes, i);
+        bool needsFormation = target.rows != current.rows || target.cols != current.cols;
+        // 密集节奏/冷却期/不稳定阵型/行号变化时放弃变换
+        if (needsFormation && (
+                denseRhythm ||
+                notes[i].time - lastFormationTime < kFormationCooldownMs ||
+                !hasStableFormationTarget(notes, i, current, target) ||
+                !keepsRowsStableNearTransition(notes, i, current, target))) {
+            target = current;
+            needsFormation = false;
         }
-        bool needsScroll = (newActiveStart != activeStart);
-        int64_t duration = 0;
-        if (needsFormation) duration = std::max(duration, (int64_t)kFormationDurationMs);
-        if (needsScroll) duration = std::max(duration, (int64_t)kScrollDurationMs);
-        if (duration == 0) continue;
-        int64_t startMs = 0;
-        bool ok = scheduleTransitionBefore(notes, i, duration, needsFormation, lastTransitionEnd, startMs);
-        if (!ok) continue;
+
+        // 居中：将 activeStart 限制在合法范围内，变换时取目标列中点
+        const int maxActiveStart = std::max(0, target.cols - kActiveCols);
+        activeStart = std::max(0, std::min(activeStart, maxActiveStart));
+        const int targetCol = static_cast<int>(std::floor(std::max(0.0, std::min(511.999, static_cast<double>(notes[i].x))) / 512.0 * target.cols));
+        const int clampedTargetCol = std::max(0, std::min(targetCol, target.cols - 1));
+        bool needsScroll = false;
+        int nextActiveStart = activeStart;
         if (needsFormation) {
-            int tt = transformTypeFor(current, target);
+            if (target.cols > kActiveCols) {
+                nextActiveStart = std::max(0, std::min(clampedTargetCol - kActiveCols / 2, maxActiveStart));
+            } else {
+                nextActiveStart = 0;
+            }
+        } else if (!denseRhythm && target.cols > kActiveCols) {
+            if (clampedTargetCol < activeStart) {
+                needsScroll = true;
+                nextActiveStart = std::max(0, std::min(clampedTargetCol, maxActiveStart));
+            } else if (clampedTargetCol >= activeStart + kActiveCols) {
+                needsScroll = true;
+                nextActiveStart = std::max(0, std::min(clampedTargetCol - kActiveCols + 1, maxActiveStart));
+            }
+        }
+
+        if (!needsFormation && !needsScroll) continue;
+
+        const int64_t duration = std::max(
+            needsFormation ? static_cast<int64_t>(kFormationDurationMs) : 0,
+            needsScroll ? static_cast<int64_t>(kScrollDurationMs) : 0);
+
+        int64_t transitionStart = 0;
+        const int maxDrops = needsFormation ? 1 : 0;
+        if (!scheduleTransitionBefore(
+                notes, i, duration, needsFormation, lastTransitionEnd, maxDrops, transitionStart)) {
+            continue;
+        }
+
+        lastTransitionEnd = transitionStart + duration;
+        activeStart = nextActiveStart;
+        if (needsFormation) {
+            const int type = transformTypeFor(current, target);
             Formation f;
-            f.time = startMs;
+            f.time = transitionStart;
             f.rows = target.rows;
             f.cols = target.cols;
-            f.transformType = tt;
+            f.transformType = type;
             f.transformDurationMs = kFormationDurationMs;
             f.blockSize = static_cast<float>(kDefaultBlockSize);
             formations.push_back(f);
             current = target;
+            lastFormationTime = transitionStart;
         }
-        if (needsScroll) {
-            activeStart = newActiveStart;
-            activeEnd = newActiveStart + kActiveCols - 1;
-        }
-        lastTransitionEnd = startMs + duration;
     }
-    // 去重相邻相同 time
-    std::vector<Formation> deduped;
-    for (const auto& f : formations) {
-        if (deduped.empty() || deduped.back().time != f.time) deduped.push_back(f);
-    }
-    MM_LOG_INFO("OsuParser", "Generated " + std::to_string(deduped.size()) + " formations");
-    return deduped;
+
+    // 按时间排序
+    std::sort(formations.begin(), formations.end(),
+              [](const Formation& a, const Formation& b) { return a.time < b.time; });
+    MM_LOG_INFO("OsuParser", "Generated " + std::to_string(formations.size()) + " formations");
+    return formations;
 }
 
 OsuParser::MatrixShape OsuParser::shapeAtTime(const std::vector<Formation>& formations, int64_t time) {

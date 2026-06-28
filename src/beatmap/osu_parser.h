@@ -35,6 +35,11 @@ private:
     static constexpr int kActiveCols = 4;          ///< 活跃列数（dfjk 键数）
     static constexpr int kFormationDurationMs = 500; ///< 矩阵变换动画时长
     static constexpr int kScrollDurationMs = 200;   ///< 滚动动画时长
+    static constexpr int kDenseGapMs = 520;                    ///< 密集节奏判定间隔
+    static constexpr int kRowStabilityLookaheadMs = 1000;       ///< 行稳定性前瞻时间
+    static constexpr int kFormationCooldownMs = 4000;           ///< 阵型变换冷却时间
+    static constexpr int kFormationStabilityLookaheadMs = 2500; ///< 阵型稳定性前瞻时间
+    static constexpr int kMinStableTargetNotes = 3;             ///< 稳定目标最少 note 数
     static constexpr double kDefaultBlockSize = 0.9; ///< 非初始 formation 默认 blockSize
 
     // ── 内部数据结构 ──
@@ -71,6 +76,7 @@ private:
         int64_t endTime = 0;
         char type = 'T';
         NoteWindow window;
+        NoteWindow releaseWindow;  ///< Hold 释放时间窗口
         bool dropped = false;
     };
 
@@ -108,10 +114,19 @@ private:
     /// 根据行列变化计算 transformType（对齐参考转换器 transformTypeFor）
     static int transformTypeFor(const MatrixShape& from, const MatrixShape& to);
 
-    /// 在 note 窗口前安排过渡，丢弃冲突 note（对齐参考转换器 scheduleTransitionBefore）
+    static int previousKeptIndex(const std::vector<ConvertedNote>& notes, size_t before);
+    static int nextKeptIndex(const std::vector<ConvertedNote>& notes, size_t after);
+    static int64_t blockingLatestHit(const ConvertedNote& note);
+    bool isDenseRhythmAround(const std::vector<ConvertedNote>& notes, size_t index) const;
+    bool keepsRowsStableNearTransition(const std::vector<ConvertedNote>& notes, size_t index,
+                                        const MatrixShape& current, const MatrixShape& target) const;
+    bool hasStableFormationTarget(const std::vector<ConvertedNote>& notes, size_t index,
+                                   const MatrixShape& current, const MatrixShape& target) const;
+
+    /// 在 note 窗口前安排过渡，循环丢弃冲突 note 并可恢复（对齐参考转换器 scheduleTransitionBefore）
     bool scheduleTransitionBefore(std::vector<ConvertedNote>& notes, size_t noteIndex,
                                    int64_t durationMs, bool includesFormation,
-                                   int64_t lastTransitionEnd, int64_t& startMs) const;
+                                   int64_t lastTransitionEnd, int maxDrops, int64_t& startMs) const;
 
     /// 生成 formations 并过滤冲突 note（对齐参考转换器 generateFormationsAndFilter）
     std::vector<Formation> generateFormationsAndFilter(std::vector<ConvertedNote>& notes);
