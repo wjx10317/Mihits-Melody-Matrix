@@ -438,12 +438,11 @@ std::vector<Formation> OsuParser::generateFormationsAndFilter(std::vector<Conver
         MatrixShape target = targetShapeForDensity(notes, i);
         const bool denseRhythm = isDenseRhythmAround(notes, i);
         bool needsFormation = target.rows != current.rows || target.cols != current.cols;
-        // 密集节奏/冷却期/不稳定阵型/行号变化时放弃变换
+        // 密集节奏/冷却期/不稳定阵型时放弃变换
         if (needsFormation && (
                 denseRhythm ||
                 notes[i].time - lastFormationTime < kFormationCooldownMs ||
-                !hasStableFormationTarget(notes, i, current, target) ||
-                !keepsRowsStableNearTransition(notes, i, current, target))) {
+                !hasStableFormationTarget(notes, i, current, target))) {
             target = current;
             needsFormation = false;
         }
