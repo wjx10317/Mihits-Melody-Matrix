@@ -363,9 +363,6 @@ bool OsuParser::hasStableFormationTarget(const std::vector<ConvertedNote>& notes
     for (size_t i = index; i < notes.size(); ++i) {
         if (notes[i].dropped) continue;
         if (notes[i].time > end) break;
-        if (isDenseRhythmAround(notes, i)) {
-            return false;
-        }
         const MatrixShape candidate = targetShapeForDensity(notes, i);
         ++considered;
         if (candidate.rows == target.rows && candidate.cols == target.cols) {
