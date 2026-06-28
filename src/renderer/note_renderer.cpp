@@ -252,8 +252,13 @@ void NoteRenderer::buildNoteVertices(const std::vector<beatmap::Note>& notes, in
     // 位置与网格竖线一致：x = W/2 + (c - activeStartCol - 2)*gw + scrollOffset（格子左边界）
     // 活跃4列正常 alpha，非活跃列半透明（旁边列预览效果）
     if (layerBlock >= 0.0f && rows > 0 && cols > 0) {
-        int32_t effStart = scrolling ? targetStartCol : activeStartCol;
-        int32_t effEnd   = scrolling ? targetEndCol   : activeEndCol;
+        // 活跃区屏幕边界（固定，4列居中）：scrollOffset=0 时 [activeStartCol, activeEndCol] 的屏幕范围
+        // 滚动时 block 随 scrollOffset 平移进入/离开此固定区域，产生"划过去"的明暗过渡
+        float activeLeftX  = W * 0.5f - blockCenterOffset * gw;
+        float activeRightX = W * 0.5f + blockCenterOffset * gw;
+        const float blockActiveAlpha = 0.85f;
+        const float blockDimAlpha    = 0.35f;
+
         for (int r = 0; r < rows; ++r) {
             for (int c = 0; c < cols; ++c) {
                 float bx = W * 0.5f + (c - activeStartCol - blockCenterOffset) * gw + scrollOffset;
@@ -273,14 +278,34 @@ void NoteRenderer::buildNoteVertices(const std::vector<beatmap::Note>& notes, in
                 bx += slideOffsetX;
                 by += slideOffsetY;
 
-                quads.insert(quads.end(), { bx, by, gw, gh });
-                // 活跃列高亮，非活跃列半透明预览
-                bool isActive = (c >= effStart && c <= effEnd);
-                float blockAlpha = isActive ? 0.85f : 0.35f;
-                // 应用矩阵变换动画 alpha 和全局 alpha
-                blockAlpha *= m_animAlpha * m_globalAlpha;
-                colors.insert(colors.end(), { 1.0f, 1.0f, 1.0f, blockAlpha });
-                layers.push_back(layerBlock);
+                // ── 按屏幕位置拆分高亮/灰暗：跨越活跃边界时显示一半亮一半暗 ──
+                float bxRight = bx + gw;
+                float overlapLeft  = std::max(bx, activeLeftX);
+                float overlapRight = std::min(bxRight, activeRightX);
+
+                auto pushBlock = [&](float x, float w, float alpha) {
+                    quads.insert(quads.end(), { x, by, w, gh });
+                    colors.insert(colors.end(), { 1.0f, 1.0f, 1.0f, alpha * m_animAlpha * m_globalAlpha });
+                    layers.push_back(layerBlock);
+                };
+
+                if (overlapRight <= overlapLeft) {
+                    // 完全在活跃区外 → 灰暗
+                    pushBlock(bx, gw, blockDimAlpha);
+                } else if (overlapLeft <= bx && overlapRight >= bxRight) {
+                    // 完全在活跃区内 → 高亮
+                    pushBlock(bx, gw, blockActiveAlpha);
+                } else {
+                    // 跨越边界 → 拆分高亮部分 + 灰暗部分
+                    float hlW = overlapRight - overlapLeft;
+                    pushBlock(overlapLeft, hlW, blockActiveAlpha);
+                    if (bx < overlapLeft) {
+                        pushBlock(bx, overlapLeft - bx, blockDimAlpha);
+                    }
+                    if (bxRight > overlapRight) {
+                        pushBlock(overlapRight, bxRight - overlapRight, blockDimAlpha);
+                    }
+                }
             }
         }
     }
@@ -340,15 +365,21 @@ void NoteRenderer::buildNoteVertices(const std::vector<beatmap::Note>& notes, in
         cellX += slideOffsetX;
         cellY += slideOffsetY;
 
-        // 活跃列高亮，非活跃列灰暗
-        // 滚动期间使用目标窗口判断活跃列
+        // 活跃列高亮，非活跃列灰暗（按屏幕位置平滑过渡）
+        // 滚动时 note 随 scrollOffset 平移进入/离开活跃区，明暗平滑变化
         float colDim = 1.0f;
         if (cols > 4) {
-            int32_t effStart = scrolling ? targetStartCol : activeStartCol;
-            int32_t effEnd = scrolling ? targetEndCol : activeEndCol;
-            if (note.col < effStart || note.col > effEnd) {
-                colDim = 0.25f;
+            float activeLeftX  = W * 0.5f - blockCenterOffset * gw;
+            float activeRightX = W * 0.5f + blockCenterOffset * gw;
+            float noteCenterX = cellX;  // note 中心屏幕位置（已含 slideOffset）
+            // 边界外 gw 范围内线性过渡
+            float weight = 1.0f;
+            if (noteCenterX < activeLeftX) {
+                weight = std::max(0.0f, 1.0f - (activeLeftX - noteCenterX) / gw);
+            } else if (noteCenterX > activeRightX) {
+                weight = std::max(0.0f, 1.0f - (noteCenterX - activeRightX) / gw);
             }
+            colDim = 0.25f + 0.75f * weight;
         }
 
         // ── 三阶段视觉 ──
