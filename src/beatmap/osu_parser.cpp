@@ -394,7 +394,6 @@ bool OsuParser::scheduleTransitionBefore(std::vector<ConvertedNote>& notes, size
         }
         if (prevIndex >= 0 &&
             maxDrops > 0 &&
-            notes[prevIndex].type != 'H' &&
             !isDenseRhythmAround(notes, static_cast<size_t>(prevIndex))) {
             notes[prevIndex].dropped = true;
             droppedForAttempt.push_back(static_cast<size_t>(prevIndex));
@@ -479,7 +478,8 @@ std::vector<Formation> OsuParser::generateFormationsAndFilter(std::vector<Conver
             needsScroll ? static_cast<int64_t>(kScrollDurationMs) : 0);
 
         int64_t transitionStart = 0;
-        const int maxDrops = needsFormation ? 1 : 0;
+        // 矩阵变换最多丢弃 5 个前向 note（也允许丢弃 Hold），滚动不丢弃 note
+        const int maxDrops = needsFormation ? 5 : 0;
         if (!scheduleTransitionBefore(
                 notes, i, duration, needsFormation, lastTransitionEnd, maxDrops, transitionStart)) {
             continue;
