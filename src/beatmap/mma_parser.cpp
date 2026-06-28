@@ -222,9 +222,8 @@ util::Result<void> MmaParser::parseMeta(const std::vector<std::string>& lines, B
 
 util::Result<void> MmaParser::parseTransformMacros(const std::vector<std::string>& lines, BeatmapBuilder& builder) {
     // v2 [FormationTransformMacros] 段：KEY=VALUE 形式定义宏名到整数。
-    // 解析器只做记录日志，transformType 在 Formation 中直接以 int32 保存。
-    // 解析时允许跳过未识别的宏（仅记录 warning）。
-    int32_t macroCount = 0;
+    // 收集合法宏值集合，供 parseFormations 校验 transformType。
+    m_macroValues.clear();
     for (const auto& line : lines) {
         std::string key, value;
         if (!parseKeyValue(line, key, value)) {
@@ -236,9 +235,10 @@ util::Result<void> MmaParser::parseTransformMacros(const std::vector<std::string
             MM_LOG_WARN("MmaParser", "Invalid macro value: " + line);
             continue;
         }
-        ++macroCount;
+        m_macroValues.insert(v);
     }
-    MM_LOG_INFO("MmaParser", "Parsed " + std::to_string(macroCount) + " transform macros");
+    m_hasMacros = !m_macroValues.empty();
+    MM_LOG_INFO("MmaParser", "Parsed " + std::to_string(m_macroValues.size()) + " transform macros");
     return util::success();
 }
 
@@ -273,19 +273,31 @@ util::Result<void> MmaParser::parseFormations(const std::vector<std::string>& li
         if (parts.size() >= 6) {
             float bs = 1.0f;
             if (parseFloat(parts[5], bs)) {
-                // 限制在合理范围 [0.1, 2.0]，避免极端值
-                f.blockSize = std::clamp(bs, 0.1f, 2.0f);
+                // v2 规范第11节：blockSize > 0，推荐范围 0.5-1.5
+                f.blockSize = std::clamp(bs, 0.5f, 1.5f);
             }
         }
         // parts[6] (noteTransformType) 在 v2 中已删除，旧文件存在时直接忽略
 
-        // 校验：rows 范围 1-4，cols 范围 3-6
+        // ── v2 规范第11节校验 ──
+        // rows 范围 1-4，cols 范围 3-6
         f.rows = std::clamp(f.rows, 1, 4);
         f.cols = std::clamp(f.cols, 3, 6);
         // transformDurationMs >= 0
         if (f.transformDurationMs < 0) {
             MM_LOG_WARN("MmaParser", "Negative transformDurationMs, clamped to 0: " + line);
             f.transformDurationMs = 0;
+        }
+        // time 单调非递减
+        if (m_lastFormationTime >= 0 && f.time < m_lastFormationTime) {
+            MM_LOG_WARN("MmaParser", "Formation time not monotonic: " + line);
+            f.time = m_lastFormationTime;
+        }
+        m_lastFormationTime = f.time;
+        // transformType 必须存在于 [FormationTransformMacros] 中（若有该段）
+        if (m_hasMacros && m_macroValues.find(f.transformType) == m_macroValues.end()) {
+            MM_LOG_WARN("MmaParser", "transformType " + std::to_string(f.transformType) +
+                        " not defined in [FormationTransformMacros]: " + line);
         }
 
         builder.addFormation(f);
@@ -317,6 +329,11 @@ util::Result<void> MmaParser::parseNotes(const std::vector<std::string>& lines, 
             } else {
                 MM_LOG_WARN("MmaParser", "Hold note missing endTime: " + line);
                 note.holdEnd = note.time + 500; // Default 500ms hold
+            }
+            // v2 规范第11节：Hold note 的 endTime 必须大于 time
+            if (note.holdEnd <= note.time) {
+                MM_LOG_WARN("MmaParser", "Hold endTime <= time, clamped to time+1: " + line);
+                note.holdEnd = note.time + 1;
             }
         } else {
             note.type = NoteType::Tap;

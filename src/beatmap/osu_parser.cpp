@@ -420,6 +420,9 @@ std::vector<Formation> OsuParser::generateBreathingFormations(
             curr.transformType = MatrixTransform::ROTATE_COMPLEX;
         }
         curr.transformDurationMs = 500;  // 固定500ms
+        // 非初始 formation 使用默认 blockSize=0.9（与 v2 规范示例及参考转换器 kDefaultBlockSize 一致）
+        // 初始 formation 保留默认 1.0（短格式）
+        curr.blockSize = 0.9f;
     }
 
     MM_LOG_INFO("OsuParser", "Generated " + std::to_string(deduped.size()) +

@@ -2,6 +2,8 @@
 
 #include "beatmap/beatmap_parser.h"
 
+#include <set>
+
 namespace melody_matrix::beatmap {
 
 /// 原生 .mma 谱面格式的解析器（v2）。
@@ -63,6 +65,11 @@ private:
     util::Result<void> parseTransformMacros(const std::vector<std::string>& lines, BeatmapBuilder& builder);
     util::Result<void> parseFormations(const std::vector<std::string>& lines, BeatmapBuilder& builder);
     util::Result<void> parseNotes(const std::vector<std::string>& lines, BeatmapBuilder& builder);
+
+    /// v2 校验辅助：[FormationTransformMacros] 定义的合法宏值集合（用于校验 transformType）
+    std::set<int32_t> m_macroValues;
+    bool m_hasMacros = false;
+    int64_t m_lastFormationTime = -1;  ///< 用于校验 time 单调非递减
 };
 
 } // namespace melody_matrix::beatmap
