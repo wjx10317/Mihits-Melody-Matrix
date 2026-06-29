@@ -7,7 +7,6 @@
 #include <sstream>
 #include <cmath>
 #include <algorithm>
-#include <numeric>
 
 namespace melody_matrix::beatmap {
 
@@ -233,6 +232,9 @@ std::vector<OsuParser::ConvertedNote> OsuParser::makeConvertedNotes() const {
             n.endTime = obj.time;
         }
         n.window = makeWindow(n.time);
+        // Hold 的释放窗口基于 endTime（对齐参考转换器 osz_to_mma.cpp:515）
+        // blockingLatestHit 依赖 releaseWindow.latestHit 判断 Hold 是否已释放完毕
+        n.releaseWindow = makeWindow(n.type == 'H' ? n.endTime : n.time);
         notes.push_back(n);
     }
     return notes;
@@ -316,6 +318,19 @@ int64_t OsuParser::blockingLatestHit(const ConvertedNote& note) {
     return note.type == 'H' ? note.releaseWindow.latestHit : note.window.latestHit;
 }
 
+int64_t OsuParser::maxBlockingLatestHitBefore(const std::vector<ConvertedNote>& notes, size_t before) {
+    // 遍历 before 之前所有未丢弃 note，取最大的 blockingLatestHit。
+    // 关键：只看 prevIndex 会漏掉更早的长 Hold（其 releaseWindow.latestHit 可能更晚），
+    // 导致变换在 Hold 仍按住时就开始，引发渲染出界与击打空间丢失。
+    int64_t maxLatest = 0;
+    for (size_t i = 0; i < before; ++i) {
+        if (notes[i].dropped) continue;
+        const int64_t lh = blockingLatestHit(notes[i]);
+        if (lh > maxLatest) maxLatest = lh;
+    }
+    return maxLatest;
+}
+
 bool OsuParser::isDenseRhythmAround(const std::vector<ConvertedNote>& notes, size_t index) const {
     // 判断当前 note 与相邻 note 的时间间隔是否小于密集判定阈值
     const int prevIndex = previousKeptIndex(notes, index);
@@ -327,28 +342,6 @@ bool OsuParser::isDenseRhythmAround(const std::vector<ConvertedNote>& notes, siz
         return true;
     }
     return false;
-}
-
-bool OsuParser::keepsRowsStableNearTransition(const std::vector<ConvertedNote>& notes, size_t index,
-                                                const MatrixShape& current, const MatrixShape& target) const {
-    // 检查过渡前瞻窗口内 note 的行号在变换前后是否保持稳定
-    if (current.rows == target.rows) {
-        return true;
-    }
-    const int64_t end = notes[index].time + kRowStabilityLookaheadMs;
-    for (size_t i = index; i < notes.size(); ++i) {
-        if (notes[i].dropped) continue;
-        if (notes[i].time > end) break;
-        const double clampedY = std::max(0.0, std::min(383.999, static_cast<double>(notes[i].y)));
-        int rowBefore = static_cast<int>(std::floor(clampedY / 384.0 * current.rows));
-        int rowAfter = static_cast<int>(std::floor(clampedY / 384.0 * target.rows));
-        rowBefore = std::max(0, std::min(rowBefore, current.rows - 1));
-        rowAfter = std::max(0, std::min(rowAfter, target.rows - 1));
-        if (rowBefore != rowAfter) {
-            return false;
-        }
-    }
-    return true;
 }
 
 bool OsuParser::hasStableFormationTarget(const std::vector<ConvertedNote>& notes, size_t index,
@@ -376,6 +369,9 @@ bool OsuParser::scheduleTransitionBefore(std::vector<ConvertedNote>& notes, size
                                            int64_t durationMs, bool includesFormation,
                                            int64_t lastTransitionEnd, int maxDrops, int64_t& startMs) const {
     // 在 note 窗口前安排过渡：循环丢弃冲突 note，失败时恢复丢弃（对齐参考转换器）
+    // safeAfter 必须覆盖 noteIndex 之前所有 kept note 的最大 blockingLatestHit，
+    // 否则更早的长 Hold（releaseWindow.latestHit 更晚）会在变换期间仍按住，
+    // 导致变换后 Hold.col 超出新阵型 activeStart 范围 → 渲染出界 / 无击打空间。
     const int64_t endLimit = includesFormation
         ? notes[noteIndex].window.displayStart
         : notes[noteIndex].window.earliestHit;
@@ -383,7 +379,7 @@ bool OsuParser::scheduleTransitionBefore(std::vector<ConvertedNote>& notes, size
 
     while (true) {
         const int prevIndex = previousKeptIndex(notes, noteIndex);
-        const int64_t safeAfter = prevIndex >= 0 ? blockingLatestHit(notes[prevIndex]) : 0;
+        const int64_t safeAfter = maxBlockingLatestHitBefore(notes, noteIndex);
         const int64_t earliestStart = std::max(safeAfter, lastTransitionEnd);
         if (endLimit - earliestStart >= durationMs) {
             startMs = std::max(earliestStart, endLimit - durationMs);
@@ -396,8 +392,41 @@ bool OsuParser::scheduleTransitionBefore(std::vector<ConvertedNote>& notes, size
             continue;
         }
         if (endLimit >= durationMs && lastTransitionEnd <= endLimit - durationMs) {
-            startMs = std::max<int64_t>(lastTransitionEnd, endLimit - durationMs);
-            return true;
+            const int64_t fallbackStart = std::max<int64_t>(lastTransitionEnd, endLimit - durationMs);
+            std::vector<size_t> holdsToDowngrade;
+            bool hasUndowngradableConflict = false;
+
+            // Fallback may only ignore conflicts that can be made non-blocking.
+            // A preceding Hold can be softened to Tap, but Tap conflicts must still block.
+            for (size_t i = 0; i < noteIndex; ++i) {
+                if (notes[i].dropped) continue;
+                if (blockingLatestHit(notes[i]) <= fallbackStart) continue;
+
+                if (notes[i].type == 'H' && notes[i].window.latestHit <= fallbackStart) {
+                    holdsToDowngrade.push_back(i);
+                    continue;
+                }
+                hasUndowngradableConflict = true;
+                break;
+            }
+
+            if (!hasUndowngradableConflict) {
+                for (size_t index : holdsToDowngrade) {
+                    notes[index].type = 'T';
+                    notes[index].endTime = notes[index].time;
+                    notes[index].releaseWindow = notes[index].window;
+                }
+                startMs = fallbackStart;
+                return true;
+            }
+        }
+        if (endLimit >= durationMs && lastTransitionEnd <= endLimit - durationMs) {
+            // Previous fallback path was unsafe because it bypassed safeAfter.
+            // Restore dropped notes before failing when conflicts cannot be downgraded.
+            for (size_t index : droppedForAttempt) {
+                notes[index].dropped = false;
+            }
+            return false;
         }
         // 无法安排：恢复本次尝试丢弃的 note
         for (size_t index : droppedForAttempt) {

@@ -14,11 +14,7 @@ namespace melody_matrix::audio {
 // 工具函数：绕过 Windows min/max 宏
 // ============================================================
 static float mm_min(float a, float b) { return a < b ? a : b; }
-static float mm_max(float a, float b) { return a > b ? a : b; }
 static float mm_clamp(float v, float lo, float hi) {
-    return v < lo ? lo : (v > hi ? hi : v);
-}
-static int64_t mm_clamp_i64(int64_t v, int64_t lo, int64_t hi) {
     return v < lo ? lo : (v > hi ? hi : v);
 }
 // seek 辅助函数 —— 秒 → PCM帧（miniaudio 无 set_cursor_in_seconds）

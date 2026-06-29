@@ -13,7 +13,6 @@ enum class JudgmentResult : uint8_t {
 };
 
 /// 判定策略接口 — 根据 OD 确定时间窗口。
-/// 实现类：StandardJudgeStrategy, EasyJudgeStrategy（模组）
 class IJudgeStrategy {
 public:
     virtual ~IJudgeStrategy() = default;
@@ -43,22 +42,6 @@ public:
 
     int64_t missThreshold(float od) const override {
         // Good 窗口 + 50ms 自动 Miss 缓冲
-        return goodWindow(od) + 50;
-    }
-};
-
-/// 简单模组策略 — 更宽的窗口
-class EasyJudgeStrategy : public IJudgeStrategy {
-public:
-    int32_t perfectWindow(float od) const override {
-        return static_cast<int32_t>((22.0f - 1.05f * od) * 1.4f);
-    }
-
-    int32_t goodWindow(float od) const override {
-        return static_cast<int32_t>((65.0f - 2.6f * od) * 1.4f);
-    }
-
-    int64_t missThreshold(float od) const override {
         return goodWindow(od) + 50;
     }
 };

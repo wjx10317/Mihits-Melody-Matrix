@@ -11,33 +11,6 @@
 namespace melody_matrix::beatmap {
 
 // ──────────────────────────────────────────────────────
-//  辅助函数
-// ──────────────────────────────────────────────────────
-
-/// 替换字符串中所有 Windows 不允许出现在文件名中的字符
-static std::string sanitizeFilename(const std::string& name) {
-    std::string result = name;
-    for (auto& c : result) {
-        if (c == '\\' || c == '/' || c == ':' || c == '*' || c == '?' ||
-            c == '"' || c == '<' || c == '>' || c == '|') {
-            c = '_';
-        }
-    }
-    // 去除首尾空格
-    while (!result.empty() && result.front() == ' ') result.erase(result.begin());
-    while (!result.empty() && result.back() == ' ') result.pop_back();
-    // 空名用占位
-    if (result.empty()) result = "Unknown";
-    return result;
-}
-
-/// 截断过长的文件名，保留最多 200 字符（为路径留余地）
-static std::string truncateFilename(const std::string& name, size_t maxLen = 200) {
-    if (name.size() <= maxLen) return name;
-    return name.substr(0, maxLen);
-}
-
-// ──────────────────────────────────────────────────────
 //  序列化
 // ──────────────────────────────────────────────────────
 

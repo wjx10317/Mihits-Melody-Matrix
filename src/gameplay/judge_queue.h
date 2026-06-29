@@ -25,12 +25,21 @@ struct NoteMissEvent {
     int32_t col;
 };
 
-/// Hold 释放判定结果
+/// Hold 尾部释放判定结果（与 Tap 相同 ± 窗口）
 enum class HoldReleaseResult : uint8_t {
     Ignored = 0,   ///< 该列没有活跃 Hold
-    Perfect = 1,   ///< 释放时机在 Perfect 窗口内
-    Good    = 2,   ///< 释放时机在 Good 窗口内
-    Miss    = 3,   ///< 过早释放
+    Perfect = 1,
+    Good    = 2,
+    Miss    = 3,
+};
+
+/// Hold 尾部判定事件
+struct HoldTailEvent {
+    int32_t           col = 0;
+    int32_t           row = 0;
+    HoldReleaseResult result = HoldReleaseResult::Ignored;
+    int64_t           holdEndMs = 0;
+    int64_t           releaseMs = 0;
 };
 
 /// 单列判定队列
@@ -88,11 +97,6 @@ public:
     /// 获取指定列的队列（供渲染器遍历可见音符）
     const ColumnQueue& columnQueue(int32_t col) const;
 
-    /// move 语义：将指定列的 note 数据移出并返回，列被清空。
-    /// 用于滚动时将离开窗口的列转移到"已完成"区域，保证 note 不丢失。
-    /// 同时将 head 设为原 notes.size()，使渲染器跳过该列所有音符。
-    std::vector<beatmap::Note> moveColumnNotes(int32_t col);
-
     /// 获取总列数
     int32_t columnCount() const { return m_columnCount; }
 
@@ -102,8 +106,12 @@ public:
     // ── 事件回调 ──
     std::function<void(const NoteHitEvent&)>  onHit;
     std::function<void(const NoteMissEvent&)> onMiss;
+    /// Hold 尾部松手/超时判定
+    std::function<void(const HoldTailEvent&)> onHoldTail;
 
 private:
+    HoldReleaseResult judgeHoldTailTiming(int64_t dt, float od) const;
+    HoldReleaseResult commitHoldTail(int32_t column, int64_t releaseTimeMs, float od);
     void commitHit(int32_t column, JudgmentResult result, int64_t pressTimeMs);
     void emitMiss(int32_t column);
 

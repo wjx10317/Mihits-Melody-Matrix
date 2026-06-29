@@ -8,6 +8,7 @@
 #include "gameplay/hp_manager.h"
 #include "gameplay/formation_controller.h"
 #include "beatmap/beatmap.h"
+#include "renderer/note_renderer.h"
 
 #include <SDL.h>
 #include <array>
@@ -27,11 +28,23 @@ public:
     GameState update(float dt) override;
     void render() override;
 
+    /// 立即处理一条键盘事件。eventTimeMs 是事件发生时换算出的歌曲时间。
+    ///
+    /// 按键→判定链路:
+    ///   SDL KEYDOWN/UP → Kernel::syncPlayingClock → dispatchGameplayKeyEvent
+    ///     → Clock::songTimeAtTickMs(SDL event timestamp)  // 与 interpolatedNowMs 同用 SDL tick
+    ///     → handleKeyEvent → JudgeQueue
+    /// 判定时刻 = 歌曲时间 − timingOffsetMs；音符渲染另加 visualLead 补偿显示延迟。
+    void handleKeyEvent(int32_t key, bool pressed, int64_t eventTimeMs);
+
     /// 设置要播放的谱面文件
     void setBeatmapFile(const std::string& path) { m_beatmapFile = path; }
 
     /// 标记在下一次 onEnter() 时应重新初始化游戏
     void markNeedsReinit() { m_needsReinit = true; }
+
+    /// 从音频 cursor 同步时钟（主循环处理输入前调用，保证按键 timestamp 换算准确）
+    void syncClockFromAudio();
 
     /// 清除渲染资源（在非 Playing 状态下退出时调用）
     void cleanupRenderer();
@@ -45,7 +58,6 @@ public:
 private:
     void initGameplay();
     void resetGameplay();
-    void processInput();
     void renderHUD();
     void renderImGuiOverlay();
 
@@ -55,9 +67,19 @@ private:
     };
     std::vector<KeyColumnMapping> getKeyMapping() const;
 
-    void handlePressResult(gameplay::JudgmentResult result, int32_t column,
-                           int64_t pressTime, int64_t noteTime);
-    void handleHoldReleaseResult(gameplay::HoldReleaseResult result, int32_t column);
+    void handlePressResult(gameplay::JudgmentResult result, int32_t column, int32_t row,
+                           int64_t pressTime, int64_t noteTime, bool isTapNote = true);
+    void handleHoldTailEvent(const gameplay::HoldTailEvent& evt);
+
+    /// 歌曲时间 → 判定时间（用户 timing offset，默认 0）
+    int64_t toJudgeSongTimeMs(int64_t songTimeMs) const {
+        return songTimeMs - m_timingOffsetMs;
+    }
+
+    void processAutoplay(int64_t nowMs, float od);
+    int keyIndexForColumn(int32_t column) const;
+    bool isKeyVisuallyDown(int keyIndex) const;
+    bool isFormationJudgmentBlocked(int64_t songTimeMs) const;
 
     // ── 游戏子系统 ──
     audio::AudioEngine m_audio;
@@ -77,6 +99,19 @@ private:
 
     // ── Autoplay 模组 ──
     bool m_autoplay = false;
+    int64_t m_timingOffsetMs = 0;  ///< 正值表示音频听感偏晚，判定时间向前补偿
+    bool m_debugHudEnabled = false;
+
+    struct HitTimingDebug {
+        int64_t judgeMs = 0;
+        int64_t noteMs = 0;
+        int64_t timing = 0;
+        gameplay::JudgmentResult result = gameplay::JudgmentResult::Ignored;
+    };
+    HitTimingDebug m_lastHitDebug;
+
+    static constexpr float HIT_EFFECT_DURATION = 0.28f;
+    std::vector<renderer::CellHitEffect> m_hitEffects;
 
     // ── 偏移条（Offset Bar）──
     bool m_offsetBarEnabled = false;
@@ -103,7 +138,10 @@ private:
     static constexpr int KEY_COUNT = 4;
     static constexpr int KEY_CODES[KEY_COUNT] = { SDLK_d, SDLK_f, SDLK_j, SDLK_k };
     static constexpr const char* KEY_LABELS[KEY_COUNT] = { "D", "F", "J", "K" };
-    std::array<bool, KEY_COUNT> m_curKeyDown = {};  ///< 当前按键状态（供按键提示+Hold判定）
+    std::array<bool, KEY_COUNT> m_curKeyDown = {};   ///< 玩家物理按键（供视觉反馈）
+    std::array<bool, KEY_COUNT> m_autoKeyDown = {}; ///< Autoplay 模拟按键（供视觉反馈）
+    std::array<float, KEY_COUNT> m_autoKeyFlash = {}; ///< Tap 击打后短暂高亮（秒）
+    static constexpr float AUTO_KEY_FLASH_SEC = 0.09f;
 
     // ── 列活跃窗口 ──
     struct ScrollWindow {

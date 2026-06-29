@@ -48,23 +48,50 @@ void JudgeQueue::setStrategy(std::unique_ptr<IJudgeStrategy> strategy) {
     m_strategy = strategy ? std::move(strategy) : std::make_unique<StandardJudgeStrategy>();
 }
 
+HoldReleaseResult JudgeQueue::judgeHoldTailTiming(int64_t dt, float od) const {
+    const int32_t pw = m_strategy->perfectWindow(od);
+    const int32_t gw = m_strategy->goodWindow(od);
+    if (std::abs(dt) <= pw) return HoldReleaseResult::Perfect;
+    if (std::abs(dt) <= gw) return HoldReleaseResult::Good;
+    return HoldReleaseResult::Miss;
+}
+
+HoldReleaseResult JudgeQueue::commitHoldTail(int32_t column, int64_t releaseTimeMs, float od) {
+    auto& hold = m_activeHolds[column];
+    if (!hold.holding) {
+        return HoldReleaseResult::Ignored;
+    }
+
+    const int64_t dt = releaseTimeMs - hold.holdEndTimeMs;
+    const HoldReleaseResult result = judgeHoldTailTiming(dt, od);
+
+    HoldTailEvent evt;
+    evt.col = hold.col;
+    evt.row = hold.row;
+    evt.result = result;
+    evt.holdEndMs = hold.holdEndTimeMs;
+    evt.releaseMs = releaseTimeMs;
+
+    hold.holding = false;
+    auto& col = m_columns[column];
+    if (!col.finished() && col.front().type == beatmap::NoteType::Hold) {
+        col.advance();
+    }
+
+    if (onHoldTail) {
+        onHoldTail(evt);
+    }
+    return result;
+}
+
 void JudgeQueue::update(int64_t nowMs, float od) {
     const int64_t miss = m_strategy->missThreshold(od);
-    const int32_t gw = m_strategy->goodWindow(od);
 
-    // ── Hold 超时兜底：玩家按下后未释放，超过 holdEnd + goodWindow 判 Miss ──
-    // head 已在按下时 commitHit+advance，这里只触发 onMiss 回调，不 advance
+    // Hold 尾部超时：超过 holdEnd + miss 仍未松手，按尾部 Miss 处理（与 Tap 过期 Miss 一致）
     for (int32_t c = 0; c < m_columnCount; ++c) {
         auto& hold = m_activeHolds[c];
-        if (hold.holding && nowMs > hold.holdEndTimeMs + gw) {
-            hold.holding = false;
-            if (onMiss) {
-                NoteMissEvent evt;
-                evt.time = hold.holdEndTimeMs;
-                evt.row  = hold.row;
-                evt.col  = hold.col;
-                onMiss(evt);
-            }
+        if (hold.holding && nowMs > hold.holdEndTimeMs + miss) {
+            commitHoldTail(c, nowMs, od);
         }
     }
 
@@ -128,8 +155,11 @@ JudgmentResult JudgeQueue::onKeyPress(int64_t pressTimeMs, int32_t column, float
         return JudgmentResult::Ignored;
     }
 
-    // Hold 判定：按下时只判定"是否按到了头部"
+    // Hold 判定：按下时只进入 active 状态；释放/超时后才推进 head。
     if (note.type == beatmap::NoteType::Hold) {
+        if (m_activeHolds[column].holding) {
+            return JudgmentResult::Ignored;
+        }
         if (std::abs(dt) <= pw) {
             // Perfect 按下 → 进入 Hold 状态
             auto& hold = m_activeHolds[column];
@@ -138,8 +168,15 @@ JudgmentResult JudgeQueue::onKeyPress(int64_t pressTimeMs, int32_t column, float
             hold.holdEndTimeMs = note.holdEnd;
             hold.row = note.row;
             hold.col = note.col;
-            // 不前进 head，等释放时再完成
-            commitHit(column, JudgmentResult::Perfect, pressTimeMs);
+            if (onHit) {
+                NoteHitEvent evt;
+                evt.result    = JudgmentResult::Perfect;
+                evt.time      = note.time;
+                evt.row       = note.row;
+                evt.col       = note.col;
+                evt.pressTime = pressTimeMs;
+                onHit(evt);
+            }
             return JudgmentResult::Perfect;
         }
         if (std::abs(dt) <= gw) {
@@ -149,7 +186,15 @@ JudgmentResult JudgeQueue::onKeyPress(int64_t pressTimeMs, int32_t column, float
             hold.holdEndTimeMs = note.holdEnd;
             hold.row = note.row;
             hold.col = note.col;
-            commitHit(column, JudgmentResult::Good, pressTimeMs);
+            if (onHit) {
+                NoteHitEvent evt;
+                evt.result    = JudgmentResult::Good;
+                evt.time      = note.time;
+                evt.row       = note.row;
+                evt.col       = note.col;
+                evt.pressTime = pressTimeMs;
+                onHit(evt);
+            }
             return JudgmentResult::Good;
         }
         return JudgmentResult::Ignored;
@@ -162,37 +207,7 @@ HoldReleaseResult JudgeQueue::onKeyRelease(int64_t releaseTimeMs, int32_t column
     if (column < 0 || column >= m_columnCount) {
         return HoldReleaseResult::Ignored;
     }
-
-    auto& hold = m_activeHolds[column];
-    if (!hold.holding) {
-        return HoldReleaseResult::Ignored;
-    }
-
-    const int32_t pw = m_strategy->perfectWindow(od);
-    const int32_t gw = m_strategy->goodWindow(od);
-    const int64_t dt = releaseTimeMs - hold.holdEndTimeMs;
-
-    hold.holding = false;
-
-    // 释放判定：以 holdEnd 为基准
-    if (std::abs(dt) <= pw) {
-        return HoldReleaseResult::Perfect;
-    }
-    if (std::abs(dt) <= gw) {
-        return HoldReleaseResult::Good;
-    }
-
-    // 过早释放 → Miss
-    if (dt < -static_cast<int64_t>(gw)) {
-        return HoldReleaseResult::Miss;
-    }
-
-    // 过晚释放 → Miss
-    if (dt > static_cast<int64_t>(gw)) {
-        return HoldReleaseResult::Miss;
-    }
-
-    return HoldReleaseResult::Good;
+    return commitHoldTail(column, releaseTimeMs, od);
 }
 
 const beatmap::Note* JudgeQueue::getActiveHold(int32_t column) const {
@@ -202,12 +217,12 @@ const beatmap::Note* JudgeQueue::getActiveHold(int32_t column) const {
     if (!m_activeHolds[column].holding) {
         return nullptr;
     }
-    // 返回该列的当前头部音符（Hold 已被 commitHit 推进，所以需要 head-1）
+    // Hold 按下后 head 保持在该 Hold，释放/超时后才推进。
     auto& col = m_columns[column];
-    if (col.head == 0 || col.notes.empty() || col.head > col.notes.size()) {
+    if (col.finished() || col.notes.empty()) {
         return nullptr;
     }
-    return &col.notes[col.head - 1];
+    return &col.front();
 }
 
 bool JudgeQueue::finished() const {
@@ -229,22 +244,6 @@ void JudgeQueue::reset() {
 
 const ColumnQueue& JudgeQueue::columnQueue(int32_t col) const {
     return m_columns[col];
-}
-
-std::vector<beatmap::Note> JudgeQueue::moveColumnNotes(int32_t col) {
-    if (col < 0 || col >= m_columnCount) {
-        return {};
-    }
-    auto& colQ = m_columns[col];
-    // 将 head 推进到 notes 末尾，使渲染器（通过 colHeads）跳过该列全部音符
-    colQ.head = colQ.notes.size();
-    // move 出 note 数据，保证不丢失
-    std::vector<beatmap::Note> result = std::move(colQ.notes);
-    colQ.notes.clear();  // std::move 后保证有效空状态
-    // 清理该列的 Hold 状态，避免 move 后产生悬空引用
-    m_activeHolds[col] = {};
-    // head 保持为原 size，finished() == true
-    return result;
 }
 
 size_t JudgeQueue::totalNotes() const {

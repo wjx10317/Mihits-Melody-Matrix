@@ -220,7 +220,7 @@ util::Result<void> MmaParser::parseMeta(const std::vector<std::string>& lines, B
     return util::success();
 }
 
-util::Result<void> MmaParser::parseTransformMacros(const std::vector<std::string>& lines, BeatmapBuilder& builder) {
+util::Result<void> MmaParser::parseTransformMacros(const std::vector<std::string>& lines, BeatmapBuilder& /*builder*/) {
     // v2 [FormationTransformMacros] 段：KEY=VALUE 形式定义宏名到整数。
     // 收集合法宏值集合，供 parseFormations 校验 transformType。
     m_macroValues.clear();

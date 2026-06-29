@@ -910,6 +910,87 @@ void MainMenuState::renderSettingsSidebar() {
 
     ImGui::Spacing();
 
+    // 判定时间偏移：音频听感偏晚时增大，使判定早于歌曲时间
+    {
+        static int s_timingOffset = platform::Config::getInt(
+            platform::Config::KEY_TIMING_OFFSET, 0);
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.7f, 0.7f, 0.75f, 1.0f));
+        ImGui::Text("Timing Offset: %+d ms", s_timingOffset);
+        ImGui::PopStyleColor();
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.5f, 0.5f, 0.6f, 0.9f));
+        ImGui::TextWrapped("Positive = judge earlier if audio feels late.");
+        ImGui::PopStyleColor();
+        ImGui::PushStyleColor(ImGuiCol_SliderGrab,
+            ImVec4(Theme::CYAN_R, Theme::CYAN_G, Theme::CYAN_B, 0.8f));
+        ImGui::PushStyleColor(ImGuiCol_SliderGrabActive,
+            ImVec4(Theme::CYAN_R, Theme::CYAN_G, Theme::CYAN_B, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_FrameBg,
+            ImVec4(0.18f, 0.18f, 0.30f, 0.8f));
+        ImGui::PushStyleColor(ImGuiCol_FrameBgHovered,
+            ImVec4(0.25f, 0.25f, 0.40f, 0.9f));
+        if (ImGui::SliderInt("##TimingOffset", &s_timingOffset, -100, 100, "%d ms")) {
+            platform::Config::setInt(platform::Config::KEY_TIMING_OFFSET, s_timingOffset);
+            platform::Config::save();
+        }
+        ImGui::PopStyleColor(4);
+    }
+
+    ImGui::Spacing();
+
+    // 视觉超前：补偿显示管线延迟，使 note 到达屏幕中心时更接近判定时刻
+    {
+        static int s_visualLead = platform::Config::getInt(
+            platform::Config::KEY_VISUAL_LEAD, 16);
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.7f, 0.7f, 0.75f, 1.0f));
+        ImGui::Text("Visual Lead: %d ms", s_visualLead);
+        ImGui::PopStyleColor();
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.5f, 0.5f, 0.6f, 0.9f));
+        ImGui::TextWrapped("Render notes ahead to match on-screen timing (+ half frame auto).");
+        ImGui::PopStyleColor();
+        ImGui::PushStyleColor(ImGuiCol_SliderGrab,
+            ImVec4(Theme::CYAN_R, Theme::CYAN_G, Theme::CYAN_B, 0.8f));
+        ImGui::PushStyleColor(ImGuiCol_SliderGrabActive,
+            ImVec4(Theme::CYAN_R, Theme::CYAN_G, Theme::CYAN_B, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_FrameBg,
+            ImVec4(0.18f, 0.18f, 0.30f, 0.8f));
+        ImGui::PushStyleColor(ImGuiCol_FrameBgHovered,
+            ImVec4(0.25f, 0.25f, 0.40f, 0.9f));
+        if (ImGui::SliderInt("##VisualLead", &s_visualLead, 0, 50, "%d ms")) {
+            platform::Config::setInt(platform::Config::KEY_VISUAL_LEAD, s_visualLead);
+            platform::Config::save();
+        }
+        ImGui::PopStyleColor(4);
+    }
+
+    ImGui::Spacing();
+
+    // Debug HUD 开关
+    {
+        bool debugHud = platform::Config::getInt(platform::Config::KEY_DEBUG_HUD, 0) != 0;
+        if (debugHud) {
+            ImGui::PushStyleColor(ImGuiCol_Button,
+                ImVec4(Theme::CYAN_R, Theme::CYAN_G, Theme::CYAN_B, 0.35f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
+                ImVec4(Theme::CYAN_R, Theme::CYAN_G, Theme::CYAN_B, 0.5f));
+            ImGui::PushStyleColor(ImGuiCol_Text,
+                ImVec4(Theme::CYAN_R, Theme::CYAN_G, Theme::CYAN_B, 1.0f));
+        } else {
+            ImGui::PushStyleColor(ImGuiCol_Button,
+                ImVec4(0.18f, 0.18f, 0.30f, 0.8f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
+                ImVec4(0.25f, 0.25f, 0.40f, 0.9f));
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.7f, 0.7f, 0.75f, 1.0f));
+        }
+        if (ImGui::Button(debugHud ? "DEBUG HUD: ON" : "DEBUG HUD: OFF",
+                          ImVec2(sidebarWidth - 60, 38))) {
+            platform::Config::setInt(platform::Config::KEY_DEBUG_HUD, debugHud ? 0 : 1);
+            platform::Config::save();
+        }
+        ImGui::PopStyleColor(3);
+    }
+
+    ImGui::Spacing();
+
     // 偏移条开关（Offset Bar）
     {
         bool offsetBarEnabled = platform::Config::getInt(platform::Config::KEY_OFFSET_BAR, 0) != 0;

@@ -58,6 +58,7 @@ public:
                         bool scrolling, float scrollProgress);
     /// 更新各列判定头指针（用于跳过已判定的音符）
     void setColumnHeads(const std::array<size_t, 8>& heads, int32_t columnCount);
+    void setHitEffects(const std::vector<CellHitEffect>& effects) { m_hitEffects = effects; }
     void shutdown();
 
     /// 设置背景遮罩透明度（0.0=无遮罩, 1.0=完全遮盖）
@@ -92,7 +93,7 @@ private:
 
     int32_t m_gridRows = 3;
     int32_t m_gridCols = 4;
-    float m_blockSize = 0.9f;  ///< note图片相对格子的缩放比例（来自 Formation.blockSize）
+    float m_blockSize = 1.0f;  ///< 格子内容缩放（Formation.blockSize，background 与 note 同步）
     FormationTransition m_transition;
 
     float m_bgDim = 0.67f;  ///< 背景遮罩透明度（默认67%）
@@ -110,6 +111,7 @@ private:
     // ── 列判定头指针 ──
     std::array<size_t, 8> m_colHeads = {};
     int32_t m_colHeadCount = 0;
+    std::vector<CellHitEffect> m_hitEffects;
 };
 
 } // namespace melody_matrix::renderer

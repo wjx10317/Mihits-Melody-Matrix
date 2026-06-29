@@ -86,17 +86,6 @@ bool FormationController::inTransition(int64_t nowMs) const {
     return (nowMs - m_transitionStartMs) < durationMs;
 }
 
-void FormationController::cellToScreen(int row, int col, int rows, int cols,
-                                        float& outX, float& outY) {
-    // Logical resolution: 1920×1080
-    const float W = 1920.0f, H = 1080.0f, margin = 120.0f;
-    const float gw = (W - 2 * margin) / static_cast<float>(cols);
-    const float gh = (H - 2 * margin) / static_cast<float>(rows);
-
-    outX = margin + (col + 0.5f) * gw;
-    outY = margin + (row + 0.5f) * gh;
-}
-
 void FormationController::reset() {
     m_currentIndex = 0;
     m_transitionStartMs = 0;

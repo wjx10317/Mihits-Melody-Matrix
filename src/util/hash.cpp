@@ -1,6 +1,5 @@
 #include "hash.h"
 
-#include <fstream>
 #include <sstream>
 #include <iomanip>
 #include <cstring>
@@ -135,26 +134,6 @@ std::string sha256(const void* data, size_t size) {
     Sha256Ctx ctx;
     sha256Init(ctx);
     sha256Update(ctx, static_cast<const uint8_t*>(data), size);
-
-    uint8_t hash[32];
-    sha256Final(ctx, hash);
-    return toHex(hash, 32);
-}
-
-std::string sha256File(const std::string& filePath) {
-    std::ifstream ifs(filePath, std::ios::binary);
-    if (!ifs) return "";
-
-    Sha256Ctx ctx;
-    sha256Init(ctx);
-
-    char buf[8192];
-    while (ifs.read(buf, sizeof(buf))) {
-        sha256Update(ctx, reinterpret_cast<uint8_t*>(buf), static_cast<size_t>(ifs.gcount()));
-    }
-    if (ifs.gcount() > 0) {
-        sha256Update(ctx, reinterpret_cast<uint8_t*>(buf), static_cast<size_t>(ifs.gcount()));
-    }
 
     uint8_t hash[32];
     sha256Final(ctx, hash);

@@ -4,26 +4,27 @@
 #include "renderer/texture.h"
 #include "beatmap/note.h"
 #include "beatmap/beatmap.h"
-#include "gameplay/judge_strategy.h"
+#include "renderer/grid_layout.h"
 
+#include <array>
 #include <vector>
 #include <cstdint>
 
 namespace melody_matrix::renderer {
 
-/// 音符渲染器 — 在网格上绘制点音符方块和长按音符条。
-/// 使用实例化渲染 + 多纹理绑定（通过实例纹理层ID选择）。
-/// 纹理层定义：
-///   5 = background.png (判定矩阵每个格子的背景块，256x256 缩放到 gw x gh)
-///   0 = tap.png (点音符本体)
-///   1 = slider.png (长按音符本体)
-///   2 = overlay.png (判定环/缩圈)
-///   3 = sliderpush_ring.png (slider 进度环底图)
-///   4 = sliderpush_100.png (slider 100% 进度高亮)
-///   -1 = 纯色（无纹理，用 vColor 直接着色，用于未加载纹理时的 fallback）
-/// 绘制顺序：block(5) 先画（底层），note/overlay 后画（上层），靠 layer 区分纹理，单次 draw call
+struct CellHitEffect {
+    int32_t col = 0;
+    int32_t row = 0;
+    float alpha = 0.0f;
+};
+
+/// 纹理层 ID（fragment shader 按层选纹理）:
+///   5 block | 0 tap | 1 slider | 2 overlay 缩圈
+///   3 holdpush_ring | 6..16 = holdpush 0/10/..../100
 class NoteRenderer {
 public:
+    static constexpr int kHoldPushStageCount = 11;
+
     NoteRenderer() = default;
     ~NoteRenderer() = default;
 
@@ -32,28 +33,20 @@ public:
                 int rows, int cols, float ar,
                 int32_t activeStartCol, int32_t activeEndCol,
                 const std::array<size_t, 8>& colHeads, int32_t colHeadCount,
+                const std::vector<CellHitEffect>& hitEffects = {},
                 float scrollOffset = 0.0f, bool scrolling = false, float scrollProgress = 0.0f,
                 int32_t targetStartCol = 0, int32_t targetEndCol = 3);
     void shutdown();
 
-    /// 设置 note 渲染所需的纹理资源（由 Renderer 在初始化时调用）
-    /// 指针可为 nullptr（对应层退化为纯色）
-    /// block 纹理 = background.png，用于判定矩阵每个格子的背景块
     void setTextures(const Texture2D* tap, const Texture2D* slider,
-                     const Texture2D* overlay, const Texture2D* sliderPushRing,
-                     const Texture2D* sliderPushFull, const Texture2D* block);
+                     const Texture2D* overlay,
+                     const Texture2D* holdPushRing,
+                     const std::array<const Texture2D*, kHoldPushStageCount>& holdPushStages,
+                     const Texture2D* block);
 
-    /// 设置 note 图片相对格子的缩放比例（来自 Formation.blockSize，默认 0.9）
     void setBlockSize(float blockSize) { m_blockSize = blockSize; }
-
-    /// 设置全局 alpha（用于休息段渐变隐藏，0=隐藏, 1=显示，默认1）
     void setGlobalAlpha(float alpha) { m_globalAlpha = std::max(0.0f, std::min(1.0f, alpha)); }
 
-    /// 设置矩阵变换动画参数（由 Renderer 在阵型过渡时调用）
-    /// rotation: 旋转角度（弧度）；alpha: 动画 alpha（淡入/淡出）
-    /// prevRows/prevCols: 前一阵型行列（-1=无动画）
-    /// slideProgress: 滑入进度（0=新行/列在屏幕外，1=到位）
-    /// slideRows/slideCols: 新行从左滑入/新列从顶部滑下
     void setAnimParams(float rotation, float alpha,
                        int32_t prevRows, int32_t prevCols,
                        float slideProgress, bool slideRows, bool slideCols) {
@@ -67,45 +60,72 @@ public:
     }
 
 private:
+    /// background 与 note 同步按 blockSize 缩放；格缝露出 Background Dim。
+    static constexpr float kCellTexRefPx = GridLayout::kDefaultCellW;
+    static constexpr float kLayerTap = 0.0f;
+    static constexpr float kLayerSlider = 1.0f;
+    static constexpr float kLayerOverlay = 2.0f;
+    static constexpr float kLayerHoldPushRing = 3.0f;
+    static constexpr float kLayerHoldPushBase = 6.0f;
+    static constexpr float kLayerBlock = 5.0f;
+
     void buildNoteVertices(const std::vector<beatmap::Note>& notes, int64_t timeMs,
                            int rows, int cols, float ar,
                            int32_t activeStartCol, int32_t activeEndCol,
                            const std::array<size_t, 8>& colHeads, int32_t colHeadCount,
+                           const std::vector<CellHitEffect>& hitEffects,
                            std::vector<float>& quads,
                            std::vector<float>& colors,
                            std::vector<float>& layers,
-                           float scrollOffset = 0.0f, bool scrolling = false, float scrollProgress = 0.0f,
-                           int32_t targetStartCol = 0, int32_t targetEndCol = 3);
+                           std::vector<float>& arcSweeps,
+                           float scrollOffset, bool scrolling, float scrollProgress,
+                           int32_t targetStartCol, int32_t targetEndCol);
+
+    void pushQuad(std::vector<float>& quads, std::vector<float>& colors,
+                  std::vector<float>& layers, std::vector<float>& arcSweeps,
+                  float x, float y, float w, float h,
+                  float r, float g, float b, float a,
+                  float layer, float arcSweep = 0.0f) const;
+
+    void pushCenteredQuad(std::vector<float>& quads, std::vector<float>& colors,
+                          std::vector<float>& layers, std::vector<float>& arcSweeps,
+                          float cx, float cy, float w, float h,
+                          float r, float g, float b, float a, float layer,
+                          float arcSweep = 0.0f) const;
+
+    float holdPushLayerForProgress(float progress) const;
+    bool holdPushLayerHasTexture(float layer) const;
+
+    static constexpr float kApproachRingUvOuter = 1.35f;  ///< 缩圈起点 UV（越大环越大）
+    static constexpr float kHitRingUvExpand = 1.28f;      ///< 击中扩散终点 UV
 
     bool m_initialized = false;
     uint32_t m_vao = 0;
-    uint32_t m_quadVbo = 0;    // 单位四边形（共享几何体，含 UV）
-    uint32_t m_instanceVbo = 0; // 实例数据（位置+大小）
-    uint32_t m_colorVbo = 0;   // 实例颜色（tint + alpha 调制）
-    uint32_t m_layerVbo = 0;   // 实例纹理层 ID
+    uint32_t m_quadVbo = 0;
+    uint32_t m_instanceVbo = 0;
+    uint32_t m_colorVbo = 0;
+    uint32_t m_layerVbo = 0;
+    uint32_t m_arcVbo = 0;
     Shader m_shader;
-    int32_t m_maxInstances = 1024;  ///< block背景(rows*cols) + note + overlay 总实例数上限
+    int32_t m_maxInstances = 1536;
 
-    // 纹理资源（非拥有指针，由 TextureCache 管理生命周期）
     const Texture2D* m_texTap = nullptr;
     const Texture2D* m_texSlider = nullptr;
     const Texture2D* m_texOverlay = nullptr;
-    const Texture2D* m_texSliderPushRing = nullptr;
-    const Texture2D* m_texSliderPushFull = nullptr;
-    const Texture2D* m_texBlock = nullptr;  ///< background.png，判定矩阵格子背景块
+    const Texture2D* m_texHoldPushRing = nullptr;
+    std::array<const Texture2D*, kHoldPushStageCount> m_texHoldPush{};
+    const Texture2D* m_texBlock = nullptr;
 
-    // note 图片相对格子的缩放比例（来自 Formation.blockSize）
-    float m_blockSize = 0.9f;
-    float m_globalAlpha = 1.0f;  ///< 全局 alpha（休息段渐变用）
+    float m_blockSize = 1.0f;
+    float m_globalAlpha = 1.0f;
 
-    // 矩阵变换动画参数（由 setAnimParams 设置）
-    float m_animRotation = 0.0f;      ///< 旋转角度（弧度）
-    float m_animAlpha = 1.0f;         ///< 动画 alpha（淡入/淡出）
-    int32_t m_animPrevRows = -1;      ///< 前一阵型行数（-1=无动画）
-    int32_t m_animPrevCols = -1;      ///< 前一阵型列数
-    float m_animSlideProgress = 1.0f; ///< 滑入进度（0=新行/列在屏幕外，1=到位）
-    bool m_animSlideRows = false;     ///< 新行从左滑入
-    bool m_animSlideCols = false;     ///< 新列从顶部滑下
+    float m_animRotation = 0.0f;
+    float m_animAlpha = 1.0f;
+    int32_t m_animPrevRows = -1;
+    int32_t m_animPrevCols = -1;
+    float m_animSlideProgress = 1.0f;
+    bool m_animSlideRows = false;
+    bool m_animSlideCols = false;
 };
 
 } // namespace melody_matrix::renderer

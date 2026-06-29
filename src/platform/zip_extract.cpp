@@ -106,26 +106,6 @@ static int runCommand(const std::wstring& cmdLine, DWORD timeoutMs = 30000) {
 }
 
 // ──────────────────────────────────────────────────────
-//  辅助：将 UTF-8 字符串转为宽字符串
-// ──────────────────────────────────────────────────────
-static std::string wideToUtf8(const std::wstring& ws) {
-    if (ws.empty()) return "";
-    int len = WideCharToMultiByte(CP_UTF8, 0, ws.data(), static_cast<int>(ws.size()),
-                                   nullptr, 0, nullptr, nullptr);
-    std::string result(len, '\0');
-    WideCharToMultiByte(CP_UTF8, 0, ws.data(), static_cast<int>(ws.size()),
-                        &result[0], len, nullptr, nullptr);
-    return result;
-}
-static std::string utf8ToWide(const std::string& s) {
-    if (s.empty()) return "";
-    int len = MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), nullptr, 0);
-    std::wstring result(len, 0);
-    MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), &result[0], len);
-    return wideToUtf8(result);
-}
-
-// ──────────────────────────────────────────────────────
 //  解压 ZIP — 策略1: tar.exe（Windows 10 内置）
 // ──────────────────────────────────────────────────────
 static bool extractWithTar(const std::string& zipPath, const std::string& destDir) {

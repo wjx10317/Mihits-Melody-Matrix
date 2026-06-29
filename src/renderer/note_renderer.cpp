@@ -4,36 +4,74 @@
 #include <glad.h>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
+#include <algorithm>
 #include <array>
 #include <cmath>
 
 namespace melody_matrix::renderer {
 
+void NoteRenderer::pushQuad(std::vector<float>& quads, std::vector<float>& colors,
+                            std::vector<float>& layers, std::vector<float>& arcSweeps,
+                            float x, float y, float w, float h,
+                            float r, float g, float b, float a,
+                            float layer, float arcSweep) const {
+    quads.insert(quads.end(), { x, y, w, h });
+    colors.insert(colors.end(), { r, g, b, a });
+    layers.push_back(layer);
+    arcSweeps.push_back(arcSweep);
+}
+
+void NoteRenderer::pushCenteredQuad(std::vector<float>& quads, std::vector<float>& colors,
+                                    std::vector<float>& layers, std::vector<float>& arcSweeps,
+                                    float cx, float cy, float w, float h,
+                                    float r, float g, float b, float a, float layer,
+                                    float arcSweep) const {
+    pushQuad(quads, colors, layers, arcSweeps,
+             cx - w * 0.5f, cy - h * 0.5f, w, h,
+             r, g, b, a, layer, arcSweep);
+}
+
+float NoteRenderer::holdPushLayerForProgress(float progress) const {
+    int stage = std::min(kHoldPushStageCount - 1,
+                         static_cast<int>(progress * static_cast<float>(kHoldPushStageCount)));
+    if (stage >= 0 && stage < kHoldPushStageCount && m_texHoldPush[static_cast<size_t>(stage)]) {
+        return kLayerHoldPushBase + static_cast<float>(stage);
+    }
+    return -1.0f;
+}
+
+bool NoteRenderer::holdPushLayerHasTexture(float layer) const {
+    if (layer == kLayerHoldPushRing) return m_texHoldPushRing != nullptr;
+    int idx = static_cast<int>(layer - kLayerHoldPushBase + 0.5f);
+    if (idx < 0 || idx >= kHoldPushStageCount) return false;
+    return m_texHoldPush[static_cast<size_t>(idx)] != nullptr;
+}
+
 bool NoteRenderer::init() {
     MM_LOG_INFO("NoteRenderer", "Initializing...");
 
-    // ── Compile note shader（支持多纹理绑定 + 实例纹理层ID）──
     const std::string vertSrc = R"(
         #version 330 core
-        layout(location = 0) in vec2 aPos;       // unit quad (0,0)-(1,1)
-        layout(location = 1) in vec4 aInstance;   // x, y, w, h
-        layout(location = 2) in vec4 aColor;      // RGBA tint
-        layout(location = 3) in float aTexLayer;  // 纹理层 ID
+        layout(location = 0) in vec2 aPos;
+        layout(location = 1) in vec4 aInstance;
+        layout(location = 2) in vec4 aColor;
+        layout(location = 3) in float aTexLayer;
+        layout(location = 4) in float aArcSweep;
 
         uniform mat4 uProjection;
-        uniform mat4 uModel;  // 模型变换矩阵（旋转/缩放）
+        uniform mat4 uModel;
         out vec4 vColor;
         out vec2 vTexCoord;
         out float vTexLayer;
+        out float vArcSweep;
 
         void main() {
             vec2 worldPos = aPos * aInstance.zw + aInstance.xy;
             gl_Position = uProjection * uModel * vec4(worldPos, 0.0, 1.0);
             vColor = aColor;
-            // unit quad 顶点位置直接作为 UV：(0,0)左上 → (1,1)右下
-            // 配合 stbi flip_vertically_on_load(1) + Y-down 投影，UV(0,0)对应图像顶部对应屏幕上方
             vTexCoord = aPos;
             vTexLayer = aTexLayer;
+            vArcSweep = aArcSweep;
         }
     )";
     const std::string fragSrc = R"(
@@ -41,24 +79,60 @@ bool NoteRenderer::init() {
         in vec4 vColor;
         in vec2 vTexCoord;
         in float vTexLayer;
+        in float vArcSweep;
         out vec4 FragColor;
 
-        uniform sampler2D uTexBlock;    // layer 5 (background.png 格子背景块)
-        uniform sampler2D uTexTap;      // layer 0
-        uniform sampler2D uTexSlider;   // layer 1
-        uniform sampler2D uTexOverlay;  // layer 2
-        uniform sampler2D uTexSPRing;   // layer 3
-        uniform sampler2D uTexSPFull;   // layer 4
+        uniform sampler2D uTexTap;
+        uniform sampler2D uTexSlider;
+        uniform sampler2D uTexOverlay;
+        uniform sampler2D uTexHoldPushRing;
+        uniform sampler2D uTexHoldPush0;
+        uniform sampler2D uTexHoldPush1;
+        uniform sampler2D uTexHoldPush2;
+        uniform sampler2D uTexHoldPush3;
+        uniform sampler2D uTexHoldPush4;
+        uniform sampler2D uTexHoldPush5;
+        uniform sampler2D uTexHoldPush6;
+        uniform sampler2D uTexHoldPush7;
+        uniform sampler2D uTexHoldPush8;
+        uniform sampler2D uTexHoldPush9;
+        uniform sampler2D uTexHoldPush10;
+        uniform sampler2D uTexBlock;
 
         void main() {
             int layer = int(vTexLayer + 0.5);
-            vec4 texColor = vec4(1.0);  // 默认白色（纯色模式 layer=-1 或纹理未加载）
-            if (layer == 5)      texColor = texture(uTexBlock, vTexCoord);
-            else if (layer == 0) texColor = texture(uTexTap, vTexCoord);
-            else if (layer == 1) texColor = texture(uTexSlider, vTexCoord);
-            else if (layer == 2) texColor = texture(uTexOverlay, vTexCoord);
-            else if (layer == 3) texColor = texture(uTexSPRing, vTexCoord);
-            else if (layer == 4) texColor = texture(uTexSPFull, vTexCoord);
+            vec4 texColor = vec4(1.0);
+
+            if (layer == 5)       texColor = texture(uTexBlock, vTexCoord);
+            else if (layer == 0)  texColor = texture(uTexTap, vTexCoord);
+            else if (layer == 1)  texColor = texture(uTexSlider, vTexCoord);
+            else if (layer == 2) {
+                // 缩圈/击中：vArcSweep>=0 时 UV 1.35→1.0 收缩；<0 击中扩散
+                float uvScale;
+                if (vArcSweep < 0.0) {
+                    float expand = clamp(-vArcSweep, 0.0, 1.0);
+                    uvScale = mix(1.0, 1.28, expand);
+                } else {
+                    float t = clamp(vArcSweep, 0.0, 1.0);
+                    uvScale = mix(1.35, 1.0, t);
+                }
+                vec2 uv = (vTexCoord - 0.5) / uvScale + 0.5;
+                if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) discard;
+                texColor = texture(uTexOverlay, uv);
+            }
+            else if (layer == 3)  texColor = texture(uTexHoldPushRing, vTexCoord);
+            else if (layer == 6)  texColor = texture(uTexHoldPush0, vTexCoord);
+            else if (layer == 7)  texColor = texture(uTexHoldPush1, vTexCoord);
+            else if (layer == 8)  texColor = texture(uTexHoldPush2, vTexCoord);
+            else if (layer == 9)  texColor = texture(uTexHoldPush3, vTexCoord);
+            else if (layer == 10) texColor = texture(uTexHoldPush4, vTexCoord);
+            else if (layer == 11) texColor = texture(uTexHoldPush5, vTexCoord);
+            else if (layer == 12) texColor = texture(uTexHoldPush6, vTexCoord);
+            else if (layer == 13) texColor = texture(uTexHoldPush7, vTexCoord);
+            else if (layer == 14) texColor = texture(uTexHoldPush8, vTexCoord);
+            else if (layer == 15) texColor = texture(uTexHoldPush9, vTexCoord);
+            else if (layer == 16) texColor = texture(uTexHoldPush10, vTexCoord);
+
             FragColor = texColor * vColor;
         }
     )";
@@ -71,7 +145,6 @@ bool NoteRenderer::init() {
         return false;
     }
 
-    // ── Create unit quad (two triangles) ──
     float quad[] = {
         0.0f, 0.0f,  1.0f, 0.0f,  1.0f, 1.0f,
         0.0f, 0.0f,  1.0f, 1.0f,  0.0f, 1.0f
@@ -82,35 +155,38 @@ bool NoteRenderer::init() {
     glGenBuffers(1, &m_instanceVbo);
     glGenBuffers(1, &m_colorVbo);
     glGenBuffers(1, &m_layerVbo);
+    glGenBuffers(1, &m_arcVbo);
 
     glBindVertexArray(m_vao);
 
-    // Quad geometry (location 0) — 同时作为 UV 坐标
     glBindBuffer(GL_ARRAY_BUFFER, m_quadVbo);
     glBufferData(GL_ARRAY_BUFFER, sizeof(quad), quad, GL_STATIC_DRAW);
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), (void*)0);
 
-    // Instance data (location 1): x, y, w, h
     glBindBuffer(GL_ARRAY_BUFFER, m_instanceVbo);
     glBufferData(GL_ARRAY_BUFFER, m_maxInstances * 4 * sizeof(float), nullptr, GL_DYNAMIC_DRAW);
     glEnableVertexAttribArray(1);
     glVertexAttribPointer(1, 4, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)0);
     glVertexAttribDivisor(1, 1);
 
-    // Instance color (location 2): RGBA
     glBindBuffer(GL_ARRAY_BUFFER, m_colorVbo);
     glBufferData(GL_ARRAY_BUFFER, m_maxInstances * 4 * sizeof(float), nullptr, GL_DYNAMIC_DRAW);
     glEnableVertexAttribArray(2);
     glVertexAttribPointer(2, 4, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)0);
     glVertexAttribDivisor(2, 1);
 
-    // Instance texture layer (location 3): float
     glBindBuffer(GL_ARRAY_BUFFER, m_layerVbo);
-    glBufferData(GL_ARRAY_BUFFER, m_maxInstances * 1 * sizeof(float), nullptr, GL_DYNAMIC_DRAW);
+    glBufferData(GL_ARRAY_BUFFER, m_maxInstances * sizeof(float), nullptr, GL_DYNAMIC_DRAW);
     glEnableVertexAttribArray(3);
-    glVertexAttribPointer(3, 1, GL_FLOAT, GL_FALSE, 1 * sizeof(float), (void*)0);
+    glVertexAttribPointer(3, 1, GL_FLOAT, GL_FALSE, sizeof(float), (void*)0);
     glVertexAttribDivisor(3, 1);
+
+    glBindBuffer(GL_ARRAY_BUFFER, m_arcVbo);
+    glBufferData(GL_ARRAY_BUFFER, m_maxInstances * sizeof(float), nullptr, GL_DYNAMIC_DRAW);
+    glEnableVertexAttribArray(4);
+    glVertexAttribPointer(4, 1, GL_FLOAT, GL_FALSE, sizeof(float), (void*)0);
+    glVertexAttribDivisor(4, 1);
 
     glBindVertexArray(0);
 
@@ -120,13 +196,15 @@ bool NoteRenderer::init() {
 }
 
 void NoteRenderer::setTextures(const Texture2D* tap, const Texture2D* slider,
-                                const Texture2D* overlay, const Texture2D* sliderPushRing,
-                                const Texture2D* sliderPushFull, const Texture2D* block) {
+                                const Texture2D* overlay,
+                                const Texture2D* holdPushRing,
+                                const std::array<const Texture2D*, kHoldPushStageCount>& holdPushStages,
+                                const Texture2D* block) {
     m_texTap = tap;
     m_texSlider = slider;
     m_texOverlay = overlay;
-    m_texSliderPushRing = sliderPushRing;
-    m_texSliderPushFull = sliderPushFull;
+    m_texHoldPushRing = holdPushRing;
+    m_texHoldPush = holdPushStages;
     m_texBlock = block;
 }
 
@@ -134,6 +212,7 @@ void NoteRenderer::render(const std::vector<beatmap::Note>& notes, int64_t timeM
                            int rows, int cols, float ar,
                            int32_t activeStartCol, int32_t activeEndCol,
                            const std::array<size_t, 8>& colHeads, int32_t colHeadCount,
+                           const std::vector<CellHitEffect>& hitEffects,
                            float scrollOffset, bool scrolling, float scrollProgress,
                            int32_t targetStartCol, int32_t targetEndCol) {
     if (!m_initialized) return;
@@ -141,45 +220,44 @@ void NoteRenderer::render(const std::vector<beatmap::Note>& notes, int64_t timeM
     std::vector<float> quads;
     std::vector<float> colors;
     std::vector<float> layers;
+    std::vector<float> arcSweeps;
     buildNoteVertices(notes, timeMs, rows, cols, ar,
                       activeStartCol, activeEndCol,
-                      colHeads, colHeadCount, quads, colors, layers,
+                      colHeads, colHeadCount, hitEffects,
+                      quads, colors, layers, arcSweeps,
                       scrollOffset, scrolling, scrollProgress,
                       targetStartCol, targetEndCol);
 
     if (quads.empty()) return;
 
-    // 注：m_globalAlpha 与 m_animAlpha 已在 buildNoteVertices 中应用到每个颜色 alpha，
-    // 这里不再重复乘以 m_globalAlpha（避免双重衰减）。
-
     int32_t instanceCount = static_cast<int32_t>(quads.size() / 4);
     instanceCount = std::min(instanceCount, m_maxInstances);
 
-    // Update instance buffers
+    glBindVertexArray(m_vao);
     glBindBuffer(GL_ARRAY_BUFFER, m_instanceVbo);
     glBufferData(GL_ARRAY_BUFFER, quads.size() * sizeof(float), quads.data(), GL_DYNAMIC_DRAW);
-
     glBindBuffer(GL_ARRAY_BUFFER, m_colorVbo);
     glBufferData(GL_ARRAY_BUFFER, colors.size() * sizeof(float), colors.data(), GL_DYNAMIC_DRAW);
-
     glBindBuffer(GL_ARRAY_BUFFER, m_layerVbo);
     glBufferData(GL_ARRAY_BUFFER, layers.size() * sizeof(float), layers.data(), GL_DYNAMIC_DRAW);
+    glBindBuffer(GL_ARRAY_BUFFER, m_arcVbo);
+    glBufferData(GL_ARRAY_BUFFER, arcSweeps.size() * sizeof(float), arcSweeps.data(), GL_DYNAMIC_DRAW);
 
-    // 绑定多纹理到不同 texture unit
-    // 纹理未加载时绑定默认 1x1 白色纹理（或跳过），这里简单处理：仅绑定已加载的
     if (m_texTap) m_texTap->bind(0);
     if (m_texSlider) m_texSlider->bind(1);
     if (m_texOverlay) m_texOverlay->bind(2);
-    if (m_texSliderPushRing) m_texSliderPushRing->bind(3);
-    if (m_texSliderPushFull) m_texSliderPushFull->bind(4);
-    if (m_texBlock) m_texBlock->bind(5);
+    if (m_texHoldPushRing) m_texHoldPushRing->bind(3);
+    for (int i = 0; i < kHoldPushStageCount; ++i) {
+        if (m_texHoldPush[static_cast<size_t>(i)]) {
+            m_texHoldPush[static_cast<size_t>(i)]->bind(4 + i);
+        }
+    }
+    if (m_texBlock) m_texBlock->bind(4 + kHoldPushStageCount);
 
-    // Draw
     m_shader.use();
     glm::mat4 proj = glm::ortho(0.0f, 1920.0f, 1080.0f, 0.0f, -1.0f, 1.0f);
     m_shader.setMat4("uProjection", &proj[0][0]);
 
-    // 计算模型矩阵（旋转围绕屏幕中心）
     glm::mat4 model = glm::mat4(1.0f);
     if (std::abs(m_animRotation) > 0.001f) {
         glm::vec2 center(1920.0f * 0.5f, 1080.0f * 0.5f);
@@ -192,11 +270,20 @@ void NoteRenderer::render(const std::vector<beatmap::Note>& notes, int64_t timeM
     m_shader.setInt("uTexTap", 0);
     m_shader.setInt("uTexSlider", 1);
     m_shader.setInt("uTexOverlay", 2);
-    m_shader.setInt("uTexSPRing", 3);
-    m_shader.setInt("uTexSPFull", 4);
-    m_shader.setInt("uTexBlock", 5);
+    m_shader.setInt("uTexHoldPushRing", 3);
+    m_shader.setInt("uTexHoldPush0", 4);
+    m_shader.setInt("uTexHoldPush1", 5);
+    m_shader.setInt("uTexHoldPush2", 6);
+    m_shader.setInt("uTexHoldPush3", 7);
+    m_shader.setInt("uTexHoldPush4", 8);
+    m_shader.setInt("uTexHoldPush5", 9);
+    m_shader.setInt("uTexHoldPush6", 10);
+    m_shader.setInt("uTexHoldPush7", 11);
+    m_shader.setInt("uTexHoldPush8", 12);
+    m_shader.setInt("uTexHoldPush9", 13);
+    m_shader.setInt("uTexHoldPush10", 14);
+    m_shader.setInt("uTexBlock", 4 + kHoldPushStageCount);
 
-    // 启用 alpha 混合（纹理 PNG 带 alpha 通道）
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
@@ -204,300 +291,252 @@ void NoteRenderer::render(const std::vector<beatmap::Note>& notes, int64_t timeM
     glDrawArraysInstanced(GL_TRIANGLES, 0, 6, instanceCount);
     glBindVertexArray(0);
 
-    // 解绑纹理 unit，避免影响后续渲染
-    if (m_texTap) Texture2D::unbind(0);
-    if (m_texSlider) Texture2D::unbind(1);
-    if (m_texOverlay) Texture2D::unbind(2);
-    if (m_texSliderPushRing) Texture2D::unbind(3);
-    if (m_texSliderPushFull) Texture2D::unbind(4);
-    if (m_texBlock) Texture2D::unbind(5);
+    for (int i = 0; i <= 9; ++i) {
+        Texture2D::unbind(i);
+    }
 }
 
 void NoteRenderer::buildNoteVertices(const std::vector<beatmap::Note>& notes, int64_t timeMs,
                                       int rows, int cols, float ar,
                                       int32_t activeStartCol, int32_t activeEndCol,
                                       const std::array<size_t, 8>& colHeads, int32_t colHeadCount,
+                                      const std::vector<CellHitEffect>& hitEffects,
                                       std::vector<float>& quads,
                                       std::vector<float>& colors,
                                       std::vector<float>& layers,
+                                      std::vector<float>& arcSweeps,
                                       float scrollOffset, bool scrolling, float scrollProgress,
                                       int32_t targetStartCol, int32_t targetEndCol) {
-    const float W = 1920.0f, H = 1080.0f, margin = 120.0f;
-    const float gw = (W - 2 * margin) / cols;
-    const float gh = (H - 2 * margin) / rows;
-    // 音符满尺寸 = 格子大小 × m_blockSize（来自 Formation.blockSize，默认 0.9 留 10% 间距）
-    const float noteFullW = gw * m_blockSize;
-    const float noteFullH = gh * m_blockSize;
+    (void)scrolling;
+    (void)scrollProgress;
+    (void)targetStartCol;
+    (void)targetEndCol;
 
-    // 动态居中偏移：根据活跃窗口宽度计算（不再硬编码4列的1.5/2.0）
-    // cols<KEY_COUNT 时（如3列）用活跃列数算偏移，避免最左列超出屏幕
-    float activeWidth = static_cast<float>(activeEndCol - activeStartCol + 1);
-    float blockCenterOffset = activeWidth * 0.5f;        // block 左边界居中偏移
-    float noteCenterOffset = (activeWidth - 1.0f) * 0.5f; // note 中心居中偏移
+    if (rows <= 0 || cols <= 0) return;
 
-    // 纹理层 ID：纹理未加载时用 -1（纯色 fallback）
-    const float layerTap      = m_texTap ? 0.0f : -1.0f;
-    const float layerSlider   = m_texSlider ? 1.0f : -1.0f;
-    const float layerOverlay  = m_texOverlay ? 2.0f : -1.0f;
-    const float layerSPRing   = m_texSliderPushRing ? 3.0f : -1.0f;
-    const float layerSPFull   = m_texSliderPushFull ? 4.0f : -1.0f;
-    const float layerBlock    = m_texBlock ? 5.0f : -1.0f;
+    const float W = GridLayout::kScreenW;
+    const float H = GridLayout::kScreenH;
+    GridLayout layout{ rows, cols, m_blockSize };
+    const float gw = layout.gw();
+    const float gh = layout.gh();
+    const float cellW = layout.contentW();
+    const float cellH = layout.contentH();
 
-    // Approach time based on AR (osu formula)
+    float activeLeftX = 0.0f;
+    float activeRightX = 0.0f;
+    layout.activeBandX(activeStartCol, activeEndCol, activeLeftX, activeRightX);
+    const float blockActiveLeftX = activeLeftX;
+    const float blockActiveRightX = activeRightX;
+    const float contentOverflowX = std::max(0.0f, (cellW - gw) * 0.5f);
+    activeLeftX -= contentOverflowX;
+    activeRightX += contentOverflowX;
+
+    const float layerTap = m_texTap ? kLayerTap : -1.0f;
+    const float layerSlider = m_texSlider ? kLayerSlider : -1.0f;
+    const float layerOverlay = m_texOverlay ? kLayerOverlay : -1.0f;
+    const float layerBlock = m_texBlock ? kLayerBlock : -1.0f;
+
     float approachMs = 1800.0f - ar * 120.0f;
     if (approachMs < 300.0f) approachMs = 300.0f;
 
-    // ── 渲染判定矩阵的 block 背景（background.png 按块渲染）──
-    // 每个格子 (r,c) 渲染一个 background.png quad，256x256 纹理缩放到 gw x gh
-    // 位置与网格竖线一致：x = W/2 + (c - activeStartCol - 2)*gw + scrollOffset（格子左边界）
-    // 活跃4列正常 alpha，非活跃列半透明（旁边列预览效果）
+    std::vector<float> approachQuads;
+    std::vector<float> approachColors;
+    std::vector<float> approachLayers;
+    std::vector<float> approachArcSweeps;
+
+    // ── 格子背景 ──
     if (layerBlock >= 0.0f && rows > 0 && cols > 0) {
-        // 活跃区屏幕边界（固定，4列居中）：scrollOffset=0 时 [activeStartCol, activeEndCol] 的屏幕范围
-        // 滚动时 block 随 scrollOffset 平移进入/离开此固定区域，产生"划过去"的明暗过渡
-        float activeLeftX  = W * 0.5f - blockCenterOffset * gw;
-        float activeRightX = W * 0.5f + blockCenterOffset * gw;
         const float blockActiveAlpha = 0.85f;
         const float blockDimAlpha    = 0.35f;
 
         for (int r = 0; r < rows; ++r) {
             for (int c = 0; c < cols; ++c) {
-                float bx = W * 0.5f + (c - activeStartCol - blockCenterOffset) * gw + scrollOffset;
-                // 裁剪超出屏幕的列（4列居中时旁边列可能部分超出屏幕边界）
-                if (bx + gw < 0.0f || bx > W) continue;
-                float by = H - margin - (r + 1) * gh;
+                float cellCx = 0.0f;
+                float cellCy = 0.0f;
+                layout.cellCenter(r, c, activeStartCol, activeEndCol,
+                                  scrollOffset, cellCx, cellCy);
+                if (!layout.cellVisible(cellCx, cellCy)) continue;
 
-                // ── Slide 动画偏移：新行从左滑入，新列从顶部滑下 ──
                 float slideOffsetX = 0.0f;
                 if (m_animSlideRows && r >= m_animPrevRows && m_animPrevRows >= 0) {
-                    slideOffsetX = (1.0f - m_animSlideProgress) * (-W);  // 从左侧滑入
+                    slideOffsetX = (1.0f - m_animSlideProgress) * (-W);
                 }
                 float slideOffsetY = 0.0f;
                 if (m_animSlideCols && c >= m_animPrevCols && m_animPrevCols >= 0) {
-                    slideOffsetY = (1.0f - m_animSlideProgress) * (-H);  // 从顶部滑下
+                    slideOffsetY = (1.0f - m_animSlideProgress) * (-H);
                 }
-                bx += slideOffsetX;
-                by += slideOffsetY;
+                cellCx += slideOffsetX;
+                cellCy += slideOffsetY;
 
-                // ── 按屏幕位置拆分高亮/灰暗：跨越活跃边界时显示一半亮一半暗 ──
-                float bxRight = bx + gw;
-                float overlapLeft  = std::max(bx, activeLeftX);
-                float overlapRight = std::min(bxRight, activeRightX);
+                const float blockLeft = cellCx - cellW * 0.5f;
+                const float blockRight = cellCx + cellW * 0.5f;
+                float overlapLeft  = std::max(blockLeft, blockActiveLeftX);
+                float overlapRight = std::min(blockRight, blockActiveRightX);
 
                 auto pushBlock = [&](float x, float w, float alpha) {
-                    quads.insert(quads.end(), { x, by, w, gh });
-                    colors.insert(colors.end(), { 1.0f, 1.0f, 1.0f, alpha * m_animAlpha * m_globalAlpha });
-                    layers.push_back(layerBlock);
+                    pushQuad(quads, colors, layers, arcSweeps,
+                             x, cellCy - cellH * 0.5f, w, cellH,
+                             1.0f, 1.0f, 1.0f, alpha * m_animAlpha * m_globalAlpha,
+                             layerBlock);
                 };
 
                 if (overlapRight <= overlapLeft) {
-                    // 完全在活跃区外 → 灰暗
-                    pushBlock(bx, gw, blockDimAlpha);
-                } else if (overlapLeft <= bx && overlapRight >= bxRight) {
-                    // 完全在活跃区内 → 高亮
-                    pushBlock(bx, gw, blockActiveAlpha);
+                    pushBlock(blockLeft, cellW, blockDimAlpha);
+                } else if (overlapLeft <= blockLeft && overlapRight >= blockRight) {
+                    pushBlock(blockLeft, cellW, blockActiveAlpha);
                 } else {
-                    // 跨越边界 → 拆分高亮部分 + 灰暗部分
                     float hlW = overlapRight - overlapLeft;
                     pushBlock(overlapLeft, hlW, blockActiveAlpha);
-                    if (bx < overlapLeft) {
-                        pushBlock(bx, overlapLeft - bx, blockDimAlpha);
-                    }
-                    if (bxRight > overlapRight) {
-                        pushBlock(overlapRight, bxRight - overlapRight, blockDimAlpha);
-                    }
+                    if (blockLeft < overlapLeft) pushBlock(blockLeft, overlapLeft - blockLeft, blockDimAlpha);
+                    if (blockRight > overlapRight) pushBlock(overlapRight, blockRight - overlapRight, blockDimAlpha);
                 }
             }
         }
     }
 
-    // colHeads[col] = 该列 JudgeQueue 中已前进的 head 数量
     std::array<size_t, 8> colEncounterCount = {};
 
     for (const auto& note : notes) {
-        // 跳过已判定的音符
         if (note.col >= 0 && note.col < colHeadCount) {
             size_t& encountered = colEncounterCount[note.col];
             if (encountered < colHeads[note.col]) {
-                // Hold note 在按住期间不跳过：head 已 advance 但 holdEnd 未到，
-                // 需要继续渲染 slider 本体 + 进度光效，体现"按住"视觉
-                bool isHolding = (note.type == beatmap::NoteType::Hold) &&
-                                 (timeMs >= note.time && timeMs <= note.holdEnd);
-                if (!isHolding) {
+                bool holdingGhost = note.isHold() && (timeMs >= note.time && timeMs <= note.holdEnd);
+                if (!holdingGhost) {
                     encountered++;
                     continue;
                 }
-                // 按住期间：不 continue，不 encountered++（避免后续 note 误判为已遇到）
             } else {
-                // 未到 head 的 note（encountered >= colHeads）正常计数
                 encountered++;
             }
         }
 
         float timeDiff = static_cast<float>(note.time - timeMs);
+        bool isHolding = note.isHold() && (timeMs >= note.time && timeMs <= note.holdEnd);
 
-        // Hold 按住期间标志（用于保持 alpha 不淡出）
-        bool isHolding = (note.type == beatmap::NoteType::Hold) &&
-                         (timeMs >= note.time && timeMs <= note.holdEnd);
-
-        // Only render notes within approach window + brief after
-        // 按住期间的 Hold 始终渲染（不受 approach 窗口限制）
         if (!isHolding && (timeDiff > approachMs || timeDiff < -300.0f)) continue;
 
-        // 完整矩阵显示 — 4个有效列固定屏幕中央，整体随滚动偏移
-        // cellX 公式：以活跃窗口起始列 activeStartCol 为基准，让 col=[startCol, startCol+3] 始终居中
-        // 屏幕中央 4 列范围：[W/2 - 2*gw, W/2 + 2*gw]，中心列偏移 -1.5*gw ~ +1.5*gw
-        // scrollOffset 在滚动期间为 -colDelta*gw*easedP（向右滚→矩阵左移），完成后归零
-        // 滚动期间 activeStartCol 保持旧值，scrollOffset 平滑过渡，完成后 startCol 更新+scrollOffset归零，无跳变
-        float cellX = W * 0.5f + (note.col - activeStartCol - noteCenterOffset) * gw + scrollOffset;
-        // 裁剪完全超出屏幕的 note（用 note 半宽收紧，避免矩阵变换后新列note出界绘制）
-        if (cellX < -noteFullW * 0.5f || cellX > W + noteFullW * 0.5f) continue;
-        float cellY = H - margin - (note.row + 0.5f) * gh;
+        float cellX = 0.0f;
+        float cellY = 0.0f;
+        layout.cellCenter(note.row, note.col, activeStartCol, activeEndCol,
+                          scrollOffset, cellX, cellY);
+        if (!layout.cellVisible(cellX, cellY)) continue;
 
-        // ── Slide 动画偏移：新行从左滑入，新列从顶部滑下 ──
         float slideOffsetX = 0.0f;
         if (m_animSlideRows && note.row >= m_animPrevRows && m_animPrevRows >= 0) {
-            slideOffsetX = (1.0f - m_animSlideProgress) * (-W);  // 从左侧滑入
+            slideOffsetX = (1.0f - m_animSlideProgress) * (-W);
         }
         float slideOffsetY = 0.0f;
         if (m_animSlideCols && note.col >= m_animPrevCols && m_animPrevCols >= 0) {
-            slideOffsetY = (1.0f - m_animSlideProgress) * (-H);  // 从顶部滑下
+            slideOffsetY = (1.0f - m_animSlideProgress) * (-H);
         }
         cellX += slideOffsetX;
         cellY += slideOffsetY;
 
-        // 活跃列高亮，非活跃列灰暗（按屏幕位置平滑过渡）
-        // 滚动时 note 随 scrollOffset 平移进入/离开活跃区，明暗平滑变化
         float colDim = 1.0f;
         if (cols > 4) {
-            float activeLeftX  = W * 0.5f - blockCenterOffset * gw;
-            float activeRightX = W * 0.5f + blockCenterOffset * gw;
-            float noteCenterX = cellX;  // note 中心屏幕位置（已含 slideOffset）
-            // 边界外 gw 范围内线性过渡
             float weight = 1.0f;
-            if (noteCenterX < activeLeftX) {
-                weight = std::max(0.0f, 1.0f - (activeLeftX - noteCenterX) / gw);
-            } else if (noteCenterX > activeRightX) {
-                weight = std::max(0.0f, 1.0f - (noteCenterX - activeRightX) / gw);
+            if (cellX < activeLeftX) {
+                weight = std::max(0.0f, 1.0f - (activeLeftX - cellX) / gw);
+            } else if (cellX > activeRightX) {
+                weight = std::max(0.0f, 1.0f - (cellX - activeRightX) / gw);
             }
             colDim = 0.25f + 0.75f * weight;
         }
 
-        // ── 三阶段视觉 ──
-        // Phase 1: approach (timeDiff > 0) — 音符从远处接近，判定环收缩
-        // Phase 2: hittable (timeDiff ≈ 0) — 音符发光，判定环与音符重合
-        // Phase 3: expired (timeDiff < 0) — 音符淡出
+        // approachT: 0=刚进窗口(环贴逻辑格边), 1=判定时刻(环贴 note 边)
+        float approachT = 1.0f - (timeDiff / approachMs);
+        approachT = std::max(0.0f, std::min(1.0f, approachT));
 
-        float approachProgress = 1.0f - (timeDiff / approachMs);
-        approachProgress = std::max(0.0f, std::min(1.0f, approachProgress));
-
-        // 音符本体：始终在单元格中心，大小随 approach 增长
-        // noteScale: 0.3→1.0，乘以 noteFullW/H 得到实际像素大小
-        float noteScale = 0.3f + 0.7f * approachProgress;
-        float alpha = 1.0f;
-
+        float alpha = m_animAlpha * m_globalAlpha * colDim;
         if (timeDiff <= 0 && !isHolding) {
-            // 已过判定时间且非按住中：快速淡出
             float fadeProgress = -timeDiff / 300.0f;
-            alpha = 1.0f - std::min(1.0f, fadeProgress);
-            noteScale = 1.0f;
-        } else if (isHolding) {
-            // 按住期间：满尺寸、不淡出
-            noteScale = 1.0f;
+            alpha *= 1.0f - std::min(1.0f, fadeProgress);
         }
 
-        // 应用矩阵变换动画 alpha 和全局 alpha（影响 note/overlay/sliderpush）
-        alpha *= m_animAlpha * m_globalAlpha;
-
-        // 判定环（overlay.png 缩圈）：从格子边缘收缩到音符边缘
-        // overlay.png 是矩形框纹理（中间透明），用单个 quad 替代原来的4条线
-        float cellHalfW = gw * 0.5f;
-        float cellHalfH = gh * 0.5f;
-        float noteHalfW = noteFullW * 0.5f;
-        float noteHalfH = noteFullH * 0.5f;
-        // 环当前半径：从格子边缘线性收缩到音符边缘
-        float ringHalfW = cellHalfW - (cellHalfW - noteHalfW) * approachProgress;
-        float ringHalfH = cellHalfH - (cellHalfH - noteHalfH) * approachProgress;
-        float ringAlpha = 0.8f * colDim;
-        if (timeDiff <= 0) {
-            ringAlpha = 0.0f;  // 过判定时间后环消失
-        }
-        ringAlpha *= m_animAlpha * m_globalAlpha;
-
-        // ── 绘制判定环（overlay 纹理，单个 quad）──
-        if (ringAlpha > 0.01f) {
-            float rw = ringHalfW * 2.0f;
-            float rh = ringHalfH * 2.0f;
-            float rx = cellX - ringHalfW;
-            float ry = cellY - ringHalfH;
-            quads.insert(quads.end(), { rx, ry, rw, rh });
-            // tint 青色 + ringAlpha（纹理本身是白色矩形框，tint 调色）
-            colors.insert(colors.end(), { 0.0f, 1.0f, 0.96f, ringAlpha * 0.7f });
-            layers.push_back(layerOverlay);
-        }
-
-        // ── 绘制音符本体 ──
-        if (note.type == beatmap::NoteType::Tap) {
-            float w = noteFullW * noteScale;
-            float h = noteFullH * noteScale;
-            float x = cellX - w * 0.5f;
-            float y = cellY - h * 0.5f;
-
-            quads.insert(quads.end(), { x, y, w, h });
-
-            // tint 颜色：击打窗口内亮青色；接近中暗色；过期淡红
-            // 纹理 tap.png 是灰度渐变，tint 调色让 note 呈现主题色
-            float noteAlpha = alpha * 0.9f * colDim;
-            if (approachProgress > 0.85f && timeDiff >= 0) {
-                // 即将到达判定时间 — 亮色
-                float glow = (approachProgress - 0.85f) / 0.15f;  // 0→1
-                colors.insert(colors.end(), { 0.0f, 0.7f + 0.3f * glow, 0.68f + 0.28f * glow, noteAlpha });
-            } else if (timeDiff < 0) {
-                // 过期 — 淡红
-                colors.insert(colors.end(), { 0.8f, 0.2f, 0.3f, noteAlpha * 0.5f });
-            } else {
-                // 接近中 — 暗色
-                colors.insert(colors.end(), { 0.0f, 0.5f, 0.48f, noteAlpha * 0.5f });
+        // ── 1) Note 本体（与 background 同按 blockSize 缩放）──
+        if (note.type == beatmap::NoteType::Tap && layerTap >= 0.0f) {
+            float noteAlpha = alpha * 0.95f;
+            float r = 0.0f, g = 0.55f, b = 0.52f;
+            if (timeDiff <= 0.0f && timeDiff > -150.0f) {
+                r = 0.0f; g = 0.95f; b = 0.92f;
+            } else if (timeDiff > 0.0f && timeDiff <= approachMs * 0.2f) {
+                float t = 1.0f - timeDiff / (approachMs * 0.2f);
+                r = 0.0f; g = 0.55f + 0.4f * t; b = 0.52f + 0.4f * t;
             }
-            layers.push_back(layerTap);
-        } else if (note.type == beatmap::NoteType::Hold) {
-            // slider 本体（slider.png 纹理）— 大小固定，与 tap 一致用 blockSize 控制，不随 duration 变化
-            float w = noteFullW;
-            float h = noteFullH;
-            float x = cellX - w * 0.5f;
-            float y = cellY - h * 0.5f;
-
-            quads.insert(quads.end(), { x, y, w, h });
-            float holdAlpha = alpha * 0.7f * colDim;
-            if (approachProgress > 0.85f && timeDiff >= 0) {
-                colors.insert(colors.end(), { 0.702f, 0.3f, 1.0f, holdAlpha });
-            } else {
-                colors.insert(colors.end(), { 0.5f, 0.0f, 0.7f, holdAlpha * 0.5f });
+            pushCenteredQuad(quads, colors, layers, arcSweeps,
+                             cellX, cellY, cellW, cellH,
+                             r, g, b, noteAlpha, layerTap);
+        } else if (note.isHold() && layerSlider >= 0.0f) {
+            float holdAlpha = alpha * 0.88f;
+            float r = 0.5f, g = 0.0f, b = 0.7f;
+            if (isHolding || timeDiff <= 0.0f) {
+                r = 0.702f; g = 0.3f; b = 1.0f;
             }
-            layers.push_back(layerSlider);
+            pushCenteredQuad(quads, colors, layers, arcSweeps,
+                             cellX, cellY, cellW, cellH,
+                             r, g, b, holdAlpha, layerSlider);
+        }
 
-            // ── sliderpush 进度光效（hold 进行中：timeMs ∈ [note.time, note.holdEnd]）──
-            // 绘制尺寸略大于 slider 本体（×1.125 ≈ 144/128），让光效环绕 note 外围
-            // 底图 sliderpush_ring.png 始终显示（alpha 0.5），高亮 sliderpush_100.png alpha 随进度增长
+        // ── 2) 缩圈：逻辑格外扩 quad + UV 收缩；延后合批以免被 note 遮挡 ──
+        if (layerOverlay >= 0.0f && timeDiff > 0.0f && !isHolding) {
+            const bool contentFillsCell = (gw <= cellW + 0.5f);
+            const float ringOuterW =
+                contentFillsCell ? (cellW * kApproachRingUvOuter) : gw;
+            const float ringOuterH =
+                contentFillsCell ? (cellH * kApproachRingUvOuter) : gh;
+            const float ringW = cellW + (ringOuterW - cellW) * (1.0f - approachT);
+            const float ringH = cellH + (ringOuterH - cellH) * (1.0f - approachT);
+            // blockSize≈1 时由 quad 外扩承担缩圈；否则 quad 从逻辑格收到 note，UV 继续收缩
+            const float ringArcSweep = contentFillsCell ? 1.0f : approachT;
+            pushCenteredQuad(approachQuads, approachColors, approachLayers, approachArcSweeps,
+                             cellX, cellY, ringW, ringH,
+                             1.0f, 1.0f, 1.0f, alpha * 0.95f, layerOverlay,
+                             ringArcSweep);
+        }
+
+        // ── 3) Hold 按住：holdpush_ring + holdpush_0/10/..../100 铺满整格 ──
+        if (isHolding) {
             float holdDuration = static_cast<float>(note.holdEnd - note.time);
-            if (timeMs >= note.time && timeMs <= note.holdEnd && holdDuration > 0.0f) {
-                float progress = static_cast<float>(timeMs - note.time) / holdDuration;
+            float progress = 0.0f;
+            if (holdDuration > 0.0f) {
+                progress = static_cast<float>(timeMs - note.time) / holdDuration;
                 progress = std::max(0.0f, std::min(1.0f, progress));
-
-                float spW = w * 1.125f;
-                float spH = h * 1.125f;
-                float spX = cellX - spW * 0.5f;
-                float spY = cellY - spH * 0.5f;
-
-                // 底图 ring
-                quads.insert(quads.end(), { spX, spY, spW, spH });
-                colors.insert(colors.end(), { 1.0f, 1.0f, 1.0f, 0.5f * colDim * m_animAlpha * m_globalAlpha });
-                layers.push_back(layerSPRing);
-
-                // 高亮 full（alpha 随进度从 0 到 1）
-                quads.insert(quads.end(), { spX, spY, spW, spH });
-                colors.insert(colors.end(), { 1.0f, 1.0f, 1.0f, progress * colDim * m_animAlpha * m_globalAlpha });
-                layers.push_back(layerSPFull);
             }
+
+            if (m_texHoldPushRing) {
+                pushCenteredQuad(quads, colors, layers, arcSweeps,
+                                 cellX, cellY, cellW, cellH,
+                                 1.0f, 1.0f, 1.0f, alpha * 0.7f, kLayerHoldPushRing);
+            }
+
+            float pushLayer = holdPushLayerForProgress(progress);
+            if (pushLayer >= 0.0f && holdPushLayerHasTexture(pushLayer)) {
+                pushCenteredQuad(quads, colors, layers, arcSweeps,
+                                 cellX, cellY, cellW, cellH,
+                                 1.0f, 1.0f, 1.0f, alpha, pushLayer);
+            }
+        }
+    }
+
+    // 缩圈置于 note / holdpush 之后绘制，避免被同批实例遮挡
+    quads.insert(quads.end(), approachQuads.begin(), approachQuads.end());
+    colors.insert(colors.end(), approachColors.begin(), approachColors.end());
+    layers.insert(layers.end(), approachLayers.begin(), approachLayers.end());
+    arcSweeps.insert(arcSweeps.end(), approachArcSweeps.begin(), approachArcSweeps.end());
+
+    // ── Tap 击中：overlay 从 note 尺寸扩散到格子边 ──
+    if (layerOverlay >= 0.0f) {
+        for (const auto& hit : hitEffects) {
+            if (hit.alpha <= 0.01f) continue;
+            float cellX = 0.0f;
+            float cellY = 0.0f;
+            layout.cellCenter(hit.row, hit.col, activeStartCol, activeEndCol,
+                              scrollOffset, cellX, cellY);
+            if (!layout.cellVisible(cellX, cellY)) continue;
+            pushCenteredQuad(quads, colors, layers, arcSweeps,
+                             cellX, cellY, cellW, cellH,
+                             1.0f, 1.0f, 1.0f, hit.alpha * m_globalAlpha, layerOverlay,
+                             -(1.0f - hit.alpha));
         }
     }
 }
@@ -508,6 +547,7 @@ void NoteRenderer::shutdown() {
     if (m_instanceVbo != 0) { glDeleteBuffers(1, &m_instanceVbo); m_instanceVbo = 0; }
     if (m_colorVbo != 0) { glDeleteBuffers(1, &m_colorVbo); m_colorVbo = 0; }
     if (m_layerVbo != 0) { glDeleteBuffers(1, &m_layerVbo); m_layerVbo = 0; }
+    if (m_arcVbo != 0) { glDeleteBuffers(1, &m_arcVbo); m_arcVbo = 0; }
     m_initialized = false;
 }
 

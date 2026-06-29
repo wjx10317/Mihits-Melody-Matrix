@@ -31,6 +31,9 @@ public:
     static constexpr const char* KEY_VOLUME_MUSIC  = "audio.music_volume";
     static constexpr const char* KEY_VOLUME_SFX    = "audio.sfx_volume";
     static constexpr const char* KEY_OFFSET        = "gameplay.offset_ms";
+    static constexpr const char* KEY_TIMING_OFFSET = "gameplay.timing_offset_ms";
+    static constexpr const char* KEY_VISUAL_LEAD   = "gameplay.visual_lead_ms";
+    static constexpr const char* KEY_DEBUG_HUD   = "gameplay.debug_hud";
     static constexpr const char* KEY_RESOLUTION_W  = "video.width";
     static constexpr const char* KEY_RESOLUTION_H  = "video.height";
     static constexpr const char* KEY_FULLSCREEN    = "video.fullscreen";

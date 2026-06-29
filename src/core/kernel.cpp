@@ -1,5 +1,6 @@
 #include "kernel.h"
 #include "game_state.h"
+#include "core/states/playing_state.h"
 #include "platform/config.h"
 #include "core/states/song_select_state.h"
 #include "util/logger.h"
@@ -44,6 +45,37 @@ static void buildResolutionList() {
         if (!dup) {
             s_resolutions.push_back(r);
         }
+    }
+}
+
+static uint64_t expandSdlEventTimestamp(Uint32 eventTimestamp) {
+    const uint64_t now = SDL_GetTicks64();
+    const uint64_t base = now & ~0xffffffffULL;
+    uint64_t candidate = base | static_cast<uint64_t>(eventTimestamp);
+    if (candidate > now + 0x80000000ULL) {
+        candidate -= 0x100000000ULL;
+    } else if (candidate + 0x80000000ULL < now) {
+        candidate += 0x100000000ULL;
+    }
+    return candidate;
+}
+
+void Kernel::dispatchGameplayKeyEvent(const SDL_KeyboardEvent& keyEvent, bool pressed) {
+    if (m_stateManager.currentState() != GameState::Playing) return;
+    auto* playing = m_stateManager.getStateAs<PlayingState>(GameState::Playing);
+    if (!playing) return;
+
+    // 使用 SDL 事件 timestamp 换算歌曲时间，避免等到 update() 才判定造成帧延迟。
+    const uint64_t eventTickMs = expandSdlEventTimestamp(keyEvent.timestamp);
+    const int64_t eventSongTimeMs = m_clock.songTimeAtTickMs(eventTickMs);
+    playing->handleKeyEvent(static_cast<int32_t>(keyEvent.keysym.sym), pressed, eventSongTimeMs);
+}
+
+void Kernel::syncPlayingClock() {
+    if (m_stateManager.currentState() != GameState::Playing) return;
+    auto* playing = m_stateManager.getStateAs<PlayingState>(GameState::Playing);
+    if (playing) {
+        playing->syncClockFromAudio();
     }
 }
 
@@ -254,6 +286,8 @@ void Kernel::run() {
         frameTime = std::min(frameTime, 0.25);
         accumulator += frameTime;
 
+        // 先同步音频时钟再处理输入，避免按键 timestamp 用到上一帧的 anchor。
+        syncPlayingClock();
         pumpInputEvents();
 
         while (accumulator >= FIXED_DT) {
@@ -267,9 +301,14 @@ void Kernel::run() {
         glViewport(0, 0, drawW, drawH);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-        int64_t interpTime = m_clock.interpolatedNowMs();
+        // 渲染时间超前：补偿 VSync/扫描延迟，使玩家看到的 note 中心与判定时刻对齐。
+        const int64_t songNowMs = m_clock.interpolatedNowMs();
+        const int64_t configLeadMs = platform::Config::getInt(
+            platform::Config::KEY_VISUAL_LEAD, 16);
+        const int64_t frameLeadMs = static_cast<int64_t>(frameTime * 500.0 + 0.5);
+        const int64_t visualTimeMs = songNowMs + configLeadMs + frameLeadMs;
 
-        m_renderer.renderFrame(interpTime);
+        m_renderer.renderFrame(visualTimeMs);
 
         m_uiManager.newFrame();
         m_stateManager.render();
@@ -359,9 +398,6 @@ void Kernel::setFullscreen(bool fullscreen) {
 }
 
 void Kernel::pumpInputEvents() {
-    // 每帧开始时清空上一帧的按键事件
-    m_frameKeyEvents.clear();
-
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
         m_uiManager.processEvent(&event);
@@ -372,7 +408,7 @@ void Kernel::pumpInputEvents() {
             break;
         case SDL_KEYDOWN:
             if (!event.key.repeat) {
-                m_frameKeyEvents.push_back({static_cast<int32_t>(event.key.keysym.sym), true});
+                dispatchGameplayKeyEvent(event.key, true);
             }
             // ESC 特殊处理：状态转换
             if (event.key.keysym.sym == SDLK_ESCAPE) {
@@ -394,8 +430,7 @@ void Kernel::pumpInputEvents() {
             }
             break;
         case SDL_KEYUP:
-            // 收集按键释放事件到帧队列
-            m_frameKeyEvents.push_back({static_cast<int32_t>(event.key.keysym.sym), false});
+            dispatchGameplayKeyEvent(event.key, false);
             break;
         case SDL_WINDOWEVENT:
             if (event.window.event == SDL_WINDOWEVENT_CLOSE) {

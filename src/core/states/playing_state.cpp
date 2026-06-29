@@ -7,6 +7,7 @@
 #include "util/logger.h"
 #include "beatmap/beatmap_parser.h"
 #include "beatmap/beatmap_builder.h"
+#include "renderer/grid_layout.h"
 #include <algorithm>
 #include <SDL.h>
 #include "platform/file_system.h"
@@ -40,6 +41,8 @@ void PlayingState::onEnter() {
 
         // 恢复时重置按键状态，避免暂停期间按下的键在恢复后误触发
         m_curKeyDown = {};
+        m_autoKeyDown = {};
+        m_autoKeyFlash = {};
 
         MM_LOG_INFO("Playing", "Resuming playback");
         return;
@@ -93,13 +96,18 @@ void PlayingState::resetGameplay() {
     m_leadInActive = false;
     m_matrixVisible = false;
     m_curKeyDown = {};
+    m_autoKeyDown = {};
+    m_autoKeyFlash = {};
     m_popups.clear();
 
     m_scrollWindow = {};  // 重置滚动窗口
 
     m_autoplay = false;
+    m_timingOffsetMs = 0;
     m_offsetBarEnabled = false;
     m_offsetBarMarks.clear();
+    m_hitEffects.clear();
+    m_lastHitDebug = {};
 
     auto& renderer = Kernel::instance().renderer();
     renderer.setGameplayRendering(false);
@@ -183,6 +191,9 @@ void PlayingState::initGameplay() {
                                         gameplay::JudgmentResult::Miss});
         }
     };
+    m_judgeQueue.onHoldTail = [this](const gameplay::HoldTailEvent& evt) {
+        handleHoldTailEvent(evt);
+    };
 
     // ── Init formation ──
     m_formationCtrl.load(m_beatmap.formations);
@@ -222,6 +233,9 @@ void PlayingState::initGameplay() {
     }
 
     // ── 读取偏移条配置 ──
+    // 正值表示音频听感偏晚：判定时间整体向前修正，视觉/滚动仍使用原始歌曲时间。
+    m_timingOffsetMs = platform::Config::getInt(platform::Config::KEY_TIMING_OFFSET, 0);
+    m_debugHudEnabled = platform::Config::getInt(platform::Config::KEY_DEBUG_HUD, 0) != 0;
     m_offsetBarEnabled = platform::Config::getInt(platform::Config::KEY_OFFSET_BAR, 0) != 0;
     m_offsetBarMarks.clear();
 
@@ -241,7 +255,7 @@ void PlayingState::initGameplay() {
 
     // ── 设置 Renderer ──
     auto& renderer = Kernel::instance().renderer();
-    renderer.setGameplayRendering(true);
+    renderer.setGameplayRendering(false);
 
     // 应用背景遮罩透明度（从配置读取）
     float bgDim = platform::Config::getFloat(platform::Config::KEY_BG_DIM, 0.67f);
@@ -287,14 +301,20 @@ void PlayingState::initGameplay() {
                 " notes, first note at " + std::to_string(m_firstNoteTimeMs) + "ms");
 }
 
+void PlayingState::syncClockFromAudio() {
+    if (!m_gameplayInitialized) return;
+    Kernel::instance().clock().syncFromAudio(m_audio.positionMs());
+}
+
 GameState PlayingState::update(float dt) {
     if (!m_gameplayInitialized) return GameState::Count;
 
     // ── Sync clock from audio ──
     auto& kernel = Kernel::instance();
-    kernel.clock().syncFromAudio(m_audio.positionMs());
+    syncClockFromAudio();
 
     int64_t nowMs = kernel.clock().interpolatedNowMs();
+    const int64_t judgeNowMs = toJudgeSongTimeMs(nowMs);
     float od = m_beatmap.difficulty.od;
 
     // ── Skip 功能：空格键跳过前导 ──
@@ -324,6 +344,7 @@ GameState PlayingState::update(float dt) {
                         " firstNote=" + std::to_string(m_firstNoteTimeMs) + "ms");
         }
         // 前导期间不处理输入和判定
+        kernel.renderer().setGameplayRendering(false);
         return GameState::Count;
     }
 
@@ -338,46 +359,20 @@ GameState PlayingState::update(float dt) {
     }
 
     // ── Process input & update judge queue ──
-    // 滚动期间锁判定：既不处理输入，也不触发 auto-miss，
-    // 避免对正在 move 的列产生误判或悬空引用。
+    // 滚动与改变行列结构的变换期间锁判定；SCALE_ONLY 只缩放 item，允许继续判定。
     bool inTransition = m_formationCtrl.inTransition(nowMs);
     bool inScroll = m_scrollWindow.scrolling;
-    if (!inTransition && !inScroll) {
-        // Autoplay 模组：自动击打当前滚动窗口内的列
+    bool judgmentBlocked = inScroll || isFormationJudgmentBlocked(nowMs);
+    if (!judgmentBlocked) {
         if (m_autoplay) {
-            int32_t startCol = m_scrollWindow.startCol;
-            int32_t endCol = m_scrollWindow.endCol;
-            for (int32_t c = startCol; c <= endCol; ++c) {
-                if (c < 0 || c >= m_judgeQueue.columnCount()) continue;
-
-                // 优先处理活跃 Hold 的自动释放
-                const auto* activeHold = m_judgeQueue.getActiveHold(c);
-                if (activeHold && nowMs >= activeHold->holdEnd) {
-                    // Autoplay：以 holdEnd 作为 releaseTime，保证 dt=0 落在 perfect 窗口内
-                    auto holdResult = m_judgeQueue.onKeyRelease(activeHold->holdEnd, c, od);
-                    handleHoldReleaseResult(holdResult, c);
-                    continue;
-                }
-                if (activeHold) continue;  // 正在按住，等待释放
-
-                const auto& colQ = m_judgeQueue.columnQueue(c);
-                if (colQ.finished()) continue;
-                const auto& note = colQ.front();
-
-                // 自动击打：当 note 到达判定正中心
-                if (nowMs >= note.time) {
-                    // Autoplay：以 note.time 作为 pressTime，保证 dt=0 必在 perfect 窗口内
-                    int64_t noteTime = note.time;
-                    auto result = m_judgeQueue.onKeyPress(noteTime, c, od);
-                    if (result != gameplay::JudgmentResult::Ignored) {
-                        // pressTime 传 noteTime 使偏移条显示 timing=0（完美中心）
-                        handlePressResult(result, c, noteTime, noteTime);
-                    }
+            for (int k = 0; k < KEY_COUNT; ++k) {
+                if (m_autoKeyFlash[k] > 0.0f) {
+                    m_autoKeyFlash[k] -= dt;
                 }
             }
+            processAutoplay(nowMs, od);
         }
-        processInput();
-        m_judgeQueue.update(nowMs, od);
+        m_judgeQueue.update(judgeNowMs, od);
     }
 
     // ── 列滚动逻辑 ──
@@ -401,6 +396,7 @@ GameState PlayingState::update(float dt) {
             heads[c] = m_judgeQueue.columnQueue(c).head;
         }
         kernel.renderer().setColumnHeads(heads, m_judgeQueue.columnCount());
+        kernel.renderer().setHitEffects(m_hitEffects);
     }
 
     // ── 休息段检测：>10s 空挡渐变隐藏游戏界面，新 note 前 3s 渐变回来 ──
@@ -492,6 +488,14 @@ GameState PlayingState::update(float dt) {
                        [](const JudgePopup& p) { return p.timer <= 0.0f; }),
         m_popups.end());
 
+    for (auto& hit : m_hitEffects) {
+        hit.alpha -= dt / HIT_EFFECT_DURATION;
+    }
+    m_hitEffects.erase(
+        std::remove_if(m_hitEffects.begin(), m_hitEffects.end(),
+                       [](const renderer::CellHitEffect& h) { return h.alpha <= 0.0f; }),
+        m_hitEffects.end());
+
     // ── Update offset bar marks ──
     if (m_offsetBarEnabled) {
         for (auto& m : m_offsetBarMarks) {
@@ -533,6 +537,9 @@ GameState PlayingState::update(float dt) {
         return GameState::Result;
     }
 
+    // 在 renderFrame 之前同步，避免本帧仍用上一帧的 gameplayRendering
+    kernel.renderer().setGameplayRendering(m_matrixVisible);
+
     return GameState::Count;
 }
 
@@ -552,9 +559,95 @@ std::vector<PlayingState::KeyColumnMapping> PlayingState::getKeyMapping() const 
     return mapping;
 }
 
+int PlayingState::keyIndexForColumn(int32_t column) const {
+    auto mapping = getKeyMapping();
+    for (const auto& m : mapping) {
+        if (m.column != column) continue;
+        for (int k = 0; k < KEY_COUNT; ++k) {
+            if (m.sdlKey == KEY_CODES[k]) return k;
+        }
+    }
+    return -1;
+}
+
+bool PlayingState::isKeyVisuallyDown(int keyIndex) const {
+    if (keyIndex < 0 || keyIndex >= KEY_COUNT) return false;
+    if (m_autoplay) {
+        return m_autoKeyDown[keyIndex] || m_autoKeyFlash[keyIndex] > 0.0f;
+    }
+    return m_curKeyDown[keyIndex];
+}
+
+bool PlayingState::isFormationJudgmentBlocked(int64_t songTimeMs) const {
+    if (!m_formationCtrl.inTransition(songTimeMs)) return false;
+
+    const size_t currentIndex = m_formationCtrl.currentIndex();
+    if (currentIndex == 0) return false;
+
+    const auto& prev = m_formationCtrl.formationAt(currentIndex - 1);
+    const auto& current = m_formationCtrl.current();
+    const bool scaleOnly = current.transformType == beatmap::MatrixTransform::SCALE_ONLY;
+    const bool sameShape = prev.rows == current.rows && prev.cols == current.cols;
+    return !(scaleOnly && sameShape);
+}
+
+void PlayingState::processAutoplay(int64_t nowMs, float od) {
+    m_autoKeyDown.fill(false);
+
+    int32_t startCol = m_scrollWindow.startCol;
+    int32_t endCol = m_scrollWindow.endCol;
+    for (int32_t c = startCol; c <= endCol; ++c) {
+        if (c < 0 || c >= m_judgeQueue.columnCount()) continue;
+
+        const int keyIdx = keyIndexForColumn(c);
+
+        const auto* activeHold = m_judgeQueue.getActiveHold(c);
+        if (activeHold && nowMs >= activeHold->holdEnd) {
+            m_judgeQueue.onKeyRelease(activeHold->holdEnd, c, od);
+            continue;
+        }
+        if (activeHold) {
+            if (keyIdx >= 0) m_autoKeyDown[keyIdx] = true;
+            continue;
+        }
+
+        const auto& colQ = m_judgeQueue.columnQueue(c);
+        if (colQ.finished()) continue;
+        const auto& note = colQ.front();
+
+        if (nowMs >= note.time) {
+            int64_t noteTime = note.time;
+            auto result = m_judgeQueue.onKeyPress(noteTime, c, od);
+            if (result != gameplay::JudgmentResult::Ignored) {
+                handlePressResult(result, c, note.row, noteTime, noteTime, !note.isHold());
+                if (keyIdx >= 0) {
+                    if (note.isHold()) {
+                        m_autoKeyDown[keyIdx] = true;
+                    } else {
+                        m_autoKeyFlash[keyIdx] = AUTO_KEY_FLASH_SEC;
+                    }
+                }
+            }
+        }
+    }
+
+    for (int k = 0; k < KEY_COUNT; ++k) {
+        if (m_autoKeyFlash[k] > 0.0f) {
+            m_autoKeyDown[k] = true;
+        }
+    }
+}
+
 void PlayingState::checkAndTriggerScroll(int64_t nowMs) {
     int32_t totalCols = m_formationCtrl.currentCols();
     if (totalCols <= KEY_COUNT) return;  // 不需要滚动
+
+    // 有活跃 Hold 时暂不滚动，避免滚动期间锁判定导致 Hold 无法释放/超时
+    for (int32_t col = 0; col < m_judgeQueue.columnCount(); ++col) {
+        if (m_judgeQueue.getActiveHold(col)) {
+            return;
+        }
+    }
 
     float approachMs = 1800.0f - m_beatmap.difficulty.ar * 120.0f;
     if (approachMs < 300.0f) approachMs = 300.0f;
@@ -648,68 +741,65 @@ void PlayingState::completeScroll() {
                 std::to_string(m_scrollWindow.endCol));
 }
 
-void PlayingState::processInput() {
-    auto& kernel = Kernel::instance();
-    int64_t nowMs = kernel.clock().interpolatedNowMs();
-    float od = m_beatmap.difficulty.od;
+void PlayingState::handleKeyEvent(int32_t key, bool pressed, int64_t eventTimeMs) {
+    if (!m_gameplayInitialized || m_leadInActive) return;
+    if (m_autoplay) return;  // Autoplay 期间锁定玩家输入
 
-    // 构建按键→列映射
-    auto mapping = getKeyMapping();
-    std::array<int32_t, KEY_COUNT> keyToCol;
-    keyToCol.fill(-1);
+    const int64_t judgeEventTimeMs = toJudgeSongTimeMs(eventTimeMs);
+
+    // 更新按键显示状态即使暂时不判定，避免 HUD 与物理按键脱节。
+    int keyIndex = -1;
     for (int k = 0; k < KEY_COUNT; ++k) {
-        for (size_t i = 0; i < mapping.size(); ++i) {
-            if (mapping[i].sdlKey == KEY_CODES[k]) {
-                keyToCol[k] = mapping[i].column;
-                break;
-            }
+        if (key == KEY_CODES[k]) {
+            keyIndex = k;
+            m_curKeyDown[k] = pressed;
+            break;
         }
     }
+    if (keyIndex < 0) return;
 
-    const auto& keyEvents = kernel.frameKeyEvents();
+    auto mapping = getKeyMapping();
+    int32_t column = -1;
+    if (isFormationJudgmentBlocked(eventTimeMs) || m_scrollWindow.scrolling) {
+        return;
+    }
+    for (const auto& m : mapping) {
+        if (m.sdlKey == key) {
+            column = m.column;
+            break;
+        }
+    }
+    if (column < 0) return;
 
-    for (const auto& evt : keyEvents) {
-        // 跳过 ESC（由 Kernel 处理状态转换）
-        if (evt.key == SDLK_ESCAPE) continue;
-
-        // 查找按键对应的列
-        int32_t column = -1;
-        for (int k = 0; k < KEY_COUNT; ++k) {
-            if (evt.key == KEY_CODES[k]) {
-                column = keyToCol[k];
-                // 更新 DEBUG 显示状态
-                m_curKeyDown[k] = evt.pressed;
-                break;
+    const float od = m_beatmap.difficulty.od;
+    if (pressed) {
+        int64_t noteTime = 0;
+        int32_t noteRow = 0;
+        bool isTapNote = true;
+        if (column >= 0 && column < m_judgeQueue.columnCount()) {
+            const auto& colQ = m_judgeQueue.columnQueue(column);
+            if (!colQ.finished()) {
+                noteTime = colQ.front().time;
+                noteRow = colQ.front().row;
+                isTapNote = !colQ.front().isHold();
             }
         }
-        if (column < 0) continue;  // 非游戏按键，跳过
-
-        if (evt.pressed) {
-            // 获取头部 note 的时间（用于偏移条记录），需在 onKeyPress 之前读取
-            int64_t noteTime = 0;
-            if (column >= 0 && column < m_judgeQueue.columnCount()) {
-                const auto& colQ = m_judgeQueue.columnQueue(column);
-                if (!colQ.finished()) {
-                    noteTime = colQ.front().time;
-                }
-            }
-            auto result = m_judgeQueue.onKeyPress(nowMs, column, od);
-            MM_LOG_INFO("Playing", "KeyDown: col=" + std::to_string(column) +
-                        " nowMs=" + std::to_string(nowMs) +
-                        " result=" + std::to_string(static_cast<int>(result)));
-            handlePressResult(result, column, nowMs, noteTime);
-        } else {
-            auto holdResult = m_judgeQueue.onKeyRelease(nowMs, column, od);
-            MM_LOG_INFO("Playing", "KeyUp: col=" + std::to_string(column) +
-                        " nowMs=" + std::to_string(nowMs) +
-                        " result=" + std::to_string(static_cast<int>(holdResult)));
-            handleHoldReleaseResult(holdResult, column);
-        }
+        auto result = m_judgeQueue.onKeyPress(judgeEventTimeMs, column, od);
+        MM_LOG_INFO("Playing", "KeyDown: col=" + std::to_string(column) +
+                    " eventTimeMs=" + std::to_string(eventTimeMs) +
+                    " judgeTimeMs=" + std::to_string(judgeEventTimeMs) +
+                    " result=" + std::to_string(static_cast<int>(result)));
+        handlePressResult(result, column, noteRow, judgeEventTimeMs, noteTime, isTapNote);
+    } else {
+        m_judgeQueue.onKeyRelease(judgeEventTimeMs, column, od);
+        MM_LOG_INFO("Playing", "KeyUp: col=" + std::to_string(column) +
+                    " eventTimeMs=" + std::to_string(eventTimeMs) +
+                    " judgeTimeMs=" + std::to_string(judgeEventTimeMs));
     }
 }
 
-void PlayingState::handlePressResult(gameplay::JudgmentResult result, int32_t column,
-                                     int64_t pressTime, int64_t noteTime) {
+void PlayingState::handlePressResult(gameplay::JudgmentResult result, int32_t column, int32_t row,
+                                     int64_t pressTime, int64_t noteTime, bool isTapNote) {
     switch (result) {
     case gameplay::JudgmentResult::Perfect:
         m_perfectCount++;
@@ -734,7 +824,18 @@ void PlayingState::handlePressResult(gameplay::JudgmentResult result, int32_t co
         m_scoreManager.addScore(gameplay::JudgmentResult::Miss, 0);
         break;
     case gameplay::JudgmentResult::Ignored:
-        return;  // Ignored 不产生弹出
+        return;
+    }
+
+    m_lastHitDebug.judgeMs = pressTime;
+    m_lastHitDebug.noteMs = noteTime;
+    m_lastHitDebug.timing = pressTime - noteTime;
+    m_lastHitDebug.result = result;
+
+    if (isTapNote &&
+        (result == gameplay::JudgmentResult::Perfect ||
+         result == gameplay::JudgmentResult::Good)) {
+        m_hitEffects.push_back({ column, row, 1.0f });
     }
 
     // 偏移条：记录判定时机
@@ -752,24 +853,25 @@ void PlayingState::handlePressResult(gameplay::JudgmentResult result, int32_t co
     m_popups.push_back({column, result, JudgePopup::DURATION});
 }
 
-void PlayingState::handleHoldReleaseResult(gameplay::HoldReleaseResult result, int32_t column) {
-    switch (result) {
+void PlayingState::handleHoldTailEvent(const gameplay::HoldTailEvent& evt) {
+    const int32_t column = evt.col;
+    switch (evt.result) {
     case gameplay::HoldReleaseResult::Perfect:
-        // 尾部释放额外加一次 combo（头部+尾部各一次）
         m_perfectCount++;
         m_hitNotes++;
         m_comboManager.onHit();
         m_scoreManager.addScore(gameplay::JudgmentResult::Perfect, m_comboManager.current());
         m_hpManager.onJudgment(gameplay::JudgmentResult::Perfect);
+        m_audio.playSfx(audio::SfxType::HitNormal);
         m_popups.push_back({column, gameplay::JudgmentResult::Perfect, JudgePopup::DURATION});
         break;
     case gameplay::HoldReleaseResult::Good:
-        // 尾部释放额外加一次 combo（头部+尾部各一次）
         m_goodCount++;
         m_hitNotes++;
         m_comboManager.onHit();
         m_scoreManager.addScore(gameplay::JudgmentResult::Good, m_comboManager.current());
         m_hpManager.onJudgment(gameplay::JudgmentResult::Good);
+        m_audio.playSfx(audio::SfxType::HitNormal);
         m_popups.push_back({column, gameplay::JudgmentResult::Good, JudgePopup::DURATION});
         break;
     case gameplay::HoldReleaseResult::Miss:
@@ -781,16 +883,26 @@ void PlayingState::handleHoldReleaseResult(gameplay::HoldReleaseResult result, i
         m_popups.push_back({column, gameplay::JudgmentResult::Miss, JudgePopup::DURATION});
         break;
     case gameplay::HoldReleaseResult::Ignored:
-        break;
+        return;
+    }
+
+    if (m_offsetBarEnabled) {
+        OffsetBarMark mark;
+        mark.hitTime = evt.releaseMs;
+        mark.noteTime = evt.holdEndMs;
+        mark.timing = evt.releaseMs - evt.holdEndMs;
+        mark.timer = OffsetBarMark::DURATION;
+        mark.result = evt.result == gameplay::HoldReleaseResult::Perfect
+                          ? gameplay::JudgmentResult::Perfect
+                      : evt.result == gameplay::HoldReleaseResult::Good
+                          ? gameplay::JudgmentResult::Good
+                          : gameplay::JudgmentResult::Miss;
+        m_offsetBarMarks.push_back(mark);
     }
 }
 
 void PlayingState::render() {
     if (!m_gameplayInitialized) return;
-
-    // 控制网格和音符渲染：矩阵不可见时不渲染
-    auto& renderer = Kernel::instance().renderer();
-    renderer.setGameplayRendering(m_matrixVisible);
 
     renderHUD();
     renderImGuiOverlay();
@@ -847,47 +959,57 @@ void PlayingState::renderImGuiOverlay() {
         return;
     }
 
-    // ── Top-center: Debug Info (define macro) ──
-    {
+    // ── Debug HUD（Settings 可开关）──
+    if (m_debugHudEnabled) {
         auto& kernel = Kernel::instance();
-        int64_t nowMs = kernel.clock().interpolatedNowMs();
+        const int64_t songNowMs = kernel.clock().interpolatedNowMs();
+        const int64_t visualLeadMs = platform::Config::getInt(platform::Config::KEY_VISUAL_LEAD, 16);
+        const int64_t audioCursorMs = m_audio.positionMs();
 
         int64_t nextFormationTime = m_formationCtrl.nextFormationTime();
-
         int64_t nextScrollTime = INT64_MAX;
         if (m_formationCtrl.currentCols() > KEY_COUNT) {
             int32_t windowStart = m_scrollWindow.startCol;
             int32_t windowEnd = m_scrollWindow.endCol;
-
             for (int32_t col = 0; col < m_judgeQueue.columnCount(); ++col) {
                 const auto& colQ = m_judgeQueue.columnQueue(col);
                 if (colQ.finished()) continue;
                 const auto& note = colQ.front();
-                if (note.time > nowMs && (col < windowStart || col > windowEnd)) {
-                    if (note.time < nextScrollTime) {
-                        nextScrollTime = note.time;
-                    }
+                if (note.time > songNowMs && (col < windowStart || col > windowEnd)) {
+                    if (note.time < nextScrollTime) nextScrollTime = note.time;
                 }
             }
         }
 
-        ImGui::SetNextWindowPos(ImVec2(ImGui::GetIO().DisplaySize.x / 2 - 300, 20));
-        ImGui::SetNextWindowSize(ImVec2(600, 60));
-        ImGui::Begin("##DebugInfo", nullptr, flags);
+        const char* resultLabel = "?";
+        switch (m_lastHitDebug.result) {
+        case gameplay::JudgmentResult::Perfect: resultLabel = "Perfect"; break;
+        case gameplay::JudgmentResult::Good:    resultLabel = "Good"; break;
+        case gameplay::JudgmentResult::Miss:     resultLabel = "Miss"; break;
+        default: break;
+        }
 
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.8f, 0.2f, 1.0f));
-        ImGui::SetWindowFontScale(1.2f);
-        ImGui::Text("NOW:%lldms - NEXT_FORM:%lldms - NEXT_SCROLL:%lldms",
-                    nowMs,
-                    nextFormationTime == INT64_MAX ? -1 : nextFormationTime,
-                    nextScrollTime == INT64_MAX ? -1 : nextScrollTime);
+        ImGui::SetNextWindowPos(ImVec2(ImGui::GetIO().DisplaySize.x / 2 - 340, 12));
+        ImGui::SetNextWindowSize(ImVec2(680, 118));
+        ImGui::Begin("##DebugHUD", nullptr, flags);
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.85f, 0.25f, 1.0f));
+        ImGui::Text("SONG %lld ms | AUDIO %lld ms | DRIFT %+lld ms",
+                    songNowMs, audioCursorMs, songNowMs - audioCursorMs);
+        ImGui::Text("TIMING OFF %+lld ms | VIS LEAD %lld ms | SCROLL %s | FORM next %lld",
+                    m_timingOffsetMs, visualLeadMs,
+                    m_scrollWindow.scrolling ? "YES" : "no",
+                    nextFormationTime == INT64_MAX ? -1LL : nextFormationTime);
+        ImGui::Text("LAST HIT %s | judge %lld | note %lld | timing %+lld ms",
+                    resultLabel,
+                    m_lastHitDebug.judgeMs,
+                    m_lastHitDebug.noteMs,
+                    m_lastHitDebug.timing);
         ImGui::PopStyleColor();
-        ImGui::SetWindowFontScale(1.0f);
         ImGui::End();
     }
 
     // ── Top-left: Score ──
-    ImGui::SetNextWindowPos(ImVec2(20, 80));
+    ImGui::SetNextWindowPos(ImVec2(20, m_debugHudEnabled ? 140.0f : 80.0f));
     ImGui::SetNextWindowSize(ImVec2(300, 80));
 
     ImGui::Begin("##ScoreHUD", nullptr, flags);
@@ -953,9 +1075,14 @@ void PlayingState::renderImGuiOverlay() {
 
         const float obW = 400.0f;
         const float obH = 20.0f;
+        const float scaleY = ImGui::GetIO().DisplaySize.y / renderer::GridLayout::kScreenH;
+        const float matrixBottom = ImGui::GetIO().DisplaySize.y
+            - renderer::GridLayout::kMargin * scaleY
+            + renderer::GridLayout::kMatrixShiftY * scaleY;
         float obX = (ImGui::GetIO().DisplaySize.x - obW) * 0.5f;
-        // 上移至 -140，避免与暂停提示（-90）重叠
-        float obY = ImGui::GetIO().DisplaySize.y - 140.0f;
+        const float keyHintY = std::min(matrixBottom + 8.0f,
+                                        ImGui::GetIO().DisplaySize.y - 58.0f - 44.0f);
+        float obY = keyHintY - obH - 10.0f;
         float centerX = obX + obW * 0.5f;
         float perfectHalfW = (static_cast<float>(perfectW) / static_cast<float>(goodW)) * (obW * 0.5f);
 
@@ -1027,16 +1154,15 @@ void PlayingState::renderImGuiOverlay() {
 
         // 根据列号计算水平位置（4列活跃窗口居中，与 note_renderer 的 cellX 公式对齐）
         float colX = ImGui::GetIO().DisplaySize.x / 2;
-        int32_t totalCols = m_formationCtrl.currentCols();
-        if (totalCols <= 0) totalCols = 4;
         {
-            const float margin = 120.0f;
-            const float gw = (ImGui::GetIO().DisplaySize.x - 2 * margin) / totalCols;
+            const float W = ImGui::GetIO().DisplaySize.x;
+            const float gw = renderer::GridLayout::kDefaultCellW *
+                (W / renderer::GridLayout::kScreenW);
             const int32_t startCol = m_scrollWindow.startCol;
             // 动态偏移：活跃窗口宽度算中心偏移（不再硬编码1.5）
             int32_t activeWidth = m_scrollWindow.endCol - m_scrollWindow.startCol + 1;
             float noteCenterOffset = (activeWidth - 1) * 0.5f;
-            colX = ImGui::GetIO().DisplaySize.x * 0.5f + (popup.column - startCol - noteCenterOffset) * gw;
+            colX = W * 0.5f + (popup.column - startCol - noteCenterOffset) * gw;
         }
 
         ImGui::SetNextWindowPos(ImVec2(colX - 50, ImGui::GetIO().DisplaySize.y / 2 - 80 - offsetY));
@@ -1072,29 +1198,66 @@ void PlayingState::renderImGuiOverlay() {
         ImGui::End();
     }
 
-    // ── Center: Pause hint ──
-    ImGui::SetNextWindowPos(ImVec2(ImGui::GetIO().DisplaySize.x / 2 - 100,
-                                    ImGui::GetIO().DisplaySize.y - 90));
-    ImGui::Begin("##PauseHint", nullptr, flags);
-    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.4f, 0.4f, 0.5f, 0.6f));
-    ImGui::Text("ESC to pause");
-    ImGui::PopStyleColor();
-    ImGui::End();
+    // ── 按键列高亮：类似节奏医生的判定区反馈，按住时整列发亮 ──
+    {
+        auto mapping = getKeyMapping();
+        const float W = ImGui::GetIO().DisplaySize.x;
+        const float H = ImGui::GetIO().DisplaySize.y;
+        const float scaleX = W / renderer::GridLayout::kScreenW;
+        const float scaleY = H / renderer::GridLayout::kScreenH;
+        const float margin = renderer::GridLayout::kMargin * scaleY;
+        const float shiftY = renderer::GridLayout::kMatrixShiftY * scaleY;
+        const float gw = renderer::GridLayout::kDefaultCellW * scaleX;
+        const float gh = renderer::GridLayout::kDefaultCellH * scaleY;
+        const int32_t totalRows = m_formationCtrl.formationCount() > 0
+            ? m_formationCtrl.current().rows
+            : 4;
+        const int32_t startCol = m_scrollWindow.startCol;
+        int32_t activeWidth = m_scrollWindow.endCol - m_scrollWindow.startCol + 1;
+        float noteCenterOffset = (activeWidth - 1) * 0.5f;
+
+        ImDrawList* dl = ImGui::GetForegroundDrawList();
+        for (const auto& m : mapping) {
+            bool pressed = false;
+            for (int k = 0; k < KEY_COUNT; ++k) {
+                if (m.sdlKey == KEY_CODES[k] && isKeyVisuallyDown(k)) {
+                    pressed = true;
+                    break;
+                }
+            }
+            if (!pressed) continue;
+
+            float cellX = W * 0.5f + (m.column - startCol - noteCenterOffset) * gw;
+            float left = cellX - gw * 0.5f;
+            float right = cellX + gw * 0.5f;
+            float bottom = H - margin + shiftY;
+            float top = std::max(0.0f, bottom - std::max(totalRows, 1) * gh);
+
+            dl->AddRectFilled(ImVec2(left, top), ImVec2(right, bottom),
+                              IM_COL32(0, 255, 245, 42), 10.0f);
+            dl->AddRect(ImVec2(left + 3, top + 3), ImVec2(right - 3, bottom - 3),
+                        IM_COL32(0, 255, 245, 150), 10.0f, 0, 3.0f);
+            dl->AddLine(ImVec2(cellX, top + 8), ImVec2(cellX, bottom - 8),
+                        IM_COL32(255, 255, 255, 110), 2.0f);
+        }
+    }
 
     // ── 按键提示：在对应列底部显示按键标签 ──
     {
-        int32_t totalCols = m_formationCtrl.currentCols();
-        if (totalCols <= 0) totalCols = 4;
-
         auto mapping = getKeyMapping();
 
         // 计算网格参数（与 Renderer 一致）
         // 按键提示固定在屏幕中央活跃列位置（不随滚动偏移），与 note_renderer 的 cellX 公式对齐
         const float W = ImGui::GetIO().DisplaySize.x;
         const float H = ImGui::GetIO().DisplaySize.y;
-        const float margin = 120.0f;
-        const float gw = (W - 2 * margin) / totalCols;
-        const float keyHintY = H - margin + 15;  // 网格底部下方
+        const float scaleY = H / renderer::GridLayout::kScreenH;
+        const float margin = renderer::GridLayout::kMargin * scaleY;
+        const float shiftY = renderer::GridLayout::kMatrixShiftY * scaleY;
+        const float gw = renderer::GridLayout::kDefaultCellW *
+            (W / renderer::GridLayout::kScreenW);
+        const float matrixBottom = H - margin + shiftY;
+        const float keyH = 44.0f;
+        const float keyHintY = std::min(matrixBottom + 8.0f, H - 58.0f - keyH);
         const int32_t startCol = m_scrollWindow.startCol;
         // 动态偏移：活跃窗口宽度算中心偏移（不再硬编码1.5）
         int32_t activeWidth = m_scrollWindow.endCol - m_scrollWindow.startCol + 1;
@@ -1103,9 +1266,7 @@ void PlayingState::renderImGuiOverlay() {
         for (const auto& m : mapping) {
             // 按键固定在屏幕中央活跃列：col=startCol+0..(activeWidth-1) 居中
             float cellX = W * 0.5f + (m.column - startCol - noteCenterOffset) * gw;
-            float keyW = std::min(gw * 0.8f, 80.0f);  // 按键宽度，最大80px
-            float keyH = 44.0f;
-
+            float keyW = std::min(gw * 0.8f, 80.0f);
             // 查找该列对应的按键标签
             const char* label = "?";
             for (int k = 0; k < KEY_COUNT; ++k) {
@@ -1118,7 +1279,7 @@ void PlayingState::renderImGuiOverlay() {
             // 检查该键是否按下
             bool pressed = false;
             for (int k = 0; k < KEY_COUNT; ++k) {
-                if (m.sdlKey == KEY_CODES[k] && m_curKeyDown[k]) {
+                if (m.sdlKey == KEY_CODES[k] && isKeyVisuallyDown(k)) {
                     pressed = true;
                     break;
                 }
@@ -1134,19 +1295,22 @@ void PlayingState::renderImGuiOverlay() {
             // 绘制按键背景
             ImDrawList* dl = ImGui::GetWindowDrawList();
             ImVec2 wp = ImGui::GetWindowPos();
-            ImU32 bgColor = pressed ? IM_COL32(0, 255, 245, 120) : IM_COL32(20, 20, 40, 160);
-            ImU32 borderColor = pressed ? IM_COL32(0, 255, 245, 220) : IM_COL32(50, 50, 70, 180);
+            ImU32 bgColor = pressed ? IM_COL32(0, 255, 245, 190) : IM_COL32(20, 20, 40, 160);
+            ImU32 borderColor = pressed ? IM_COL32(255, 255, 255, 255) : IM_COL32(50, 50, 70, 180);
             dl->AddRectFilled(ImVec2(wp.x + 2, wp.y + 2), ImVec2(wp.x + keyW - 2, wp.y + keyH - 2), bgColor, 6.0f);
-            dl->AddRect(ImVec2(wp.x + 2, wp.y + 2), ImVec2(wp.x + keyW - 2, wp.y + keyH - 2), borderColor, 6.0f);
+            dl->AddRect(ImVec2(wp.x + 2, wp.y + 2), ImVec2(wp.x + keyW - 2, wp.y + keyH - 2),
+                        borderColor, 6.0f, 0, pressed ? 4.0f : 1.0f);
 
             // 按键文字
-            ImU32 textColor = pressed ? IM_COL32(0, 255, 245, 255) : IM_COL32(140, 140, 170, 220);
+            ImU32 textColor = pressed ? IM_COL32(10, 20, 35, 255) : IM_COL32(140, 140, 170, 220);
             ImGui::SetWindowFontScale(1.6f);
             float textWidth = ImGui::CalcTextSize(label).x;
             dl->AddText(ImVec2(wp.x + keyW / 2 - textWidth / 2, wp.y + 12), textColor, label);
 
-            // ── 锁判定视觉提示：滚动期间显示红色叉号 ──
-            if (m_scrollWindow.scrolling) {
+            // ── 锁判定视觉提示：滚动/非 SCALE_ONLY 变换期间显示红色叉号 ──
+            const bool judgmentLocked = m_scrollWindow.scrolling ||
+                isFormationJudgmentBlocked(Kernel::instance().clock().interpolatedNowMs());
+            if (judgmentLocked) {
                 ImU32 xColor = IM_COL32(255, 40, 60, 255);
                 const float xPad = 6.0f;
                 const float xThick = 3.0f;

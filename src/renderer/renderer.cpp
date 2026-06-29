@@ -1,5 +1,6 @@
 #include "renderer.h"
 #include "note_renderer.h"
+#include "renderer/grid_layout.h"
 #include "renderer/texture_cache.h"
 #include "beatmap/note.h"
 #include "util/logger.h"
@@ -7,6 +8,8 @@
 #include <glad.h>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
+#include <array>
+#include <string>
 #include <vector>
 
 namespace melody_matrix::renderer {
@@ -129,7 +132,7 @@ bool Renderer::init() {
             std::string path = prefix + name;
             const Texture2D* tex = cache.get(path);
             if (tex && tex->valid()) return tex;
-            tex = cache.load(path);
+            tex = cache.load(path, true);
             if (tex && tex->valid()) {
                 MM_LOG_INFO("Renderer", "Loaded note texture: %s", path.c_str());
                 return tex;
@@ -142,12 +145,20 @@ bool Renderer::init() {
     const Texture2D* texTap = loadNoteTexture("tap.png");
     const Texture2D* texSlider = loadNoteTexture("slider.png");
     const Texture2D* texOverlay = loadNoteTexture("overlay.png");
-    const Texture2D* texSPRing = loadNoteTexture("sliderpush_ring.png");
-    const Texture2D* texSPFull = loadNoteTexture("sliderpush_100.png");
+    const Texture2D* texHoldPushRing = loadNoteTexture("holdpush_ring.png");
+    std::array<const Texture2D*, NoteRenderer::kHoldPushStageCount> texHoldPush{};
+    static constexpr int kHoldPushPercents[NoteRenderer::kHoldPushStageCount] = {
+        0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100
+    };
+    for (int i = 0; i < NoteRenderer::kHoldPushStageCount; ++i) {
+        texHoldPush[static_cast<size_t>(i)] =
+            loadNoteTexture("holdpush_" + std::to_string(kHoldPushPercents[i]) + ".png");
+    }
     const Texture2D* texBlock = loadNoteTexture("background.png");
 
     if (m_noteRenderer) {
-        m_noteRenderer->setTextures(texTap, texSlider, texOverlay, texSPRing, texSPFull, texBlock);
+        m_noteRenderer->setTextures(texTap, texSlider, texOverlay,
+                                    texHoldPushRing, texHoldPush, texBlock);
     }
 
     m_initialized = true;
@@ -199,6 +210,7 @@ void Renderer::updateFormationTransition(float progress) {
         // 过渡完成，切换到新阵型
         m_gridRows = m_transition.nextRows;
         m_gridCols = m_transition.nextCols;
+        m_blockSize = m_transition.nextBlockSize;
         m_transition.active = false;
     }
 }
@@ -218,17 +230,14 @@ void Renderer::setScrollState(int32_t activeStartCol, int32_t activeEndCol,
     m_scrolling = scrolling;
     m_scrollProgress = scrollProgress;
 
-    // ── 内部统一计算 scrollOffset，确保 renderGrid / renderNotes / note_renderer 三处 gw 基准一致 ──
-    // gw 用 m_gridCols（与 renderGrid/note_renderer 完全相同），消除 playing_state 用 currentCols()
-    // 与 renderer 用 m_gridCols 在过渡期不同步导致的抽搐和 note 错位。
+    // ── 内部统一计算 scrollOffset，固定逻辑格宽与 note_renderer 完全一致 ──
     // scrollOffset 符号：向右滚(targetStart>activeStart)→矩阵向左移→scrollOffset 为负
     m_scrollOffset = 0.0f;
-    if (scrolling && m_gridCols > 0) {
+    if (scrolling) {
         float p = std::max(0.0f, std::min(1.0f, scrollProgress));
         // ease-in-out 缓动（与原 playing_state 计算一致）
         float easedP = p < 0.5f ? 2.0f * p * p : 1.0f - (-2.0f * p + 2.0f) * (-2.0f * p + 2.0f) / 2.0f;
-        const float W = 1920.0f, margin = 120.0f;
-        float gw = (W - 2 * margin) / m_gridCols;
+        float gw = GridLayout::kDefaultCellW;
         int32_t colDelta = targetStartCol - activeStartCol;
         m_scrollOffset = -static_cast<float>(colDelta) * gw * easedP;
     }
@@ -333,7 +342,7 @@ void Renderer::renderGrid(int64_t /*timeMs*/) {
 }
 
 void Renderer::renderNotes(int64_t timeMs) {
-    if (m_notes.empty() || !m_noteRenderer) return;
+    if (!m_noteRenderer || m_gridRows <= 0 || m_gridCols <= 0) return;
 
     // 应用休息段渐变（矩阵+note 整体 alpha）
     m_noteRenderer->setGlobalAlpha(m_gameplayFade);
@@ -365,6 +374,7 @@ void Renderer::renderNotes(int64_t timeMs) {
             m_noteRenderer->render(m_notes, timeMs, m_transition.nextRows, m_transition.nextCols, m_ar,
                                    m_activeStartCol, m_activeEndCol,
                                    m_colHeads, m_colHeadCount,
+                                   m_hitEffects,
                                    m_scrollOffset, m_scrolling, m_scrollProgress,
                                    m_targetStartCol, m_targetEndCol);
         } else if (isSlideAdd) {
@@ -378,6 +388,7 @@ void Renderer::renderNotes(int64_t timeMs) {
             m_noteRenderer->render(m_notes, timeMs, m_transition.nextRows, m_transition.nextCols, m_ar,
                                    m_activeStartCol, m_activeEndCol,
                                    m_colHeads, m_colHeadCount,
+                                   m_hitEffects,
                                    m_scrollOffset, m_scrolling, m_scrollProgress,
                                    m_targetStartCol, m_targetEndCol);
         } else if (isSlideRemove) {
@@ -388,6 +399,7 @@ void Renderer::renderNotes(int64_t timeMs) {
                 m_noteRenderer->render(m_notes, timeMs, m_transition.prevRows, m_transition.prevCols, m_ar,
                                        m_activeStartCol, m_activeEndCol,
                                        m_colHeads, m_colHeadCount,
+                                       m_hitEffects,
                                        m_scrollOffset, m_scrolling, m_scrollProgress,
                                        m_targetStartCol, m_targetEndCol);
             } else {
@@ -396,6 +408,7 @@ void Renderer::renderNotes(int64_t timeMs) {
                 m_noteRenderer->render(m_notes, timeMs, m_transition.nextRows, m_transition.nextCols, m_ar,
                                        m_activeStartCol, m_activeEndCol,
                                        m_colHeads, m_colHeadCount,
+                                       m_hitEffects,
                                        m_scrollOffset, m_scrolling, m_scrollProgress,
                                        m_targetStartCol, m_targetEndCol);
             }
@@ -408,6 +421,7 @@ void Renderer::renderNotes(int64_t timeMs) {
                 m_noteRenderer->render(m_notes, timeMs, m_transition.prevRows, m_transition.prevCols, m_ar,
                                        m_activeStartCol, m_activeEndCol,
                                        m_colHeads, m_colHeadCount,
+                                       m_hitEffects,
                                        m_scrollOffset, m_scrolling, m_scrollProgress,
                                        m_targetStartCol, m_targetEndCol);
             } else {
@@ -416,6 +430,7 @@ void Renderer::renderNotes(int64_t timeMs) {
                 m_noteRenderer->render(m_notes, timeMs, m_transition.nextRows, m_transition.nextCols, m_ar,
                                        m_activeStartCol, m_activeEndCol,
                                        m_colHeads, m_colHeadCount,
+                                       m_hitEffects,
                                        m_scrollOffset, m_scrolling, m_scrollProgress,
                                        m_targetStartCol, m_targetEndCol);
             }
@@ -428,6 +443,7 @@ void Renderer::renderNotes(int64_t timeMs) {
             m_noteRenderer->render(m_notes, timeMs, rows, cols, m_ar,
                                    m_activeStartCol, m_activeEndCol,
                                    m_colHeads, m_colHeadCount,
+                                   m_hitEffects,
                                    m_scrollOffset, m_scrolling, m_scrollProgress,
                                    m_targetStartCol, m_targetEndCol);
         }
@@ -437,6 +453,7 @@ void Renderer::renderNotes(int64_t timeMs) {
         m_noteRenderer->render(m_notes, timeMs, m_gridRows, m_gridCols, m_ar,
                                m_activeStartCol, m_activeEndCol,
                                m_colHeads, m_colHeadCount,
+                               m_hitEffects,
                                m_scrollOffset, m_scrolling, m_scrollProgress,
                                m_targetStartCol, m_targetEndCol);
     }

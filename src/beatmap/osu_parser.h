@@ -28,19 +28,14 @@ private:
     // ── 常量（对齐参考转换器）──
     static constexpr int kBaseRows = 4;           ///< 初始阵型行数
     static constexpr int kBaseCols = 5;           ///< 初始阵型列数
-    static constexpr int kMinRows = 1;
-    static constexpr int kMaxRows = 4;
-    static constexpr int kMinCols = 3;
-    static constexpr int kMaxCols = 6;
     static constexpr int kActiveCols = 4;          ///< 活跃列数（dfjk 键数）
     static constexpr int kFormationDurationMs = 500; ///< 矩阵变换动画时长
     static constexpr int kScrollDurationMs = 200;   ///< 滚动动画时长
     static constexpr int kDenseGapMs = 520;                    ///< 密集节奏判定间隔
-    static constexpr int kRowStabilityLookaheadMs = 1000;       ///< 行稳定性前瞻时间
     static constexpr int kFormationCooldownMs = 4000;           ///< 阵型变换冷却时间
     static constexpr int kFormationStabilityLookaheadMs = 2500; ///< 阵型稳定性前瞻时间
     static constexpr int kMinStableTargetNotes = 3;             ///< 稳定目标最少 note 数
-    static constexpr double kDefaultBlockSize = 0.9; ///< 非初始 formation 默认 blockSize
+    static constexpr double kDefaultBlockSize = 1.0; ///< 非初始 formation 默认格内 item 缩放
 
     // ── 内部数据结构 ──
 
@@ -117,9 +112,11 @@ private:
     static int previousKeptIndex(const std::vector<ConvertedNote>& notes, size_t before);
     static int nextKeptIndex(const std::vector<ConvertedNote>& notes, size_t after);
     static int64_t blockingLatestHit(const ConvertedNote& note);
+    /// 遍历 noteIndex 之前所有未丢弃 note，取最大的 blockingLatestHit。
+    /// 用于确保变换开始时所有前向 note（含 Hold 的释放窗口）都已判定完毕，
+    /// 避免变换期间 note 仍在屏幕上导致渲染出界/无击打空间。
+    static int64_t maxBlockingLatestHitBefore(const std::vector<ConvertedNote>& notes, size_t before);
     bool isDenseRhythmAround(const std::vector<ConvertedNote>& notes, size_t index) const;
-    bool keepsRowsStableNearTransition(const std::vector<ConvertedNote>& notes, size_t index,
-                                        const MatrixShape& current, const MatrixShape& target) const;
     bool hasStableFormationTarget(const std::vector<ConvertedNote>& notes, size_t index,
                                    const MatrixShape& current, const MatrixShape& target) const;
 

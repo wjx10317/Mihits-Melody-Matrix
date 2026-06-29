@@ -64,7 +64,7 @@ struct Formation {
     int32_t cols = 0;                  ///< 网格列数
     int32_t transformType = MatrixTransform::NONE;  ///< 矩阵变换类型宏（见 [FormationTransformMacros]）
     int64_t transformDurationMs = 0;   ///< 变换动画时长（毫秒），v2 短格式默认0=立即切换
-    float blockSize = 1.0f;            ///< 格子缩放比例（1.0=占满，0.9=90%留间距）
+    float blockSize = 1.0f;            ///< 格内内容缩放（底格满格；1.0=256px，0.9=缩小，1.1=放大）
 };
 
 /// 谱面难度参数

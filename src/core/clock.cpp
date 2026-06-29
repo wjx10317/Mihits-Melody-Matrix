@@ -1,5 +1,7 @@
 #include "clock.h"
 
+#include <SDL.h>
+
 namespace melody_matrix::core {
 
 void Clock::syncFromAudio(int64_t audioFrameTimeMs) {
@@ -9,9 +11,14 @@ void Clock::syncFromAudio(int64_t audioFrameTimeMs) {
     // 导致时钟落后实际音频位置约半个周期（~5ms）。仅在前进时更新可消除该滞后。
     int64_t prev = m_audioTimeMs.exchange(audioFrameTimeMs, std::memory_order_acq_rel);
     if (!m_paused && audioFrameTimeMs != prev) {
-        m_anchor = std::chrono::steady_clock::now();
         m_anchorAudioMs = audioFrameTimeMs;
+        m_anchorTickMs = SDL_GetTicks64();
     }
+}
+
+int64_t Clock::elapsedMsSinceAnchor() const {
+    const int64_t tickNow = static_cast<int64_t>(SDL_GetTicks64());
+    return tickNow - static_cast<int64_t>(m_anchorTickMs);
 }
 
 int64_t Clock::nowMs() const {
@@ -22,10 +29,15 @@ int64_t Clock::interpolatedNowMs() const {
     if (m_paused) {
         return m_anchorAudioMs + m_userOffsetMs;
     }
-    auto elapsed = std::chrono::steady_clock::now() - m_anchor;
-    // 微秒精度 + 四舍五入，避免 duration_cast<milliseconds> 截断造成最多 ~1ms 落后。
-    auto elapsedUs = std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count();
-    return m_anchorAudioMs + (elapsedUs + 500) / 1000 + m_userOffsetMs;
+    return m_anchorAudioMs + elapsedMsSinceAnchor() + m_userOffsetMs;
+}
+
+int64_t Clock::songTimeAtTickMs(uint64_t tickMs) const {
+    if (m_paused) {
+        return m_anchorAudioMs + m_userOffsetMs;
+    }
+    const int64_t elapsedMs = static_cast<int64_t>(tickMs) - static_cast<int64_t>(m_anchorTickMs);
+    return m_anchorAudioMs + elapsedMs + m_userOffsetMs;
 }
 
 void Clock::setUserOffset(int64_t offsetMs) {
@@ -34,8 +46,8 @@ void Clock::setUserOffset(int64_t offsetMs) {
 
 void Clock::reset() {
     m_audioTimeMs.store(0, std::memory_order_release);
-    m_anchor = std::chrono::steady_clock::now();
     m_anchorAudioMs = 0;
+    m_anchorTickMs = SDL_GetTicks64();
     m_paused = false;
 }
 
@@ -44,8 +56,8 @@ void Clock::pause() {
 }
 
 void Clock::resume() {
-    m_anchor = std::chrono::steady_clock::now();
     m_anchorAudioMs = m_audioTimeMs.load(std::memory_order_acquire);
+    m_anchorTickMs = SDL_GetTicks64();
     m_paused = false;
 }
 

@@ -36,6 +36,11 @@ constexpr int kMaxCols = 6;
 constexpr int kActiveCols = 4;
 constexpr int kFormationDurationMs = 500;
 constexpr int kScrollDurationMs = 200;
+constexpr int kDenseGapMs = 520;
+constexpr int kRowStabilityLookaheadMs = 1000;
+constexpr int kFormationCooldownMs = 4000;
+constexpr int kFormationStabilityLookaheadMs = 2500;
+constexpr int kMinStableTargetNotes = 3;
 constexpr double kDefaultBlockSize = 0.9;
 
 enum TransformType {
@@ -113,6 +118,7 @@ struct ConvertedNote {
     int64_t endTime = 0;
     char type = 'T';
     NoteWindow window;
+    NoteWindow releaseWindow;
     bool dropped = false;
 };
 
@@ -506,6 +512,7 @@ std::vector<ConvertedNote> makeConvertedNotes(const OsuBeatmap& map) {
             }
         }
         note.window = makeWindow(note.time, map.ar, map.od);
+        note.releaseWindow = makeWindow(note.type == 'H' ? note.endTime : note.time, map.ar, map.od);
         notes.push_back(note);
     }
     return notes;
@@ -599,35 +606,135 @@ int previousKeptIndex(const std::vector<ConvertedNote>& notes, size_t before) {
     return -1;
 }
 
+int nextKeptIndex(const std::vector<ConvertedNote>& notes, size_t after) {
+    for (size_t i = after + 1; i < notes.size(); ++i) {
+        if (!notes[i].dropped) {
+            return static_cast<int>(i);
+        }
+    }
+    return -1;
+}
+
+int64_t blockingLatestHit(const ConvertedNote& note) {
+    return note.type == 'H' ? note.releaseWindow.latestHit : note.window.latestHit;
+}
+
+bool isDenseRhythmAround(const std::vector<ConvertedNote>& notes, size_t index) {
+    const int prevIndex = previousKeptIndex(notes, index);
+    if (prevIndex >= 0 && notes[index].time - notes[prevIndex].time <= kDenseGapMs) {
+        return true;
+    }
+
+    const int nextIndex = nextKeptIndex(notes, index);
+    if (nextIndex >= 0 && notes[nextIndex].time - notes[index].time <= kDenseGapMs) {
+        return true;
+    }
+
+    return false;
+}
+
+bool keepsRowsStableNearTransition(
+    const std::vector<ConvertedNote>& notes,
+    size_t index,
+    const MatrixShape& current,
+    const MatrixShape& target) {
+
+    if (current.rows == target.rows) {
+        return true;
+    }
+
+    const int64_t end = notes[index].time + kRowStabilityLookaheadMs;
+    for (size_t i = index; i < notes.size(); ++i) {
+        if (notes[i].dropped) {
+            continue;
+        }
+        if (notes[i].time > end) {
+            break;
+        }
+
+        const int rowBefore = mappedRowForShape(notes[i].y, current.rows);
+        const int rowAfter = mappedRowForShape(notes[i].y, target.rows);
+        if (rowBefore != rowAfter) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+bool hasStableFormationTarget(
+    const std::vector<ConvertedNote>& notes,
+    size_t index,
+    const MatrixShape& current,
+    const MatrixShape& target) {
+
+    if (target.rows == current.rows && target.cols == current.cols) {
+        return false;
+    }
+
+    const int64_t end = notes[index].time + kFormationStabilityLookaheadMs;
+    int considered = 0;
+    int targetVotes = 0;
+    for (size_t i = index; i < notes.size(); ++i) {
+        if (notes[i].dropped) {
+            continue;
+        }
+        if (notes[i].time > end) {
+            break;
+        }
+        if (isDenseRhythmAround(notes, i)) {
+            return false;
+        }
+
+        const MatrixShape candidate = targetShapeForDensity(notes, i);
+        ++considered;
+        if (candidate.rows == target.rows && candidate.cols == target.cols) {
+            ++targetVotes;
+        }
+    }
+
+    return considered >= kMinStableTargetNotes && targetVotes * 2 >= considered + 1;
+}
+
 bool scheduleTransitionBefore(
     std::vector<ConvertedNote>& notes,
     size_t noteIndex,
     int64_t durationMs,
     bool includesFormation,
     int64_t lastTransitionEnd,
+    int maxDrops,
     int64_t& startMs) {
 
     const int64_t endLimit = includesFormation
         ? notes[noteIndex].window.displayStart
         : notes[noteIndex].window.earliestHit;
+    std::vector<size_t> droppedForAttempt;
 
     while (true) {
         const int prevIndex = previousKeptIndex(notes, noteIndex);
-        const int64_t safeAfter = prevIndex >= 0 ? notes[prevIndex].window.latestHit : 0;
+        const int64_t safeAfter = prevIndex >= 0 ? blockingLatestHit(notes[prevIndex]) : 0;
         const int64_t earliestStart = std::max(safeAfter, lastTransitionEnd);
         if (endLimit - earliestStart >= durationMs) {
             startMs = std::max(earliestStart, endLimit - durationMs);
             return true;
         }
 
-        if (prevIndex >= 0) {
+        if (prevIndex >= 0 &&
+            maxDrops > 0 &&
+            notes[prevIndex].type != 'H' &&
+            !isDenseRhythmAround(notes, static_cast<size_t>(prevIndex))) {
             notes[prevIndex].dropped = true;
+            droppedForAttempt.push_back(static_cast<size_t>(prevIndex));
+            --maxDrops;
             continue;
         }
 
         if (endLimit >= durationMs && lastTransitionEnd <= endLimit - durationMs) {
             startMs = std::max<int64_t>(lastTransitionEnd, endLimit - durationMs);
             return true;
+        }
+        for (size_t index : droppedForAttempt) {
+            notes[index].dropped = false;
         }
         return false;
     }
@@ -640,21 +747,37 @@ std::vector<Formation> generateFormationsAndFilter(std::vector<ConvertedNote>& n
     MatrixShape current{kBaseRows, kBaseCols};
     int activeStart = 0;
     int64_t lastTransitionEnd = 0;
+    int64_t lastFormationTime = 0;
 
     for (size_t i = 0; i < notes.size(); ++i) {
         if (notes[i].dropped) {
             continue;
         }
 
-        const MatrixShape target = targetShapeForDensity(notes, i);
-        const bool needsFormation = target.rows != current.rows || target.cols != current.cols;
+        MatrixShape target = targetShapeForDensity(notes, i);
+        const bool denseRhythm = isDenseRhythmAround(notes, i);
+        bool needsFormation = target.rows != current.rows || target.cols != current.cols;
+        if (needsFormation && (
+                denseRhythm ||
+                notes[i].time - lastFormationTime < kFormationCooldownMs ||
+                !hasStableFormationTarget(notes, i, current, target) ||
+                !keepsRowsStableNearTransition(notes, i, current, target))) {
+            target = current;
+            needsFormation = false;
+        }
 
         const int maxActiveStart = std::max(0, target.cols - kActiveCols);
         activeStart = clampInt(activeStart, 0, maxActiveStart);
         const int targetCol = mappedColForShape(notes[i].x, target.cols);
         bool needsScroll = false;
         int nextActiveStart = activeStart;
-        if (target.cols > kActiveCols) {
+        if (needsFormation) {
+            if (target.cols > kActiveCols) {
+                nextActiveStart = clampInt(targetCol - kActiveCols / 2, 0, maxActiveStart);
+            } else {
+                nextActiveStart = 0;
+            }
+        } else if (!denseRhythm && target.cols > kActiveCols) {
             if (targetCol < activeStart) {
                 needsScroll = true;
                 nextActiveStart = clampInt(targetCol, 0, maxActiveStart);
@@ -673,7 +796,15 @@ std::vector<Formation> generateFormationsAndFilter(std::vector<ConvertedNote>& n
             needsScroll ? static_cast<int64_t>(kScrollDurationMs) : 0);
 
         int64_t transitionStart = 0;
-        if (!scheduleTransitionBefore(notes, i, duration, needsFormation, lastTransitionEnd, transitionStart)) {
+        const int maxDrops = needsFormation ? 1 : 0;
+        if (!scheduleTransitionBefore(
+                notes,
+                i,
+                duration,
+                needsFormation,
+                lastTransitionEnd,
+                maxDrops,
+                transitionStart)) {
             continue;
         }
 
@@ -691,6 +822,7 @@ std::vector<Formation> generateFormationsAndFilter(std::vector<ConvertedNote>& n
                 false,
             });
             current = target;
+            lastFormationTime = transitionStart;
         }
     }
 

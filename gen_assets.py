@@ -8,16 +8,14 @@ os.makedirs(RES_DIR, exist_ok=True)
 
 
 # ============================================================
-# 1. 背景图片：黑色深框 + 白色圆角填充，256x256
+# 1. 背景图片：白色圆角格面，外侧透明（无黑边；格缝由 Background Dim 填充）
 # ============================================================
 def gen_background():
     size = 256
+    margin = 8
+    radius = 36
     img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
-    draw.rectangle([0, 0, size - 1, size - 1], fill=(0, 0, 0, 255))
-    border = 12
-    radius = 20
-    margin = border
     draw.rounded_rectangle(
         [margin, margin, size - 1 - margin, size - 1 - margin],
         radius=radius,
@@ -168,124 +166,23 @@ def gen_slider():
 
 
 # ============================================================
-# 4. SliderPush：矩形光效边框，尺寸略大于 slider
-#    slider 是 128x128，sliderpush 用 144x144（每边多 8px）
-#    光效从最左侧中心开始顺时针依次亮一圈
+# 4. HoldPush：圆角进度环（见 tools/generate_holdpush.py）
 # ============================================================
-def gen_sliderpush():
-    size = 144  # 比 slider(128) 大 16px
-    margin = 4  # 边框距离边缘
-    border_w = 6  # 边框宽度
-    x0, y0 = margin, margin
-    x1, y1 = size - 1 - margin, size - 1 - margin
-
-    # 底图：暗色半透明矩形边框
-    ring = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(ring)
-    # 外矩形
-    draw.rectangle([x0, y0, x1, y1], fill=(80, 80, 80, 100))
-    # 内矩形挖空
-    inner_margin = margin + border_w
-    draw.rectangle([inner_margin, inner_margin,
-                    size - 1 - inner_margin, size - 1 - inner_margin],
-                   fill=(0, 0, 0, 0))
-    ring = ring.filter(ImageFilter.GaussianBlur(radius=1))
-
-    path_ring = os.path.join(RES_DIR, "sliderpush_ring.png")
-    ring.save(path_ring, "PNG")
-    print(f"[OK] {path_ring}  ({size}x{size})")
-
-    # 不同进度预览图
-    # 从最左侧中心开始顺时针：左→上→右→下
-    # 周长 = 2*(w+h)，w=h=size-1-2*margin
-    w = x1 - x0
-    h = y1 - y0
-    perimeter = 2 * (w + h)
-
-    for pct in [0, 25, 50, 75, 100]:
-        if pct == 100:
-            # 100% 时用亮色边框替换底图
-            preview = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-            draw2 = ImageDraw.Draw(preview)
-            draw2.rectangle([x0, y0, x1, y1], fill=(255, 255, 255, 220))
-            draw2.rectangle([inner_margin, inner_margin,
-                             size - 1 - inner_margin, size - 1 - inner_margin],
-                            fill=(0, 0, 0, 0))
-            preview = preview.filter(ImageFilter.GaussianBlur(radius=1.5))
-        else:
-            preview = ring.copy()
-            if pct > 0:
-                # 计算当前进度对应的像素长度
-                length = int(perimeter * pct / 100)
-                # 从最左侧中心 (x0, cy) 开始顺时针绘制
-                cy = size // 2
-                # 分段绘制：左→上→右→下
-                draw2 = ImageDraw.Draw(preview)
-                remaining = length
-                # 段 1：左侧，从 cy 向上到 y0
-                seg1 = cy - y0
-                if remaining > 0:
-                    draw_len = min(remaining, seg1)
-                    if draw_len > 0:
-                        draw2.line([(x0, cy), (x0, cy - draw_len)],
-                                   fill=(255, 255, 255, 230), width=border_w)
-                    remaining -= draw_len
-                # 段 2：上侧，从 x0 向右到 x1
-                seg2 = x1 - x0
-                if remaining > 0:
-                    draw_len = min(remaining, seg2)
-                    if draw_len > 0:
-                        draw2.line([(x0, y0), (x0 + draw_len, y0)],
-                                   fill=(255, 255, 255, 230), width=border_w)
-                    remaining -= draw_len
-                # 段 3：右侧，从 y0 向下到 y1
-                seg3 = y1 - y0
-                if remaining > 0:
-                    draw_len = min(remaining, seg3)
-                    if draw_len > 0:
-                        draw2.line([(x1, y0), (x1, y0 + draw_len)],
-                                   fill=(255, 255, 255, 230), width=border_w)
-                    remaining -= draw_len
-                # 段 4：下侧，从 x1 向左到 x0
-                seg4 = x1 - x0
-                if remaining > 0:
-                    draw_len = min(remaining, seg4)
-                    if draw_len > 0:
-                        draw2.line([(x1, y1), (x1 - draw_len, y1)],
-                                   fill=(255, 255, 255, 230), width=border_w)
-                    remaining -= draw_len
-                preview = preview.filter(ImageFilter.GaussianBlur(radius=1.5))
-        path = os.path.join(RES_DIR, f"sliderpush_{pct}.png")
-        preview.save(path, "PNG")
-        print(f"[OK] {path}  ({pct}%)")
+def gen_holdpush():
+    import subprocess
+    import sys
+    script = os.path.join(os.path.dirname(__file__), "tools", "generate_holdpush.py")
+    subprocess.check_call([sys.executable, script])
 
 
 # ============================================================
-# 5. Overlay 缩圈图片：矩形框，中间全透明，外侧可绘制底色
+# 5. Overlay 缩圈：圆角环（见 tools/generate_overlay.py，与 tap/holdpush 同弧度）
 # ============================================================
 def gen_overlay():
-    size = 256
-    margin = 8  # 边框距离边缘
-    border_w = 16  # 边框宽度
-
-    img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(img)
-
-    # 外矩形（半透明白色）
-    draw.rectangle([margin, margin, size - 1 - margin, size - 1 - margin],
-                   fill=(255, 255, 255, 200))
-    # 内矩形挖空（中间全透明，不遮住 note）
-    inner_margin = margin + border_w
-    draw.rectangle([inner_margin, inner_margin,
-                    size - 1 - inner_margin, size - 1 - inner_margin],
-                   fill=(0, 0, 0, 0))
-
-    # 柔和边缘
-    img = img.filter(ImageFilter.GaussianBlur(radius=2))
-
-    path = os.path.join(RES_DIR, "overlay.png")
-    img.save(path, "PNG")
-    print(f"[OK] {path}  ({size}x{size})")
+    import subprocess
+    import sys
+    script = os.path.join(os.path.dirname(__file__), "tools", "generate_overlay.py")
+    subprocess.check_call([sys.executable, script])
 
 
 # ============================================================
@@ -294,6 +191,6 @@ if __name__ == "__main__":
     gen_background()
     gen_tap()
     gen_slider()
-    gen_sliderpush()
+    gen_holdpush()
     gen_overlay()
     print("\n=== 全部生成完毕 ===")

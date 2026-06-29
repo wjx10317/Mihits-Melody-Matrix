@@ -58,15 +58,8 @@ public:
     /// 当前是否正在转换中
     bool inTransition(int64_t nowMs) const;
 
-    /// 获取转换持续时间（毫秒）
-    int64_t transitionDuration() const { return m_transitionDurationMs; }
-
     /// 设置转换持续时间
     void setTransitionDuration(int64_t durationMs) { m_transitionDurationMs = durationMs; }
-
-    /// 将网格单元映射到屏幕坐标
-    static void cellToScreen(int row, int col, int rows, int cols,
-                             float& outX, float& outY);
 
     /// 重置状态
     void reset();
