@@ -1,3 +1,19 @@
+// ============================================================
+// note_renderer.cpp — 音符实例化渲染实现
+//
+// OpenGL 实例化架构：
+//   - 静态 VBO：单位四边形 UV (0,0)-(1,1)，6 顶点
+//   - 实例 VBO（divisor=1）：位置尺寸 / 颜色 / 层 ID / arcSweep
+//   - 一次 glDrawArraysInstanced 绘制全部实例（画家算法靠 CPU 插入顺序）
+//
+// buildNoteVertices 绘制顺序（从先到后 = 从底到顶）：
+//   1. 格子 background（layer 5）— 全矩阵遍历
+//   2. 各 note 本体（layer 0 tap / layer 1 slider）
+//   3. 各 note hold 按住（layer 3 ring + layer 6..16 push）
+//   4. 缩圈 approach ring（layer 2）— 延迟合批，避免被 note 遮挡
+//   5. Tap 击中扩散（layer 2, arcSweep<0）— 最顶层
+// ============================================================
+
 #include "note_renderer.h"
 #include "util/logger.h"
 
@@ -9,6 +25,8 @@
 #include <cmath>
 
 namespace melody_matrix::renderer {
+
+// ── 实例数据追加辅助 ──
 
 void NoteRenderer::pushQuad(std::vector<float>& quads, std::vector<float>& colors,
                             std::vector<float>& layers, std::vector<float>& arcSweeps,
@@ -31,6 +49,7 @@ void NoteRenderer::pushCenteredQuad(std::vector<float>& quads, std::vector<float
              r, g, b, a, layer, arcSweep);
 }
 
+/// Hold 按住进度 → holdpush 阶段纹理层（kLayerHoldPushBase + stage）
 float NoteRenderer::holdPushLayerForProgress(float progress) const {
     int stage = std::min(kHoldPushStageCount - 1,
                          static_cast<int>(progress * static_cast<float>(kHoldPushStageCount)));
@@ -47,9 +66,12 @@ bool NoteRenderer::holdPushLayerHasTexture(float layer) const {
     return m_texHoldPush[static_cast<size_t>(idx)] != nullptr;
 }
 
+// ── 初始化：编译 shader + 配置实例化 VAO ──
+
 bool NoteRenderer::init() {
     MM_LOG_INFO("NoteRenderer", "Initializing...");
 
+    // 顶点 shader：单位四边形 aPos × 实例 (xy,w,h) → 世界坐标
     const std::string vertSrc = R"(
         #version 330 core
         layout(location = 0) in vec2 aPos;
@@ -74,6 +96,30 @@ bool NoteRenderer::init() {
             vArcSweep = aArcSweep;
         }
     )";
+
+    // 片段 shader：按 aTexLayer 整数分支选纹理；layer 2 用 vArcSweep 做 UV 缩圈/扩散
+    //
+    // ── CPU 层 ID → fragment 分支 → OpenGL 纹理单元 完整映射表 ──
+    //   层 ID | 含义              | uniform           | bind 单元
+    //   ------|-------------------|-------------------|----------
+    //     5   | 格子 background   | uTexBlock         | 15
+    //     0   | Tap note          | uTexTap           | 0
+    //     1   | Hold note 本体    | uTexSlider        | 1
+    //     2   | 缩圈 / 击中 overlay | uTexOverlay     | 2
+    //     3   | Hold 按住外环     | uTexHoldPushRing  | 3
+    //     6   | holdpush_0%       | uTexHoldPush0     | 4
+    //     7   | holdpush_10%      | uTexHoldPush1     | 5
+    //     8   | holdpush_20%      | uTexHoldPush2     | 6
+    //     9   | holdpush_30%      | uTexHoldPush3     | 7
+    //    10   | holdpush_40%      | uTexHoldPush4     | 8
+    //    11   | holdpush_50%      | uTexHoldPush5     | 9
+    //    12   | holdpush_60%      | uTexHoldPush6     | 10
+    //    13   | holdpush_70%      | uTexHoldPush7     | 11
+    //    14   | holdpush_80%      | uTexHoldPush8     | 12
+    //    15   | holdpush_90%      | uTexHoldPush9     | 13
+    //    16   | holdpush_100%     | uTexHoldPush10    | 14
+    //
+    // layer 2 特殊：vArcSweep >= 0 缩圈（UV 1.35→1.0）；< 0 击中扩散（UV 1.0→1.28）
     const std::string fragSrc = R"(
         #version 330 core
         in vec4 vColor;
@@ -145,6 +191,7 @@ bool NoteRenderer::init() {
         return false;
     }
 
+    // 共享单位四边形：2 三角 6 顶点，aPos 同时作为 UV
     float quad[] = {
         0.0f, 0.0f,  1.0f, 0.0f,  1.0f, 1.0f,
         0.0f, 0.0f,  1.0f, 1.0f,  0.0f, 1.0f
@@ -159,29 +206,34 @@ bool NoteRenderer::init() {
 
     glBindVertexArray(m_vao);
 
+    // location 0：静态四边形顶点（每实例复用）
     glBindBuffer(GL_ARRAY_BUFFER, m_quadVbo);
     glBufferData(GL_ARRAY_BUFFER, sizeof(quad), quad, GL_STATIC_DRAW);
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), (void*)0);
 
+    // location 1：实例属性 xywh（divisor=1 → 每实例一步）
     glBindBuffer(GL_ARRAY_BUFFER, m_instanceVbo);
     glBufferData(GL_ARRAY_BUFFER, m_maxInstances * 4 * sizeof(float), nullptr, GL_DYNAMIC_DRAW);
     glEnableVertexAttribArray(1);
     glVertexAttribPointer(1, 4, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)0);
     glVertexAttribDivisor(1, 1);
 
+    // location 2：实例颜色 RGBA
     glBindBuffer(GL_ARRAY_BUFFER, m_colorVbo);
     glBufferData(GL_ARRAY_BUFFER, m_maxInstances * 4 * sizeof(float), nullptr, GL_DYNAMIC_DRAW);
     glEnableVertexAttribArray(2);
     glVertexAttribPointer(2, 4, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)0);
     glVertexAttribDivisor(2, 1);
 
+    // location 3：实例纹理层 ID
     glBindBuffer(GL_ARRAY_BUFFER, m_layerVbo);
     glBufferData(GL_ARRAY_BUFFER, m_maxInstances * sizeof(float), nullptr, GL_DYNAMIC_DRAW);
     glEnableVertexAttribArray(3);
     glVertexAttribPointer(3, 1, GL_FLOAT, GL_FALSE, sizeof(float), (void*)0);
     glVertexAttribDivisor(3, 1);
 
+    // location 4：缩圈/击中 UV 参数 arcSweep
     glBindBuffer(GL_ARRAY_BUFFER, m_arcVbo);
     glBufferData(GL_ARRAY_BUFFER, m_maxInstances * sizeof(float), nullptr, GL_DYNAMIC_DRAW);
     glEnableVertexAttribArray(4);
@@ -208,6 +260,8 @@ void NoteRenderer::setTextures(const Texture2D* tap, const Texture2D* slider,
     m_texBlock = block;
 }
 
+// ── 每帧渲染：构建实例 → 上传 VBO → 绑定纹理 → 实例化绘制 ──
+
 void NoteRenderer::render(const std::vector<beatmap::Note>& notes, int64_t timeMs,
                            int rows, int cols, float ar,
                            int32_t activeStartCol, int32_t activeEndCol,
@@ -233,6 +287,7 @@ void NoteRenderer::render(const std::vector<beatmap::Note>& notes, int64_t timeM
     int32_t instanceCount = static_cast<int32_t>(quads.size() / 4);
     instanceCount = std::min(instanceCount, m_maxInstances);
 
+    // 上传本帧实例数据到各动态 VBO
     glBindVertexArray(m_vao);
     glBindBuffer(GL_ARRAY_BUFFER, m_instanceVbo);
     glBufferData(GL_ARRAY_BUFFER, quads.size() * sizeof(float), quads.data(), GL_DYNAMIC_DRAW);
@@ -243,6 +298,7 @@ void NoteRenderer::render(const std::vector<beatmap::Note>& notes, int64_t timeM
     glBindBuffer(GL_ARRAY_BUFFER, m_arcVbo);
     glBufferData(GL_ARRAY_BUFFER, arcSweeps.size() * sizeof(float), arcSweeps.data(), GL_DYNAMIC_DRAW);
 
+    // 纹理单元绑定（须与 fragment shader uniform 及 setInt 一致）
     if (m_texTap) m_texTap->bind(0);
     if (m_texSlider) m_texSlider->bind(1);
     if (m_texOverlay) m_texOverlay->bind(2);
@@ -258,6 +314,7 @@ void NoteRenderer::render(const std::vector<beatmap::Note>& notes, int64_t timeM
     glm::mat4 proj = glm::ortho(0.0f, 1920.0f, 1080.0f, 0.0f, -1.0f, 1.0f);
     m_shader.setMat4("uProjection", &proj[0][0]);
 
+    // 阵型旋转过渡：绕屏幕中心旋转 uModel
     glm::mat4 model = glm::mat4(1.0f);
     if (std::abs(m_animRotation) > 0.001f) {
         glm::vec2 center(1920.0f * 0.5f, 1080.0f * 0.5f);
@@ -296,6 +353,8 @@ void NoteRenderer::render(const std::vector<beatmap::Note>& notes, int64_t timeM
     }
 }
 
+// ── buildNoteVertices：CPU 端构建全部实例，控制 Z 序（插入顺序）──
+
 void NoteRenderer::buildNoteVertices(const std::vector<beatmap::Note>& notes, int64_t timeMs,
                                       int rows, int cols, float ar,
                                       int32_t activeStartCol, int32_t activeEndCol,
@@ -314,14 +373,16 @@ void NoteRenderer::buildNoteVertices(const std::vector<beatmap::Note>& notes, in
 
     if (rows <= 0 || cols <= 0) return;
 
+    // GridLayout：逻辑格坐标 → 屏幕像素；blockSize 缩放格内内容
     const float W = GridLayout::kScreenW;
     const float H = GridLayout::kScreenH;
     GridLayout layout{ rows, cols, m_blockSize };
     const float gw = layout.gw();
     const float gh = layout.gh();
-    const float cellW = layout.contentW();
-    const float cellH = layout.contentH();
+    const float cellW = layout.contentW();   // gw × blockSize
+    const float cellH = layout.contentH();   // gh × blockSize
 
+    // 活跃列带 X 范围（用于 background 高亮/半透明分割）
     float activeLeftX = 0.0f;
     float activeRightX = 0.0f;
     layout.activeBandX(activeStartCol, activeEndCol, activeLeftX, activeRightX);
@@ -331,20 +392,26 @@ void NoteRenderer::buildNoteVertices(const std::vector<beatmap::Note>& notes, in
     activeLeftX -= contentOverflowX;
     activeRightX += contentOverflowX;
 
+    // 纹理层有效性（无纹理则跳过该层）
     const float layerTap = m_texTap ? kLayerTap : -1.0f;
     const float layerSlider = m_texSlider ? kLayerSlider : -1.0f;
     const float layerOverlay = m_texOverlay ? kLayerOverlay : -1.0f;
     const float layerBlock = m_texBlock ? kLayerBlock : -1.0f;
 
+    // AR 决定缩圈窗口时长（approach circle 提前量）
     float approachMs = 1800.0f - ar * 120.0f;
     if (approachMs < 300.0f) approachMs = 300.0f;
 
+    // 缩圈单独缓冲，最后 append 以保证绘制在 note 之上
     std::vector<float> approachQuads;
     std::vector<float> approachColors;
     std::vector<float> approachLayers;
     std::vector<float> approachArcSweeps;
 
-    // ── 格子背景 ──
+    // ══════════════════════════════════════════════════════════
+    // 阶段 1：格子 background（layer 5）— 最底层
+    // 活跃列带内 alpha=0.85，带外 alpha=0.35；与 note 同用 blockSize 缩放
+    // ══════════════════════════════════════════════════════════
     if (layerBlock >= 0.0f && rows > 0 && cols > 0) {
         const float blockActiveAlpha = 0.85f;
         const float blockDimAlpha    = 0.35f;
@@ -357,6 +424,7 @@ void NoteRenderer::buildNoteVertices(const std::vector<beatmap::Note>& notes, in
                                   scrollOffset, cellCx, cellCy);
                 if (!layout.cellVisible(cellCx, cellCy)) continue;
 
+                // 阵型滑入动画：新行/列从屏外滑入
                 float slideOffsetX = 0.0f;
                 if (m_animSlideRows && r >= m_animPrevRows && m_animPrevRows >= 0) {
                     slideOffsetX = (1.0f - m_animSlideProgress) * (-W);
@@ -380,6 +448,7 @@ void NoteRenderer::buildNoteVertices(const std::vector<beatmap::Note>& notes, in
                              layerBlock);
                 };
 
+                // 按与活跃列带重叠情况分割 alpha
                 if (overlapRight <= overlapLeft) {
                     pushBlock(blockLeft, cellW, blockDimAlpha);
                 } else if (overlapLeft <= blockLeft && overlapRight >= blockRight) {
@@ -396,7 +465,11 @@ void NoteRenderer::buildNoteVertices(const std::vector<beatmap::Note>& notes, in
 
     std::array<size_t, 8> colEncounterCount = {};
 
+    // ══════════════════════════════════════════════════════════
+    // 阶段 2~3：遍历 note — 本体 + hold 按住（写入主 quads 缓冲）
+    // ══════════════════════════════════════════════════════════
     for (const auto& note : notes) {
+        // 跳过已判定 note（colHeads 列头指针）；hold 按住中保留 ghost
         if (note.col >= 0 && note.col < colHeadCount) {
             size_t& encountered = colEncounterCount[note.col];
             if (encountered < colHeads[note.col]) {
@@ -421,6 +494,7 @@ void NoteRenderer::buildNoteVertices(const std::vector<beatmap::Note>& notes, in
                           scrollOffset, cellX, cellY);
         if (!layout.cellVisible(cellX, cellY)) continue;
 
+        // 阵型滑入偏移（与 background 一致）
         float slideOffsetX = 0.0f;
         if (m_animSlideRows && note.row >= m_animPrevRows && m_animPrevRows >= 0) {
             slideOffsetX = (1.0f - m_animSlideProgress) * (-W);
@@ -432,6 +506,7 @@ void NoteRenderer::buildNoteVertices(const std::vector<beatmap::Note>& notes, in
         cellX += slideOffsetX;
         cellY += slideOffsetY;
 
+        // 宽矩阵（>4 列）时非活跃列渐暗
         float colDim = 1.0f;
         if (cols > 4) {
             float weight = 1.0f;
@@ -453,7 +528,7 @@ void NoteRenderer::buildNoteVertices(const std::vector<beatmap::Note>& notes, in
             alpha *= 1.0f - std::min(1.0f, fadeProgress);
         }
 
-        // ── 1) Note 本体（与 background 同按 blockSize 缩放）──
+        // ── 2a) Note 本体（layer 0 tap / layer 1 slider，尺寸 cellW×cellH）──
         if (note.type == beatmap::NoteType::Tap && layerTap >= 0.0f) {
             float noteAlpha = alpha * 0.95f;
             float r = 0.0f, g = 0.55f, b = 0.52f;
@@ -477,7 +552,7 @@ void NoteRenderer::buildNoteVertices(const std::vector<beatmap::Note>& notes, in
                              r, g, b, holdAlpha, layerSlider);
         }
 
-        // ── 2) 缩圈：逻辑格外扩 quad + UV 收缩；延后合批以免被 note 遮挡 ──
+        // ── 2b) 缩圈（layer 2）— 写入 approachQuads，稍后合批 ──
         if (layerOverlay >= 0.0f && timeDiff > 0.0f && !isHolding) {
             const bool contentFillsCell = (gw <= cellW + 0.5f);
             const float ringOuterW =
@@ -494,7 +569,7 @@ void NoteRenderer::buildNoteVertices(const std::vector<beatmap::Note>& notes, in
                              ringArcSweep);
         }
 
-        // ── 3) Hold 按住：holdpush_ring + holdpush_0/10/..../100 铺满整格 ──
+        // ── 2c) Hold 按住：ring（layer 3）+ push 阶段（layer 6..16）──
         if (isHolding) {
             float holdDuration = static_cast<float>(note.holdEnd - note.time);
             float progress = 0.0f;
@@ -518,13 +593,18 @@ void NoteRenderer::buildNoteVertices(const std::vector<beatmap::Note>& notes, in
         }
     }
 
-    // 缩圈置于 note / holdpush 之后绘制，避免被同批实例遮挡
+    // ══════════════════════════════════════════════════════════
+    // 阶段 4：缩圈合批 — 追加到主缓冲末尾，绘制在 note/holdpush 之上
+    // ══════════════════════════════════════════════════════════
     quads.insert(quads.end(), approachQuads.begin(), approachQuads.end());
     colors.insert(colors.end(), approachColors.begin(), approachColors.end());
     layers.insert(layers.end(), approachLayers.begin(), approachLayers.end());
     arcSweeps.insert(arcSweeps.end(), approachArcSweeps.begin(), approachArcSweeps.end());
 
-    // ── Tap 击中：overlay 从 note 尺寸扩散到格子边 ──
+    // ══════════════════════════════════════════════════════════
+    // 阶段 5：Tap 击中扩散（layer 2, arcSweep<0）— 最顶层
+    // overlay 从 note 尺寸 UV 扩散到格边（1.0→1.28）
+    // ══════════════════════════════════════════════════════════
     if (layerOverlay >= 0.0f) {
         for (const auto& hit : hitEffects) {
             if (hit.alpha <= 0.01f) continue;

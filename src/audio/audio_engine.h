@@ -1,5 +1,12 @@
 #pragma once
 
+// ──────────────────────────────────────────────────────
+//  audio_engine.h — 音频引擎（miniaudio 封装）
+//
+//  功能：BGM 播放、选歌预览（淡入/循环）、音效池、分组音量。
+//  ActiveSound 池管理多路并发；SFX 每类型 3 实例轮转防截断。
+// ──────────────────────────────────────────────────────
+
 #include <string>
 #include <cstdint>
 #include <vector>
@@ -11,26 +18,23 @@ struct ma_sound;
 
 namespace melody_matrix::audio {
 
-// 音频类型枚举 —— 为未来多种音频类型共存和音量分组预留
+// 音频类型 — 分组音量与并发策略预留
 enum class SoundType : int {
-    Preview = 0,   // 选歌预览
-    BGM     = 1,   // 菜单背景音乐
-    Effect  = 2,   // 音效（判定音、UI音等）
+    Preview = 0,   ///< 选歌预览
+    BGM     = 1,   ///< 菜单/游戏 BGM
+    Effect  = 2,   ///< 音效（判定、UI）
 };
 
-// 音效类型枚举 —— 用于 playSfx() 选择播放的音效
+/// 音效类型 — playSfx() 索引
 enum class SfxType : int {
-    MenuClick  = 0,    // 菜单点击（切换铺面）
-    MenuHit    = 1,    // 菜单击中（选中模组/取消模组/开始游戏）
-    HitNormal  = 2,    // 游戏内 tap 击中
-    SliderTick = 3,    // slidertick（预留）
+    MenuClick  = 0,    ///< 菜单切换铺面
+    MenuHit    = 1,    ///< 菜单确认/取消/开始
+    HitNormal  = 2,    ///< 击打音（扫描 res/*_normal.* 或 *-hitnormal.*）
+    SliderTick = 3,    ///< 滑条 tick（预留）
     Count      = 4
 };
 
-// ============================================================
-// ActiveSound —— 池中管理的活动声音
-// 禁止拷贝（避免 ma_sound* 浅拷贝），只允许移动
-// ============================================================
+// ── ActiveSound：活动声音槽（禁止拷贝，仅移动）──
 struct ActiveSound {
     ma_sound*  sound           = nullptr;
     SoundType   type            = SoundType::Preview;
@@ -38,19 +42,18 @@ struct ActiveSound {
     float       fadeDuration    = 0.0f;
     float       fadeStartVol    = 0.0f;
     float       fadeTargetVol   = 0.0f;
-    bool        isFadingOut     = false;   // true = 正在淡出并准备释放
-    bool        isFadingIn      = false;   // true = 正在淡入
-    int64_t     previewStartMs  = 0;     // 预览起始时间（ms）
-    int64_t     previewEndMs    = 0;     // 预览结束时间（ms，0=播到结尾）
-    std::string filePath;                  // 音频文件路径（用于判断是否是同一首歌）
+    bool        isFadingOut     = false;   ///< true = 淡出中，结束后释放
+    bool        isFadingIn      = false;   ///< true = 淡入中
+    int64_t     previewStartMs  = 0;     ///< 预览循环起点（毫秒）
+    int64_t     previewEndMs    = 0;     ///< 预览结束点（0=播到文件尾）
+    std::string filePath;                  ///< 源文件路径（预览去重用）
 
     ActiveSound() = default;
 
-    // 禁止拷贝
     ActiveSound(const ActiveSound&) = delete;
     ActiveSound& operator=(const ActiveSound&) = delete;
 
-    // 允许移动
+    /// 移动构造：转移 ma_sound 所有权
     ActiveSound(ActiveSound&& other) noexcept
         : sound(other.sound)
         , type(other.type)
@@ -63,12 +66,12 @@ struct ActiveSound {
         , previewStartMs(other.previewStartMs)
         , previewEndMs(other.previewEndMs)
     {
-        other.sound = nullptr;  // 所有权转移
+        other.sound = nullptr;  ///< 所有权已转移
     }
 
     ActiveSound& operator=(ActiveSound&& other) noexcept {
         if (this != &other) {
-            release();  // 释放当前持有的
+            release();
             sound           = other.sound;
             type            = other.type;
             fadeTimer       = other.fadeTimer;
@@ -84,62 +87,52 @@ struct ActiveSound {
         return *this;
     }
 
-    void release();  // 实现在 .cpp 中（需调用 ma_* 函数）
+    void release();  ///< 停止并 uninit ma_sound（实现在 .cpp）
 
     ~ActiveSound() { release(); }
 };
 
-// ============================================================
-// AudioEngine —— 封装 miniaudio，支持多路音频、淡入淡出、预览循环
-// ============================================================
+/// 音频引擎 — miniaudio 封装，支持多路、淡入淡出、预览循环、SFX 池
 class AudioEngine {
 public:
     AudioEngine() = default;
     ~AudioEngine() { shutdown(); }
 
-    // 初始化 / 关闭
+    /// 初始化 miniaudio 引擎
     bool init();
+    /// 释放所有声音与引擎
     void shutdown();
 
-    // 播放控制（游戏内，单路，兼容原有接口）
+    // ── 游戏内单路 BGM（兼容旧接口）──
     bool playSong(const std::string& filePath);
     void pause();
     void resume();
     void stop();
-    void setVolume(float volume);  // 全局音量（兼容原有接口）
+    void setVolume(float volume);
     float volume() const { return m_volume; }
 
-    // 预览播放（选歌界面用）
-    // filePath: 音频文件绝对路径
-    // startTimeMs: 预览起始时间（ms），0=从头
-    // fadeInDurationS: 淡入时长（秒），0=无淡入
-    // previewDurationMs: 预览播放时长（ms），0=播到结尾后循环回 startTimeMs
+    // ── 选歌预览 ──
     void playPreview(const std::string& filePath,
                     int64_t startTimeMs     = 0,
                     float   fadeInDurationS  = 0.3f,
                     int64_t previewDurationMs = 60000);
 
-    // 停止所有声音（带淡出）
-    // 如果 durationS > 0，执行淡出；否则立即停止
+    /// 停止全部声音；durationS>0 时淡出
     void stopWithFade(float durationS = 0.0f);
 
-    // 每帧更新（驱动淡入淡出 + 预览循环检测）
-    // 必须在主循环每帧调用，dt 为帧间隔（秒）
+    /// 每帧驱动淡入淡出与预览循环（主循环必须调用）
     void update(float dt);
 
-    // 查询
-    bool isPlaying() const;  // 实现在 .cpp（需 ma_sound_is_playing）
-    int64_t positionMs() const;//当前位置
-    int64_t durationMs() const;//总时长
-
-    // Seek 到指定位置（毫秒）
+    bool isPlaying() const;
+    int64_t positionMs() const;
+    int64_t durationMs() const;
     void seekTo(int64_t positionMs);
 
-    // ---- 音量分组控制（未来扩展）----
+    // ── 分组音量 ──
     void setTypeVolume(SoundType type, float volume);
     float getTypeVolume(SoundType type) const;
 
-    // ---- 音效（SFX）----
+    // ── 音效 ──
     /// 全量加载所有音效文件（非流式）。加载失败时记录警告但不中断。
     /// 重复调用安全：已加载则直接返回 true。
     bool loadSfx();
@@ -148,18 +141,14 @@ public:
     void playSfx(SfxType type);
 
 private:
-    // 内部：创建 ma_sound
-    // streaming=true 使用 MA_SOUND_FLAG_STREAM（MP3 seek 安全）
+    /// 创建 ma_sound；streaming 时使用 MA_SOUND_FLAG_STREAM（MP3 seek 安全）
     ma_sound* createSound(const std::string& filePath, bool streaming = true);
-
-    // 内部：释放 ma_sound（正确方式：uninit + ma_free）
     void destroySound(ma_sound* sound);
-
-    // 计算实际音量（分组音量 × 全局音量）
+    /// 实际音量 = 全局 × 分组
     float calcVolume(SoundType type) const;
 
 private:
-    static constexpr int MAX_ACTIVE_SOUNDS = 2;  // 最多2路并发
+    static constexpr int MAX_ACTIVE_SOUNDS = 2;  ///< 最多 2 路并发 BGM/预览
 
     ma_engine* m_engine    = nullptr;
     bool        m_initialized = false;
@@ -167,12 +156,10 @@ private:
     std::vector<ActiveSound> m_activeSounds;
 
     // 音量
-    float m_volume = 1.0f;                           // 全局音量
-    float m_typeVolumes[3] = {1.0f, 1.0f, 1.0f}; // 按 SoundType 分组音量
+    float m_volume = 1.0f;
+    float m_typeVolumes[3] = {1.0f, 1.0f, 1.0f};
 
-    // 音效（SFX）—— 全量加载（非流式），每个类型维护 3 个实例轮转播放，
-    // 避免快速连击时第二次播放截断第一次。
-    static constexpr int SFX_POOL_SIZE = 3;
+    static constexpr int SFX_POOL_SIZE = 3;  ///< 每类音效 3 实例轮转
     ma_sound* m_sfxSounds[static_cast<int>(SfxType::Count)][SFX_POOL_SIZE] = {};
     int m_sfxRoundRobin[static_cast<int>(SfxType::Count)] = {};
     bool m_sfxLoaded = false;

@@ -1,5 +1,11 @@
 #pragma once
 
+// ──────────────────────────────────────────────────────
+//  mma_parser.h — 原生 .mma 谱面解析器（v2）
+//  分段解析 General/Difficulty/Meta/Formations/Notes 等，
+//  校验 transform 宏与 v2 规范约束。
+// ──────────────────────────────────────────────────────
+
 #include "beatmap/beatmap_parser.h"
 
 #include <set>

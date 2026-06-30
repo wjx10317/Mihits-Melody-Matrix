@@ -1,5 +1,11 @@
 #pragma once
 
+// ──────────────────────────────────────────────────────
+//  combo_manager.h — 连击管理
+//  跟踪当前连击、最大连击，并提供连击倍率供计分使用。
+//  由 JudgeQueue 的 onHit/onMiss 事件驱动，不直接绑定输入。
+// ──────────────────────────────────────────────────────
+
 #include <cstdint>
 
 namespace melody_matrix::gameplay {

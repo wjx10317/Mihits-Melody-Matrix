@@ -1,3 +1,11 @@
+// ============================================================
+// main_menu_state.cpp — 主菜单状态实现
+//
+// 职责：
+//   - 渲染标题屏幕与导航按钮
+//   - 管理设置侧边栏（分辨率 / 全屏）
+//   - 导入 .osz 铺面并转换为 .mma 格式
+// ============================================================
 #include "main_menu_state.h"
 #include "core/kernel.h"
 #include "core/states/song_select_state.h"
@@ -26,7 +34,7 @@ namespace melody_matrix::core {
 //  辅助函数
 // ──────────────────────────────────────────────────────
 
-/// 替换文件名中不允许的字符
+/// 替换文件名中 Windows 不允许的字符
 static std::string sanitizeFilename(const std::string& name) {
     std::string result = name;
     for (auto& c : result) {
@@ -46,6 +54,11 @@ static std::string sanitizeFilename(const std::string& name) {
 //  生命周期
 // ──────────────────────────────────────────────────────
 
+// ══════════════════════════════════════════════════════════════════════════════
+//  初始化
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// 尝试从多个相对路径加载菜单背景 JPG
 void MainMenuState::loadBackgroundTexture() {
     if (!m_bgTexture.valid()) {
         const char* paths[] = {
@@ -63,6 +76,7 @@ void MainMenuState::loadBackgroundTexture() {
     }
 }
 
+/// 进入主菜单：重置 UI 状态、加载背景与已导入哈希
 void MainMenuState::onEnter() {
     MM_LOG_INFO("MainMenu", "Entering Main Menu");
     m_nextState = GameState::Count;
@@ -112,12 +126,18 @@ void MainMenuState::onEnter() {
     }
 }
 
+/// 退出主菜单
 void MainMenuState::onExit() {
     MM_LOG_INFO("MainMenu", "Exiting Main Menu");
 }
 
+// ══════════════════════════════════════════════════════════════════════════════
+//  更新
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// 每帧更新：应用延迟分辨率变更、侧边栏滑入动画、导入消息淡出
 GameState MainMenuState::update(float dt) {
-    // Apply deferred resolution/fullscreen changes
+    // 应用延迟的分辨率 / 全屏变更
     if (m_pendingResolutionW > 0 && m_pendingResolutionH > 0) {
         Kernel::instance().setResolution(m_pendingResolutionW, m_pendingResolutionH);
         m_pendingResolutionW = 0;
@@ -129,7 +149,7 @@ GameState MainMenuState::update(float dt) {
         m_hasPendingFullscreen = false;
     }
 
-    // Animate settings sidebar slide
+    // 设置侧边栏滑入/滑出动画
     float slideSpeed = 6.0f;
     if (m_settingsOpen) {
         m_settingsSlideProgress = std::min(m_settingsSlideProgress + dt * slideSpeed, 1.0f);
@@ -152,6 +172,7 @@ GameState MainMenuState::update(float dt) {
 //  导入功能
 // ──────────────────────────────────────────────────────
 
+/// 导入 .osz 文件并设置成功/失败消息
 void MainMenuState::importOszFile(const std::string& oszPath) {
     auto result = validateAndImportOsz(oszPath);
     if (result.ok()) {
@@ -170,6 +191,7 @@ void MainMenuState::importOszFile(const std::string& oszPath) {
     }
 }
 
+/// 校验 .osz 扩展名、解压到临时目录并逐个导入 .osu
 util::Result<void> MainMenuState::validateAndImportOsz(const std::string& oszPath) {
     using namespace util;
 
@@ -289,6 +311,7 @@ util::Result<void> MainMenuState::validateAndImportOsz(const std::string& oszPat
     return success();
 }
 
+/// 解析单个 .osu、构建 Beatmap、序列化为 .mma 并写入 assets/beatmaps/
 util::Result<void> MainMenuState::importSingleOsu(const std::string& osuPath, const std::string& extractRoot) {
     using namespace util;
 
@@ -503,10 +526,11 @@ util::Result<void> MainMenuState::importSingleOsu(const std::string& osuPath, co
     return success();
 }
 
-// ──────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════════════
 //  渲染
-// ──────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════════════
 
+/// 渲染顺序：背景 → 主面板 → 设置遮罩 → 设置侧边栏（后者在最上层）
 void MainMenuState::render() {
     // ── 背景图片 ──
     if (m_bgTexture.valid()) {
@@ -521,14 +545,14 @@ void MainMenuState::render() {
         );
     }
 
-    // Render order: MainMenu → Overlay → Sidebar (last = on top)
+    // 渲染顺序：MainMenu → Overlay → Sidebar（后者在最上层）
     renderImGuiPanel();
     if (m_settingsSlideProgress > 0.001f) {
         renderSettingsOverlay();
         renderSettingsSidebar();
     }
 
-    // Close settings when clicking outside the sidebar area
+    // 点击侧边栏外部区域时关闭设置
     if (m_settingsOpen && m_settingsSlideProgress > 0.5f &&
         ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
         ImVec2 mousePos = ImGui::GetIO().MousePos;
@@ -540,6 +564,7 @@ void MainMenuState::render() {
     }
 }
 
+/// 渲染主菜单 ImGui 面板：标题、PLAY/SETTINGS/QUIT 按钮与 IMPORT
 void MainMenuState::renderImGuiPanel() {
     using namespace ui;
 
@@ -564,7 +589,7 @@ void MainMenuState::renderImGuiPanel() {
 
     ImVec2 center(displaySize.x * 0.5f, displaySize.y * 0.35f);
 
-    // ── Title ──
+    // ── 标题 ──
     ImGui::SetCursorPos(ImVec2(center.x - 200, center.y - 80));
     ImGui::PushStyleColor(ImGuiCol_Text,
         ImVec4(Theme::CYAN_R, Theme::CYAN_G, Theme::CYAN_B, 1.0f));
@@ -580,13 +605,13 @@ void MainMenuState::renderImGuiPanel() {
     ImGui::PopStyleColor();
     ImGui::SetWindowFontScale(1.0f);
 
-    // ── Subtitle ──
+    // ── 副标题 ──
     ImGui::SetCursorPos(ImVec2(center.x - 100, center.y + 40));
     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.55f, 0.55f, 0.65f, 1.0f));
     ImGui::Text("A rhythm game experience");
     ImGui::PopStyleColor();
 
-    // ── Buttons ──
+    // ── 按钮 ──
     float btnWidth = 280;
     float btnHeight = 50;
     float btnX = center.x - btnWidth / 2;
@@ -678,7 +703,7 @@ void MainMenuState::renderImGuiPanel() {
         ImGui::PopStyleColor();
     }
 
-    // ── Footer ──
+    // ── 页脚版本号 ──
     ImGui::SetCursorPos(ImVec2(center.x - 60, displaySize.y - 40));
     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.4f, 0.4f, 0.5f, 0.6f));
     ImGui::Text("v0.1 alpha");
@@ -687,6 +712,7 @@ void MainMenuState::renderImGuiPanel() {
     ImGui::End();
 }
 
+/// 渲染设置侧边栏右侧的半透明遮罩（随滑入进度渐变）
 void MainMenuState::renderSettingsOverlay() {
     ImVec2 displaySize = ImGui::GetIO().DisplaySize;
     float t = m_settingsSlideProgress;
@@ -714,6 +740,7 @@ void MainMenuState::renderSettingsOverlay() {
     ImGui::PopStyleColor();
 }
 
+/// 渲染左侧滑入的设置侧边栏（分辨率、全屏、音量等选项）
 void MainMenuState::renderSettingsSidebar() {
     using namespace ui;
 
@@ -743,7 +770,7 @@ void MainMenuState::renderSettingsSidebar() {
 
     ImGui::Begin("##SettingsSidebar", nullptr, sidebarFlags);
 
-    // Neon right-edge border
+    // 右侧霓虹描边
     {
         ImVec2 winPos = ImGui::GetWindowPos();
         ImVec2 winSize = ImGui::GetWindowSize();

@@ -1,3 +1,17 @@
+/**
+ * @file error_codes.h
+ * @brief 应用程序统一错误码定义
+ *
+ * 文件职责：
+ *   定义 ErrorCode 枚举及 errorCodeToString() 中文描述映射，供 Result<T> 和日志使用。
+ *
+ * 主要依赖：
+ *   标准库 <string>、<cstdint>；无其他项目模块依赖。
+ *
+ * 在项目中的用法：
+ *   各子系统返回 util::failure<T>(static_cast<int32_t>(ErrorCode::XXX), "...")；
+ *   日志或 UI 可用 errorCodeToString() 展示用户可读信息。
+ */
 #pragma once
 
 #include <string>
@@ -5,7 +19,11 @@
 
 namespace melody_matrix::util {
 
-/// 应用程序中使用的错误码
+/**
+ * @brief 应用程序中使用的错误码
+ *
+ * 按功能域分段编号：通用 1xxx、音频 2xxx、渲染 3xxx、谱面 4xxx、玩法 5xxx。
+ */
 enum class ErrorCode : int32_t {
     OK = 0,
 
@@ -48,7 +66,11 @@ enum class ErrorCode : int32_t {
     ERROR_GAMEPLAY_STATE = 5000,
 };
 
-/// 将 ErrorCode 转换为字符串
+/**
+ * @brief 将 ErrorCode 转换为中文描述字符串
+ * @param code 错误码
+ * @return 静态字符串，未知码返回 "未知错误码"
+ */
 inline const char* errorCodeToString(ErrorCode code) {
     switch (code) {
     case ErrorCode::OK:                        return "成功";

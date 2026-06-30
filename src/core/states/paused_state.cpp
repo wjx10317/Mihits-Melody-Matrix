@@ -1,3 +1,11 @@
+// ============================================================
+// paused_state.cpp — 暂停覆盖层状态实现
+//
+// 职责：
+//   - 渲染半透明遮罩与居中暂停对话框
+//   - 处理继续 / 重试 / 退出三种用户操作
+//   - 退出时清理 PlayingState 渲染资源（因 onExit 不会被调用）
+// ============================================================
 #include "paused_state.h"
 #include "core/kernel.h"
 #include "core/state_manager.h"
@@ -9,21 +17,28 @@
 
 namespace melody_matrix::core {
 
+// ══════════════════════════════════════════════════════════════════════════════
+//  生命周期
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// 进入暂停状态，重置待执行动作
 void PausedState::onEnter() {
     MM_LOG_INFO("Paused", "Game paused");
     m_action = PausedAction::None;
 }
 
+/// 退出暂停状态
 void PausedState::onExit() {
     MM_LOG_INFO("Paused", "Unpausing");
 }
 
+/// 根据用户选择的动作决定下一状态
 GameState PausedState::update(float /*dt*/) {
     switch (m_action) {
     case PausedAction::Resume:
         return GameState::Playing;
     case PausedAction::Retry:
-        // Mark PlayingState for reinit before transitioning
+        // 重试前先标记 PlayingState 需要重新初始化
         {
             auto* playing = Kernel::instance().stateManager().getStateAs<PlayingState>(GameState::Playing);
             if (playing) {
@@ -47,14 +62,20 @@ GameState PausedState::update(float /*dt*/) {
     return GameState::Count;
 }
 
+// ══════════════════════════════════════════════════════════════════════════════
+//  渲染
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// 渲染暂停 UI
 void PausedState::render() {
     renderImGuiOverlay();
 }
 
+/// 绘制半透明全屏遮罩与居中暂停对话框（继续 / 重试 / 退出）
 void PausedState::renderImGuiOverlay() {
-    using namespace ui; // for Theme constants
+    using namespace ui; // Theme 颜色常量
 
-    // Dim background overlay
+    // 半透明背景遮罩
     ImGui::SetNextWindowPos(ImVec2(0, 0));
     ImGui::SetNextWindowSize(ImGui::GetIO().DisplaySize);
 
@@ -70,7 +91,7 @@ void PausedState::renderImGuiOverlay() {
     ImGui::End();
     ImGui::PopStyleColor();
 
-    // ── Center dialog ──
+    // ── 居中对话框 ──
     ImVec2 center = ImVec2(ImGui::GetIO().DisplaySize.x / 2,
                             ImGui::GetIO().DisplaySize.y / 2);
     ImGui::SetNextWindowPos(center, ImGuiCond_Always, ImVec2(0.5f, 0.5f));
@@ -84,7 +105,7 @@ void PausedState::renderImGuiOverlay() {
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(24, 20));
     ImGui::Begin("##PauseDialog", nullptr, dialogFlags);
 
-    // Title
+    // 标题
     ImGui::PushStyleColor(ImGuiCol_Text,
         ImVec4(Theme::CYAN_R, Theme::CYAN_G, Theme::CYAN_B, 1.0f));
     ImGui::SetWindowFontScale(1.8f);
@@ -95,7 +116,7 @@ void PausedState::renderImGuiOverlay() {
     ImGui::Separator();
     ImGui::Spacing();
 
-    // Resume button
+    // 继续按钮
     ImGui::PushStyleColor(ImGuiCol_Button,
         ImVec4(Theme::CYAN_R, Theme::CYAN_G, Theme::CYAN_B, 0.3f));
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
@@ -106,7 +127,7 @@ void PausedState::renderImGuiOverlay() {
     ImGui::PopStyleColor(2);
     ImGui::Spacing();
 
-    // Retry button
+    // 重试按钮
     ImGui::PushStyleColor(ImGuiCol_Button,
         ImVec4(Theme::PURP_R, Theme::PURP_G, Theme::PURP_B, 0.3f));
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
@@ -117,7 +138,7 @@ void PausedState::renderImGuiOverlay() {
     ImGui::PopStyleColor(2);
     ImGui::Spacing();
 
-    // Quit button
+    // 退出按钮
     ImGui::PushStyleColor(ImGuiCol_Button,
         ImVec4(Theme::PINK_R, Theme::PINK_G, Theme::PINK_B, 0.3f));
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered,

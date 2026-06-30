@@ -1,5 +1,10 @@
 #pragma once
 
+// ──────────────────────────────────────────────────────
+//  mma_serializer.h — .mma 谱面序列化
+//  Beatmap → MMA2 文本；支持 source_hash 注释用于导入去重。
+// ──────────────────────────────────────────────────────
+
 #include "beatmap/beatmap.h"
 #include "util/result.h"
 

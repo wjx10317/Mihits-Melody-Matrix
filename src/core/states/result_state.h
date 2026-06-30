@@ -1,3 +1,9 @@
+// ============================================================
+// result_state.h — 结算状态
+//
+// 歌曲结束或 HP 归零后显示分数、准确度、判定统计与评级。
+// 分数数据由 PlayingState 在过渡前写入公开字段。
+// ============================================================
 #pragma once
 
 #include "core/game_state_base.h"
@@ -10,24 +16,30 @@ class ResultState : public GameStateBase {
 public:
     ResultState() = default;
 
+    /// 进入结算：重置待执行动作
     void onEnter() override;
+    /// 退出结算
     void onExit() override;
+    /// 根据用户选择返回 Playing（重试）或 SongSelect（返回）
     GameState update(float dt) override;
+    /// 渲染结算面板
     void render() override;
 
-    // ── 分数数据（进入此状态前设置）──
-    int score = 0;
-    int maxCombo = 0;
-    int perfectCount = 0;
-    int goodCount = 0;
-    int missCount = 0;
-    int totalNotes = 0;
-    bool playerDied = false;
-    std::string songTitle;
+    // ── 分数数据（进入此状态前由 PlayingState 设置）──
+    int score = 0;           ///< 总分
+    int maxCombo = 0;        ///< 最大连击
+    int perfectCount = 0;    ///< Perfect 数量
+    int goodCount = 0;       ///< Good 数量
+    int missCount = 0;       ///< Miss 数量
+    int totalNotes = 0;      ///< 音符总数
+    bool playerDied = false; ///< 是否因 HP 归零失败
+    std::string songTitle;   ///< 歌曲标题
 
 private:
+    /// 绘制 ImGui 结算面板（分数 / 准确度 / 判定 / 评级 / 按钮）
     void renderImGuiPanel();
 
+    /// 用户在结算界面中选择的动作
     enum class ResultAction { None, Retry, Back };
     ResultAction m_action = ResultAction::None;
 };

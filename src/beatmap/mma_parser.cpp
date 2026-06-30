@@ -1,3 +1,8 @@
+// ──────────────────────────────────────────────────────
+//  mma_parser.cpp — .mma 格式解析实现
+//  行级分段累积、键值/CSV 解析、v2 Formation 六字段与 Note 类型。
+// ──────────────────────────────────────────────────────
+
 #include "beatmap/mma_parser.h"
 #include "util/logger.h"
 #include "util/error_codes.h"
@@ -8,7 +13,9 @@
 
 namespace melody_matrix::beatmap {
 
-// ── Helper: trim whitespace ──
+// ── 字符串工具 ──
+
+/// 去除首尾空白
 static std::string trim(const std::string& s) {
     auto start = s.find_first_not_of(" \t\r\n");
     if (start == std::string::npos) return "";
@@ -16,7 +23,7 @@ static std::string trim(const std::string& s) {
     return s.substr(start, end - start + 1);
 }
 
-// ── Helper: split string by delimiter ──
+/// 按分隔符拆分并 trim 各段
 static std::vector<std::string> split(const std::string& s, char delim) {
     std::vector<std::string> tokens;
     std::istringstream stream(s);
@@ -27,7 +34,7 @@ static std::vector<std::string> split(const std::string& s, char delim) {
     return tokens;
 }
 
-// ── Helper: parse int64 ──
+/// 解析 int64，失败返回 false
 static bool parseInt64(const std::string& s, int64_t& out) {
     try {
         out = std::stoll(s);
@@ -37,7 +44,7 @@ static bool parseInt64(const std::string& s, int64_t& out) {
     }
 }
 
-// ── Helper: parse int32 ──
+/// 解析 int32
 static bool parseInt32(const std::string& s, int32_t& out) {
     try {
         out = static_cast<int32_t>(std::stol(s));
@@ -47,7 +54,7 @@ static bool parseInt32(const std::string& s, int32_t& out) {
     }
 }
 
-// ── Helper: parse float ──
+/// 解析 float
 static bool parseFloat(const std::string& s, float& out) {
     try {
         out = std::stof(s);
@@ -57,11 +64,11 @@ static bool parseFloat(const std::string& s, float& out) {
     }
 }
 
-// ── Helper: parse key=value or key:value line ──
+/// 解析 key=value 或 key:value 行
 static bool parseKeyValue(const std::string& line, std::string& key, std::string& value) {
     auto pos = line.find('=');
     if (pos == std::string::npos) {
-        // Try colon separator for backward compatibility
+        // 兼容冒号分隔的旧格式
         pos = line.find(':');
         if (pos == std::string::npos) return false;
     }
@@ -70,8 +77,9 @@ static bool parseKeyValue(const std::string& line, std::string& key, std::string
     return !key.empty();
 }
 
-// ── Main parse ──
+// ── 主解析流程 ──
 
+/// 逐行扫描：首行版本号 → 段落头 → 累积行 → flush 到子解析器
 util::Result<void> MmaParser::parse(const std::string& content, BeatmapBuilder& builder) {
     std::istringstream stream(content);
     std::string line;
@@ -81,6 +89,7 @@ util::Result<void> MmaParser::parse(const std::string& content, BeatmapBuilder& 
     std::vector<std::string> sectionLines;
     bool firstLine = true;
 
+    /// 将当前段落累积行交给对应子解析器
     auto flushSection = [&]() {
         if (sectionLines.empty()) return;
         util::Result<void> result(util::success());
@@ -118,10 +127,10 @@ util::Result<void> MmaParser::parse(const std::string& content, BeatmapBuilder& 
     while (std::getline(stream, line)) {
         line = trim(line);
 
-        // Skip empty lines and comments
+        // 跳过空行与 # 注释
         if (line.empty() || line[0] == '#') continue;
 
-        // First line must be the format version
+        // 首行必须是 MMA1 或 MMA2
         if (firstLine) {
             firstLine = false;
             if (line == "MMA1") {
@@ -136,7 +145,7 @@ util::Result<void> MmaParser::parse(const std::string& content, BeatmapBuilder& 
             continue;
         }
 
-        // Check for section header
+        // 段落头 [SectionName]
         if (line.front() == '[' && line.back() == ']') {
             flushSection();
             std::string sectionName = line.substr(1, line.size() - 2);
@@ -154,20 +163,20 @@ util::Result<void> MmaParser::parse(const std::string& content, BeatmapBuilder& 
             continue;
         }
 
-        // Accumulate lines for current section
+        // 累积当前段落数据行
         if (currentSection != Section::None) {
             sectionLines.push_back(line);
         }
     }
 
-    // Flush last section
+    // 刷出最后一个段落
     flushSection();
 
     MM_LOG_INFO("MmaParser", "Parse complete");
     return util::success();
 }
 
-// ── Section parsers ──
+// ── 各段落子解析器 ──
 
 util::Result<void> MmaParser::parseGeneral(const std::vector<std::string>& lines, BeatmapBuilder& builder) {
     Meta meta;
@@ -200,13 +209,8 @@ util::Result<void> MmaParser::parseDifficulty(const std::vector<std::string>& li
 }
 
 util::Result<void> MmaParser::parseMeta(const std::vector<std::string>& lines, BeatmapBuilder& builder) {
-    // Meta section extends the General meta
-    // We need to read the current meta, update it, and set it back
-    // For now, we'll create a new Meta and merge
+    // Meta 段扩展 General 中的元数据，通过 mergeMeta 合并非空字段
     Meta meta;
-    // The builder already has meta from General, but we need to read it
-    // Since our builder doesn't expose the meta, we update via a temporary
-    // This is a design limitation — we'll add title/artist/creator/version
     for (const auto& line : lines) {
         std::string key, value;
         if (!parseKeyValue(line, key, value)) continue;
@@ -321,14 +325,14 @@ util::Result<void> MmaParser::parseNotes(const std::vector<std::string>& lines, 
             continue;
         }
 
-        // Parse type: T=tap, H=hold; default to Tap if only 3 fields (backward compat)
+        // 类型：T=Tap，H=Hold；仅 3 字段时默认 Tap（向后兼容）
         if (parts.size() >= 4 && (parts[3] == "H" || parts[3] == "h")) {
             note.type = NoteType::Hold;
             if (parts.size() >= 5) {
                 parseInt64(parts[4], note.holdEnd);
             } else {
                 MM_LOG_WARN("MmaParser", "Hold note missing endTime: " + line);
-                note.holdEnd = note.time + 500; // Default 500ms hold
+                note.holdEnd = note.time + 500; // 缺省 Hold 时长 500ms
             }
             // v2 规范第11节：Hold note 的 endTime 必须大于 time
             if (note.holdEnd <= note.time) {

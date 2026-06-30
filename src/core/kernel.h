@@ -1,3 +1,17 @@
+/**
+ * @file kernel.h
+ * @brief 应用内核单例
+ *
+ * 文件职责：
+ *   声明 Melody Matrix 核心子系统（Clock、StateManager、Renderer 等）及主循环接口。
+ *
+ * 主要依赖：
+ *   clock.h、state_manager.h、renderer/renderer.h、ui/ui_manager.h、util/event_manager.h、SDL。
+ *
+ * 在项目中的用法：
+ *   main 中 Kernel::instance().init() → 注册状态 → run() → shutdown()；
+ *   各模块通过 instance() 访问 clock、stateManager、renderer 等。
+ */
 #pragma once
 
 #include "core/clock.h"
@@ -16,57 +30,110 @@ typedef void* SDL_GLContext;
 
 namespace melody_matrix::core {
 
-/// 支持的分辨率条目
+/**
+ * @brief 支持的分辨率条目
+ *
+ * 用于设置菜单展示；label 为显示字符串（如 "1920×1080" 或 "NATIVE"）。
+ */
 struct Resolution {
-    int width;
-    int height;
-    const char* label; // 例如 "1920×1080"
+    int width;          ///< 物理像素宽度
+    int height;         ///< 物理像素高度
+    const char* label;  ///< UI 显示标签
 };
 
-/// 应用内核 — 单例，拥有所有子系统并驱动主循环。
-/// 固定逻辑步长（240 Hz）+ 可变渲染步长架构。
+/**
+ * @brief 应用内核单例
+ *
+ * 固定逻辑步长 240 Hz + 可变渲染步长；拥有窗口、GL 上下文及全部子系统。
+ */
 class Kernel {
 public:
-    /// 获取单例实例
+    /**
+     * @brief 获取全局单例
+     * @return Kernel 唯一实例引用
+     */
     static Kernel& instance();
 
-    /// 初始化所有子系统，创建窗口和 GL 上下文
+    /**
+     * @brief 初始化 SDL、窗口、OpenGL、Renderer、UIManager
+     * @param title 窗口标题
+     * @param width 默认宽度（实际从 config 读取，参数保留兼容）
+     * @param height 默认高度
+     * @return 成功 true
+     */
     bool init(const std::string& title = "Melody Matrix", int width = 1920, int height = 1080);
 
-    /// 运行主循环（阻塞直到退出）
+    /**
+     * @brief 运行主循环（阻塞直到 requestExit）
+     */
     void run();
 
-    /// 关闭所有子系统并清理
+    /**
+     * @brief 关闭子系统、保存配置、销毁窗口
+     */
     void shutdown();
 
-    /// 请求退出（可从任何状态调用）
+    /**
+     * @brief 请求退出主循环
+     *
+     * 可从任意状态或输入处理中调用。
+     */
     void requestExit() { m_running = false; }
 
     // ── 分辨率管理 ──
-    /// 获取支持的分辨率列表
+
+    /**
+     * @brief 获取支持的分辨率列表（含 NATIVE + 常见分辨率）
+     * @return 分辨率向量引用
+     */
     static const std::vector<Resolution>& supportedResolutions();
 
-    /// 更改窗口分辨率（并保存到配置）
+    /**
+     * @brief 更改窗口分辨率并写入配置
+     * @param width 客户端区域宽度（物理像素）
+     * @param height 客户端区域高度
+     */
     void setResolution(int width, int height);
 
-    /// 获取当前分辨率（物理像素，与分辨率列表匹配）
+    /**
+     * @brief 获取当前配置的分辨率
+     * @param width 输出宽度
+     * @param height 输出高度
+     */
     void getCurrentResolution(int& width, int& height) const;
 
-    /// 切换全屏模式
+    /**
+     * @brief 切换全屏/窗口模式
+     * @param fullscreen true 进入全屏桌面模式
+     */
     void setFullscreen(bool fullscreen);
 
-    /// 当前是否全屏？
+    /**
+     * @brief 当前是否全屏
+     * @return 全屏 true
+     */
     bool isFullscreen() const { return m_fullscreen; }
 
-    /// 获取显示器原生分辨率
+    /**
+     * @brief 获取显示器原生分辨率
+     * @param width 输出物理宽度
+     * @param height 输出物理高度
+     */
     void getNativeResolution(int& width, int& height) const { width = m_displayWidth; height = m_displayHeight; }
 
     // ── 子系统访问器 ──
+
+    /** @return 游戏时钟引用 */
     Clock& clock() { return m_clock; }
+    /** @return 状态管理器引用 */
     StateManager& stateManager() { return m_stateManager; }
+    /** @return 事件总线引用 */
     util::EventManager& eventManager() { return m_eventManager; }
+    /** @return OpenGL 渲染器引用 */
     renderer::Renderer& renderer() { return m_renderer; }
+    /** @return ImGui UI 管理器引用 */
     ui::UIManager& uiManager() { return m_uiManager; }
+    /** @return SDL 窗口指针 */
     SDL_Window* window() const { return m_window; }
 
 private:
@@ -75,12 +142,26 @@ private:
     Kernel(const Kernel&) = delete;
     Kernel& operator=(const Kernel&) = delete;
 
-    /// 将 SDL 事件泵入输入系统和 ImGui
+    /**
+     * @brief 处理 SDL 事件队列（输入、退出、窗口 resize）
+     */
     void pumpInputEvents();
+
+    /**
+     * @brief 在 Playing 状态下从音频同步 Clock
+     */
     void syncPlayingClock();
+
+    /**
+     * @brief 将按键事件分派给 PlayingState（带事件 timestamp 歌曲时间）
+     * @param keyEvent SDL 键盘事件
+     * @param pressed true 按下，false 释放
+     */
     void dispatchGameplayKeyEvent(const SDL_KeyboardEvent& keyEvent, bool pressed);
 
-    /// 根据当前分辨率应用窗口模式（无边框/有边框+clamp）
+    /**
+     * @brief 根据分辨率应用无边框/有边框窗口模式
+     */
     void applyWindowMode();
 
     // ── 子系统 ──
@@ -90,20 +171,19 @@ private:
     renderer::Renderer m_renderer;
     ui::UIManager m_uiManager;
 
-    // ── Window ──
+    // ── 窗口 ──
     SDL_Window* m_window = nullptr;
     SDL_GLContext m_glContext = nullptr;
 
     // ── 分辨率状态 ──
-    int m_displayWidth = 1920;   // 原生显示器物理像素
-    int m_displayHeight = 1080;
-    int m_windowWidth = 1920;    // 用户选择的分辨率（物理像素）
-    int m_windowHeight = 1080;
+    int m_displayWidth = 1920;   ///< 显示器原生物理像素宽
+    int m_displayHeight = 1080;  ///< 显示器原生物理像素高
+    int m_windowWidth = 1920;    ///< 用户选择的分辨率宽
+    int m_windowHeight = 1080;   ///< 用户选择的分辨率高
     bool m_fullscreen = false;
 
     bool m_running = false;
     bool m_initialized = false;
-
 };
 
 } // namespace melody_matrix::core

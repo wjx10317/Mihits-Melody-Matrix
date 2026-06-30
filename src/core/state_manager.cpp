@@ -1,3 +1,16 @@
+/**
+ * @file state_manager.cpp
+ * @brief StateManager 实现
+ *
+ * 文件职责：
+ *   实现状态注册、带过渡的切换、update/render 委托及 gameplay 渲染标志同步。
+ *
+ * 主要依赖：
+ *   state_manager.h、kernel.h、util/logger.h。
+ *
+ * 在项目中的用法：
+ *   由 Kernel 主循环每帧驱动，业务代码通过 kernel.stateManager() 访问。
+ */
 #include "state_manager.h"
 #include "kernel.h"
 #include "util/logger.h"
@@ -13,13 +26,13 @@ void StateManager::transitionTo(GameState newState) {
         return;
     }
 
-    // 首次状态切换（BootState）直接执行，无需过渡动画
+    // 首次进入（Boot）直接切换，跳过过渡动画
     if (m_currentState == GameState::Count) {
         executeTransition(newState);
         return;
     }
 
-    // 启动淡出过渡
+    // 启动淡出 → 完成后 executeTransition → 淡入
     if (!m_transitioning) {
         m_pendingState = newState;
         m_transitioning = true;
@@ -36,13 +49,13 @@ void StateManager::executeTransition(GameState newState) {
                 std::string("State transition: ") + gameStateName(m_currentState) +
                     " -> " + gameStateName(newState));
 
-    // Exit current state
+    // 退出当前状态
     auto it = m_states.find(m_currentState);
     if (it != m_states.end()) {
         it->second->onExit();
     }
 
-    // Enter new state
+    // 进入新状态
     m_currentState = newState;
     it = m_states.find(m_currentState);
     if (it != m_states.end()) {
@@ -52,35 +65,35 @@ void StateManager::executeTransition(GameState newState) {
                      std::string("State not registered: ") + gameStateName(newState));
     }
 
-    // ── Update gameplay rendering flag ──
-    // Only enable OpenGL gameplay rendering (grid, notes, etc.) during Playing/Paused
+    // ── 同步 gameplay OpenGL 渲染开关 ──
+    // 仅在 Playing/Paused 时绘制谱面网格与音符
     bool isGameplay = (newState == GameState::Playing || newState == GameState::Paused);
     Kernel::instance().renderer().setGameplayRendering(isGameplay);
 
-    // 离开游戏状态时清除背景纹理
+    // 离开游戏界面时清除背景纹理，避免菜单仍显示谱面背景
     if (!isGameplay) {
         Kernel::instance().renderer().setBackgroundPath("");
     }
 }
 
 void StateManager::update(float dt) {
-    // 更新过渡动画
+    // ── 过渡动画更新 ──
     if (m_transitioning) {
         m_transition.update(dt);
 
-        // 淡出完成 → 执行实际状态切换 → 开始淡入
+        // 淡出完成 → 实际切换状态 → 开始淡入
         if (m_transition.fadeOutComplete()) {
             executeTransition(m_pendingState);
             m_pendingState = GameState::Count;
             m_transition.startFadeIn(FADE_DURATION);
         }
 
-        // 淡入完成 → 过渡结束
+        // 淡入结束 → 过渡流程完成
         if (!m_transition.active()) {
             m_transitioning = false;
         }
 
-        // 过渡期间仍更新当前状态（保持动画运行）
+        // 过渡期间仍更新当前状态（保持 UI 动画等）
     }
 
     auto it = m_states.find(m_currentState);
@@ -98,7 +111,7 @@ void StateManager::render() {
         it->second->render();
     }
 
-    // 渲染过渡遮罩（在所有场景渲染之后）
+    // 过渡黑幕绘制在所有场景内容之上
     m_transition.render();
 }
 

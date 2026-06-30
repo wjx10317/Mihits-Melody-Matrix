@@ -1,5 +1,11 @@
 #pragma once
 
+// ──────────────────────────────────────────────────────
+//  beatmap.h — 谱面核心数据结构
+//  Formation、Difficulty、Meta、Beatmap 及矩阵变换宏常量。
+//  数据载体采用 struct（无业务逻辑，公开字段便于序列化与访问）。
+// ──────────────────────────────────────────────────────
+
 #include "beatmap/note.h"
 
 #include <string>
@@ -128,5 +134,5 @@ struct Beatmap {
 };
 
 } // namespace melody_matrix::beatmap
-//为什么全用结构体？为什么这么选型？默认访问权限都是公有，类默认私有，类还要声明访问权限冗余，
-// 另外这里都是数据载体外加const查询，不涉及业务处理，选择结构体。设置为私有要写大量冗余getset接口
+// 选型说明：均为数据载体 + const 查询，不涉及业务处理，故用 struct 而非 class，
+// 避免大量冗余 getter/setter；默认公有访问更符合 POD 风格。

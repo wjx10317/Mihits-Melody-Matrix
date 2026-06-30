@@ -1,3 +1,16 @@
+/**
+ * @file config.cpp
+ * @brief Config 类实现
+ *
+ * 文件职责：
+ *   解析/写入 key=value 格式配置文件，提供类型化读写。
+ *
+ * 主要依赖：
+ *   config.h、util/logger.h、util/error_codes.h、<fstream>。
+ *
+ * 在项目中的用法：
+ *   由 config.h 间接链接；Kernel 与设置 UI 通过静态方法访问。
+ */
 #include "config.h"
 #include "util/logger.h"
 #include "util/error_codes.h"
@@ -13,7 +26,7 @@ util::Result<void> Config::load(const std::string& path) {
 
     std::ifstream file(path);
     if (!file.is_open()) {
-        // Config file doesn't exist yet — use defaults
+        // 配置文件尚不存在 — 使用默认值
         MM_LOG_INFO("Config", "Config file not found, using defaults: " + path);
         s_loaded = true;
         return util::success();
@@ -21,7 +34,7 @@ util::Result<void> Config::load(const std::string& path) {
 
     std::string line;
     while (std::getline(file, line)) {
-        // Skip empty lines and comments
+        // 跳过空行和注释行（# 或 ; 开头）
         if (line.empty() || line[0] == '#' || line[0] == ';') {
             continue;
         }
@@ -31,7 +44,7 @@ util::Result<void> Config::load(const std::string& path) {
         }
         std::string key = line.substr(0, eq);
         std::string value = line.substr(eq + 1);
-        // Trim whitespace
+        // 去除键值两端空白
         while (!key.empty() && key.back() == ' ') key.pop_back();
         while (!value.empty() && value.front() == ' ') value.erase(value.begin());
         s_data[key] = value;

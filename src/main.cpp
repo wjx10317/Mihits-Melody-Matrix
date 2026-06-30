@@ -1,6 +1,16 @@
-/// Melody Matrix — 一款节奏游戏
-/// 入口点：初始化 Kernel 并运行主循环。
-
+/**
+ * @file main.cpp
+ * @brief Melody Matrix 程序入口
+ *
+ * 文件职责：
+ *   初始化日志与工作目录，创建 Kernel 单例，注册全部游戏状态并驱动主循环。
+ *
+ * 主要依赖：
+ *   core/kernel.h、core/states/*、util/logger、platform/config、platform/file_system、SDL。
+ *
+ * 在项目中的用法：
+ *   可执行文件启动后直接进入 main()；异常时记录 FATAL 日志并以非零码退出。
+ */
 #include "core/kernel.h"
 #include "core/states/boot_state.h"
 #include "core/states/main_menu_state.h"
@@ -19,12 +29,18 @@
 #include <iostream>
 #include <exception>
 
+/**
+ * @brief 程序入口
+ * @param argc 参数个数（未使用）
+ * @param argv 参数列表；argv[0] 用于定位可执行文件目录
+ * @return 0 正常退出，1 初始化或致命错误
+ */
 int main(int /*argc*/, char* argv[]) {
     using namespace melody_matrix;
 
     // ── 将工作目录固定为可执行文件所在目录 ──
-    // 确保所有相对路径（assets/beatmaps 等）始终相对于可执行文件位置解析，
-    // 而不依赖于进程启动时的 CWD（从 IDE、快捷方式等启动时 CWD 可能不同）
+    // 确保 assets/beatmaps 等相对路径始终相对于 exe 解析，
+    // 不依赖 IDE/快捷方式启动时的 CWD
     {
         std::string exeDir = std::filesystem::path(argv[0]).parent_path().string();
         if (!exeDir.empty()) {
@@ -40,14 +56,14 @@ int main(int /*argc*/, char* argv[]) {
         auto& kernel = core::Kernel::instance();
 
         // ── 初始化内核（窗口 + GL 上下文 + ImGui）──
-        // 分辨率在 Kernel::init() 内部从配置加载
+        // 分辨率在 Kernel::init() 内部从 config.ini 加载
         if (!kernel.init("Melody Matrix")) {
             MM_LOG_FATAL("Main", "Kernel initialization failed");
             util::Logger::shutdown();
             return 1;
         }
 
-        // ── 注册游戏状态 ──
+        // ── 注册所有游戏状态实例 ──
         auto& sm = kernel.stateManager();
         sm.registerState(core::GameState::Boot, std::make_unique<core::BootState>());
         sm.registerState(core::GameState::MainMenu, std::make_unique<core::MainMenuState>());
@@ -56,13 +72,12 @@ int main(int /*argc*/, char* argv[]) {
         sm.registerState(core::GameState::Paused, std::make_unique<core::PausedState>());
         sm.registerState(core::GameState::Result, std::make_unique<core::ResultState>());
 
-        // ── 进入初始状态 ──
+        // ── 进入 Boot 启动流程 ──
         sm.transitionTo(core::GameState::Boot);
 
-        // ── 运行主循环 ──
+        // ── 阻塞运行主循环直到 requestExit ──
         kernel.run();
 
-        // ── 清理 ──
         kernel.shutdown();
     } catch (const util::FatalException& e) {
         MM_LOG_FATAL("Main", std::string("Fatal: ") + e.what());
@@ -78,7 +93,7 @@ int main(int /*argc*/, char* argv[]) {
         return 1;
     }
 
-    // ── 清理临时文件并关闭 ──
+    // ── 清理临时文件并关闭日志 ──
     platform::FileSystem::cleanupTemp();
     util::Logger::shutdown();
     return 0;

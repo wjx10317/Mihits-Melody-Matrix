@@ -1,3 +1,8 @@
+// ──────────────────────────────────────────────────────
+//  beatmap_builder.cpp — 谱面构建与验证实现
+//  八条规则：版本、音频、边界、阵型、时序、段落、Hold 重叠、变阵缓冲。
+// ──────────────────────────────────────────────────────
+
 #include "beatmap/beatmap_builder.h"
 #include "util/logger.h"
 
@@ -5,7 +10,7 @@
 
 namespace melody_matrix::beatmap {
 
-// ── Fluent setters ──
+// ── 流式 setter ──
 
 BeatmapBuilder& BeatmapBuilder::setMeta(const Meta& meta) {
     m_meta = meta;
@@ -13,7 +18,7 @@ BeatmapBuilder& BeatmapBuilder::setMeta(const Meta& meta) {
 }
 
 BeatmapBuilder& BeatmapBuilder::mergeMeta(const Meta& meta) {
-    // Only overwrite fields that are non-empty in the input
+    // 仅合并非空字段，保留 builder 中已有值
     if (!meta.title.empty())     m_meta.title = meta.title;
     if (!meta.artist.empty())    m_meta.artist = meta.artist;
     if (!meta.creator.empty())   m_meta.creator = meta.creator;
@@ -33,7 +38,7 @@ BeatmapBuilder& BeatmapBuilder::setFormatVersion(const std::string& version) {
     return *this;
 }
 
-// ── Fluent adders ──
+// ── 流式 adder ──
 
 BeatmapBuilder& BeatmapBuilder::addFormation(const Formation& formation) {
     m_formations.push_back(formation);
@@ -55,10 +60,11 @@ BeatmapBuilder& BeatmapBuilder::addNotes(const std::vector<Note>& notes) {
     return *this;
 }
 
-// ── Validation helpers ──
+// ── 验证辅助函数 ──
 
+/// 规则 6：Meta 与 Difficulty 必需字段存在
 bool BeatmapBuilder::validateSections() const {
-    // Rule 6: Required fields in meta must be present
+    // 规则 6：Meta 至少含 title 或 version；General 含 audioFile；Difficulty 有效
     if (m_meta.title.empty() && m_meta.version.empty()) {
         MM_LOG_ERROR("BeatmapBuilder", "Missing required section: Meta");
         return false;
@@ -74,8 +80,9 @@ bool BeatmapBuilder::validateSections() const {
     return true;
 }
 
+/// 规则 4：每个阵型 rows≥1、cols≥1，且至少一条 Formation
 bool BeatmapBuilder::validateFormations() const {
-    // Rule 4: Each formation must have rows≥1 and cols≥1
+    // 规则 4：每个阵型 rows≥1 且 cols≥1
     for (const auto& f : m_formations) {
         if (f.rows < 1 || f.cols < 1) {
             MM_LOG_ERROR("BeatmapBuilder", "Formation at t=" +
@@ -91,8 +98,9 @@ bool BeatmapBuilder::validateFormations() const {
     return true;
 }
 
+/// 规则 5：Formation 严格升序，Note 非降序
 bool BeatmapBuilder::validateTimeOrder() const {
-    // Rule 5: Formations and notes must be in ascending time order
+    // 规则 5：阵型与音符时间单调
     for (size_t i = 1; i < m_formations.size(); ++i) {
         if (m_formations[i].time <= m_formations[i - 1].time) {
             MM_LOG_ERROR("BeatmapBuilder", "Formation time not ascending: [" +
@@ -112,8 +120,9 @@ bool BeatmapBuilder::validateTimeOrder() const {
     return true;
 }
 
+/// 规则 3：音符 (row,col) 落在其时刻活动阵型边界内
 bool BeatmapBuilder::validateNoteBounds() const {
-    // Rule 3: Each note's (row, col) must be within the active formation at its time
+    // 规则 3：每个音符坐标在对应时刻阵型范围内
     for (const auto& note : m_notes) {
         const Formation* formation = nullptr;
         for (const auto& f : m_formations) {
@@ -140,9 +149,9 @@ bool BeatmapBuilder::validateNoteBounds() const {
     return true;
 }
 
+/// 规则 2：音频路径非空（运行时存在性另检）
 bool BeatmapBuilder::validateAudioFile() const {
-    // Rule 2: Audio file path must be non-empty
-    // (Actual file existence check would use FileSystem, but that requires runtime context)
+    // 规则 2：音频文件路径非空
     if (m_meta.audioFile.empty()) {
         MM_LOG_ERROR("BeatmapBuilder", "Audio file path is empty");
         return false;
@@ -150,8 +159,9 @@ bool BeatmapBuilder::validateAudioFile() const {
     return true;
 }
 
+/// 规则 1：formatVersion 由解析器设置且非空
 bool BeatmapBuilder::validateVersion() const {
-    // Rule 1: Version string must be non-empty (set by parser: "MMA1", "osu", etc.)
+    // 规则 1：版本字符串非空（"MMA1"/"MMA2"/"osu" 等）
     if (m_formatVersion.empty()) {
         MM_LOG_ERROR("BeatmapBuilder", "Format version is empty");
         return false;
@@ -226,16 +236,17 @@ bool BeatmapBuilder::validateFormationBuffer() {
     return true; // 始终通过，冲突音符已被丢弃
 }
 
-// ── Build ──
+// ── 构建入口 ──
 
+/// 排序后依次硬验证，再软验证丢弃冲突音符，最后组装 Beatmap
 util::Result<Beatmap> BeatmapBuilder::build() {
-    // Sort formations and notes by time
+    // 构建前按时间排序
     std::sort(m_formations.begin(), m_formations.end(),
               [](const Formation& a, const Formation& b) { return a.time < b.time; });
     std::sort(m_notes.begin(), m_notes.end(),
               [](const Note& a, const Note& b) { return a.time < b.time; });
 
-    // ── Run all six validation rules ──
+    // ── 执行全部硬验证规则 ──
     if (!validateVersion()) {
         return util::Result<Beatmap>(static_cast<int32_t>(util::ErrorCode::ERROR_BEATMAP_VERSION),
                                      "Beatmap version string is empty");
@@ -265,7 +276,7 @@ util::Result<Beatmap> BeatmapBuilder::build() {
     validateHoldTapOverlap();
     validateFormationBuffer();
 
-    // ── Construct Beatmap ──
+    // ── 组装 Beatmap 并返回 ──
     Beatmap bm;
     bm.meta       = std::move(m_meta);
     bm.difficulty = m_difficulty;

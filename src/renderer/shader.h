@@ -1,5 +1,10 @@
 #pragma once
 
+// ============================================================
+// shader.h — OpenGL 着色器程序 RAII 包装
+// 编译/链接顶点+片段 shader，提供 uniform 设置与后备纯色 shader。
+// ============================================================
+
 #include "util/result.h"
 #include <string>
 #include <cstdint>
@@ -20,18 +25,16 @@ public:
     Shader(const Shader&) = delete;
     Shader& operator=(const Shader&) = delete;
 
-    /// 从源代码字符串编译并链接着色器程序。
-    /// 成功时返回链接后的程序，或返回错误。
+    /// 从源代码字符串编译并链接着色器程序
     static util::Result<Shader> compile(const std::string& vertexSource,
                                          const std::string& fragmentSource);
 
-    /// 将此着色器程序用于后续绘制调用
+    /// 激活此着色器程序（glUseProgram）
     void use() const;
 
-    /// 获取 OpenGL 程序 ID
     uint32_t programId() const { return m_programId; }
 
-    /// Uniform 设置器
+    /// Uniform 设置器（按名称查找 location，-1 则跳过）
     void setInt(const std::string& name, int32_t value) const;
     void setFloat(const std::string& name, float value) const;
     void setVec2(const std::string& name, float x, float y) const;
@@ -39,7 +42,6 @@ public:
     void setVec4(const std::string& name, float x, float y, float z, float w) const;
     void setMat4(const std::string& name, const float* value) const;
 
-    /// 检查着色器是否有效（编译和链接成功）
     bool valid() const { return m_programId != 0; }
 
 private:
@@ -52,10 +54,9 @@ private:
     uint32_t m_programId = 0;
 };
 
-/// 后备纯色着色器（当普通着色器编译失败时使用）
+/// 后备纯色着色器（主 shader 编译失败时使用）
 class FallbackShader {
 public:
-    /// 获取单例后备着色器。首次调用时创建。
     static Shader& get();
 
 private:

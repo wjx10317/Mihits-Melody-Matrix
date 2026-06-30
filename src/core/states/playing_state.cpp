@@ -1,7 +1,18 @@
+// ============================================================
+// playing_state.cpp — 核心游玩状态实现
+//
+// 职责：
+//   - 谱面加载、音频播放与时钟同步
+//   - 按键输入 → 判定队列 → 分数/连击/HP 反馈
+//   - 列滚动窗口与变阵过渡动画
+//   - Autoplay / NoFail 模组
+//   - 前导倒计时、休息段淡出、结算过渡
+// ============================================================
 #include "playing_state.h"
 #include "core/kernel.h"
 #include "core/state_manager.h"
 #include "core/states/result_state.h"
+#include "beatmap/scroll_simulation.h"
 #include "platform/config.h"
 #include "ui/theme.h"
 #include "util/logger.h"
@@ -21,6 +32,11 @@ namespace melody_matrix::core {
 
 constexpr int PlayingState::KEY_CODES[];
 
+// ══════════════════════════════════════════════════════════════════════════════
+//  生命周期
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// 进入游玩状态：首次 initGameplay 或从暂停恢复
 void PlayingState::onEnter() {
     MM_LOG_INFO("Playing", "Entering Playing state");
 
@@ -51,6 +67,7 @@ void PlayingState::onEnter() {
     initGameplay();
 }
 
+/// 退出游玩状态：暂停音频与时钟，恢复 IME
 void PlayingState::onExit() {
     MM_LOG_INFO("Playing", "Exiting Playing state");
     if (m_audio.isPlaying()) {
@@ -63,12 +80,18 @@ void PlayingState::onExit() {
     // StateManager::executeTransition() 会根据目标状态设置 gameplayRendering
 }
 
+/// 清除 OpenGL 渲染资源（从 Paused/Result 退出到选歌时调用）
 void PlayingState::cleanupRenderer() {
     auto& renderer = Kernel::instance().renderer();
     renderer.setGameplayRendering(false);
     renderer.setBackgroundPath("");
 }
 
+// ══════════════════════════════════════════════════════════════════════════════
+//  初始化 / 重置
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// 重置全部子系统以支持重试
 void PlayingState::resetGameplay() {
     MM_LOG_INFO("Playing", "Resetting gameplay for retry");
 
@@ -101,6 +124,7 @@ void PlayingState::resetGameplay() {
     m_popups.clear();
 
     m_scrollWindow = {};  // 重置滚动窗口
+    m_lastTransitionEndMs = 0;
 
     m_autoplay = false;
     m_timingOffsetMs = 0;
@@ -116,6 +140,7 @@ void PlayingState::resetGameplay() {
     MM_LOG_INFO("Playing", "Gameplay reset complete");
 }
 
+/// 首次加载谱面：解析、初始化判定/分数/HP/变阵、启动音频
 void PlayingState::initGameplay() {
     if (m_gameplayInitialized) return;
 
@@ -208,6 +233,7 @@ void PlayingState::initGameplay() {
         m_scrollWindow.endCol = initCols - 1;
     }
     m_scrollWindow.scrolling = false;
+    m_lastTransitionEndMs = 0;
 
     // ── 设置 HP drain rate ──
     m_hpManager.setDrainRate(m_beatmap.difficulty.hp);
@@ -301,11 +327,17 @@ void PlayingState::initGameplay() {
                 " notes, first note at " + std::to_string(m_firstNoteTimeMs) + "ms");
 }
 
+/// 从音频 cursor 同步游戏时钟（主循环处理输入前调用）
 void PlayingState::syncClockFromAudio() {
     if (!m_gameplayInitialized) return;
     Kernel::instance().clock().syncFromAudio(m_audio.positionMs());
 }
 
+// ══════════════════════════════════════════════════════════════════════════════
+//  更新
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// 每帧更新：时钟、前导、判定、滚动、变阵、HP、结束检测
 GameState PlayingState::update(float dt) {
     if (!m_gameplayInitialized) return GameState::Count;
 
@@ -446,25 +478,15 @@ GameState PlayingState::update(float dt) {
             kernel.renderer().beginFormationTransition(prev.rows, prev.cols, prev.blockSize,
                                                        next.rows, next.cols, next.blockSize,
                                                        next.transformType);
+            m_lastTransitionEndMs = std::max(m_lastTransitionEndMs, next.time + durationMs);
         } else {
             // 瞬间切换
             kernel.renderer().setFormation(next.rows, next.cols, next.blockSize);
+            m_lastTransitionEndMs = std::max(m_lastTransitionEndMs, next.time);
         }
 
-        // 矩阵变换后有效列直接改变到目标列（居中），避免多余滚动
-        {
-            int32_t newCols = next.cols;
-            if (newCols > KEY_COUNT) {
-                // 居中：startCol = (newCols - KEY_COUNT) / 2
-                int32_t centerStart = (newCols - KEY_COUNT) / 2;
-                m_scrollWindow.startCol = centerStart;
-                m_scrollWindow.endCol = centerStart + KEY_COUNT - 1;
-            } else {
-                // 列数 <= KEY_COUNT，全部显示
-                m_scrollWindow.startCol = 0;
-                m_scrollWindow.endCol = newCols - 1;
-            }
-        }
+        // 变阵后对齐到有效窗口（非强制居中）
+        snapScrollWindowForFormation(next.cols, next.time);
         m_scrollWindow.targetStartCol = m_scrollWindow.startCol;
         m_scrollWindow.targetEndCol = m_scrollWindow.endCol;
         m_scrollWindow.scrolling = false;
@@ -543,6 +565,11 @@ GameState PlayingState::update(float dt) {
     return GameState::Count;
 }
 
+// ══════════════════════════════════════════════════════════════════════════════
+//  输入 / 按键映射
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// 根据当前滚动窗口与总列数生成 D/F/J/K → 列映射
 std::vector<PlayingState::KeyColumnMapping> PlayingState::getKeyMapping() const {
     int32_t totalCols = m_formationCtrl.currentCols();
     if (totalCols <= 0) totalCols = 4;
@@ -559,6 +586,7 @@ std::vector<PlayingState::KeyColumnMapping> PlayingState::getKeyMapping() const 
     return mapping;
 }
 
+/// 根据列号查找对应按键索引
 int PlayingState::keyIndexForColumn(int32_t column) const {
     auto mapping = getKeyMapping();
     for (const auto& m : mapping) {
@@ -570,6 +598,7 @@ int PlayingState::keyIndexForColumn(int32_t column) const {
     return -1;
 }
 
+/// 按键是否应显示为按下（Autoplay 含模拟与短暂闪烁）
 bool PlayingState::isKeyVisuallyDown(int keyIndex) const {
     if (keyIndex < 0 || keyIndex >= KEY_COUNT) return false;
     if (m_autoplay) {
@@ -578,6 +607,7 @@ bool PlayingState::isKeyVisuallyDown(int keyIndex) const {
     return m_curKeyDown[keyIndex];
 }
 
+/// 变阵过渡期间是否锁定判定（SCALE_ONLY 且行列不变时仍允许判定）
 bool PlayingState::isFormationJudgmentBlocked(int64_t songTimeMs) const {
     if (!m_formationCtrl.inTransition(songTimeMs)) return false;
 
@@ -591,6 +621,7 @@ bool PlayingState::isFormationJudgmentBlocked(int64_t songTimeMs) const {
     return !(scaleOnly && sameShape);
 }
 
+/// Autoplay 模组：在 note 时间点自动模拟按键与 Hold 释放
 void PlayingState::processAutoplay(int64_t nowMs, float od) {
     m_autoKeyDown.fill(false);
 
@@ -638,19 +669,23 @@ void PlayingState::processAutoplay(int64_t nowMs, float od) {
     }
 }
 
+// ══════════════════════════════════════════════════════════════════════════════
+//  列滚动
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// 检测 approach 窗口内最早 note 是否超出当前窗口，触发列滚动
 void PlayingState::checkAndTriggerScroll(int64_t nowMs) {
     int32_t totalCols = m_formationCtrl.currentCols();
     if (totalCols <= KEY_COUNT) return;  // 不需要滚动
 
-    // 有活跃 Hold 时暂不滚动，避免滚动期间锁判定导致 Hold 无法释放/超时
+    // 有活跃 Hold 时硬阻止滚动，和 parser 的 Hold 阻塞/降级策略保持一致。
     for (int32_t col = 0; col < m_judgeQueue.columnCount(); ++col) {
         if (m_judgeQueue.getActiveHold(col)) {
             return;
         }
     }
 
-    float approachMs = 1800.0f - m_beatmap.difficulty.ar * 120.0f;
-    if (approachMs < 300.0f) approachMs = 300.0f;
+    const int64_t approachMs = beatmap::approachMs(m_beatmap.difficulty.ar);
 
     int32_t windowStart = m_scrollWindow.startCol;
     int32_t windowEnd = m_scrollWindow.endCol;
@@ -667,10 +702,10 @@ void PlayingState::checkAndTriggerScroll(int64_t nowMs) {
         if (colQ.finished()) continue;
 
         const auto& note = colQ.front();
-        float timeDiff = static_cast<float>(note.time - nowMs);
+        const float timeDiff = static_cast<float>(note.time - nowMs);
 
         // 仅对未过期 note（timeDiff > 0）且在 approach 窗口内触发滚动
-        if (timeDiff <= approachMs && timeDiff > 0) {
+        if (timeDiff <= static_cast<float>(approachMs) && timeDiff > 0) {
             if (note.time < earliestNoteTime) {
                 earliestNoteTime = note.time;
                 earliestNoteCol = col;
@@ -681,33 +716,28 @@ void PlayingState::checkAndTriggerScroll(int64_t nowMs) {
     // 如果最早 note 不在当前窗口内，触发滚动到包含它的窗口
     if (earliestNoteCol >= 0 &&
         (earliestNoteCol < windowStart || earliestNoteCol > windowEnd)) {
-        // 计算新的窗口起始列：让最早 note 尽量居中
-        int32_t targetStart = earliestNoteCol - (KEY_COUNT / 2);
-
-        // 边界约束：窗口不能超出总列数范围
-        if (targetStart < 0) targetStart = 0;
-        if (targetStart + KEY_COUNT > totalCols) {
-            targetStart = totalCols - KEY_COUNT;
+        const float od = m_beatmap.difficulty.od;
+        const float ar = m_beatmap.difficulty.ar;
+        const int64_t scrollTrigger =
+            beatmap::scrollTriggerMs(earliestNoteTime, m_lastTransitionEndMs, ar);
+        const int64_t blockedStart = beatmap::scrollStartMsFromWindowHolds(
+            windowStart, windowEnd, earliestNoteTime, scrollTrigger, od, m_beatmap.notes);
+        if (nowMs < blockedStart) {
+            return;
         }
+        const int64_t scrollStartMs = std::max(nowMs, blockedStart);
+
+        const int32_t targetStart = beatmap::chooseScrollWindowStart(
+            windowStart, earliestNoteCol, totalCols, KEY_COUNT,
+            earliestNoteTime, m_beatmap.notes);
 
         // 只在窗口确实需要移动时才触发
         if (targetStart != windowStart) {
-            // ── 自适应滚动时长 ──
-            float od = m_beatmap.difficulty.od;
-            int32_t goodW = static_cast<int32_t>(65.0f - 2.6f * od);
-            int64_t minRemainingMs = static_cast<int64_t>(goodW) + 10;  // 最小剩余时间
-
-            // 默认滚动时长 200ms
-            float scrollDuration = 200.0f;
-            if (earliestNoteTime != INT64_MAX) {
-                int64_t availableTime = earliestNoteTime - nowMs - minRemainingMs;
-                // 滚动时长 = 可用时间的 80%，但不超过 200ms，不小于 100ms
-                scrollDuration = static_cast<float>(availableTime) * 0.8f;
-                scrollDuration = std::max(100.0f, std::min(200.0f, scrollDuration));
-            }
+            const float scrollDuration = static_cast<float>(beatmap::scrollDurationMs(
+                earliestNoteTime, scrollStartMs, od));
 
             m_scrollWindow.scrolling = true;
-            m_scrollWindow.scrollStartMs = nowMs;
+            m_scrollWindow.scrollStartMs = scrollStartMs;
             m_scrollWindow.scrollDurationMs = scrollDuration;
             m_scrollWindow.targetStartCol = targetStart;
             m_scrollWindow.targetEndCol = targetStart + KEY_COUNT - 1;
@@ -718,29 +748,62 @@ void PlayingState::checkAndTriggerScroll(int64_t nowMs) {
                         std::to_string(targetStart + KEY_COUNT - 1) +
                         " (earliest note col=" + std::to_string(earliestNoteCol) +
                         " t=" + std::to_string(earliestNoteTime) + ")" +
-                        " at t=" + std::to_string(nowMs) +
+                        " at t=" + std::to_string(scrollStartMs) +
                         "ms duration=" + std::to_string(static_cast<int>(scrollDuration)) + "ms");
         }
     }
 }
 
+/// 变阵后将滚动窗口对齐到包含触发 note 的有效窗
+void PlayingState::snapScrollWindowForFormation(int32_t newCols, int64_t formationTimeMs) {
+    if (newCols <= KEY_COUNT) {
+        m_scrollWindow.startCol = 0;
+        m_scrollWindow.endCol = newCols - 1;
+        return;
+    }
+
+    int64_t anchorTime = formationTimeMs;
+    int32_t anchorCol = 0;
+    bool found = false;
+    for (const auto& note : m_beatmap.notes) {
+        if (note.time >= formationTimeMs) {
+            anchorTime = note.time;
+            anchorCol = note.col;
+            found = true;
+            break;
+        }
+    }
+    if (!found && !m_beatmap.notes.empty()) {
+        const auto& last = m_beatmap.notes.back();
+        anchorTime = last.time;
+        anchorCol = last.col;
+    }
+
+    const int32_t targetStart = beatmap::chooseScrollWindowStart(
+        m_scrollWindow.startCol, anchorCol, newCols, KEY_COUNT, anchorTime, m_beatmap.notes);
+    m_scrollWindow.startCol = targetStart;
+    m_scrollWindow.endCol = targetStart + KEY_COUNT - 1;
+}
+
+/// 滚动动画完成：更新窗口起始/结束列
 void PlayingState::completeScroll() {
     int32_t newStart = m_scrollWindow.targetStartCol;
     int32_t newEnd = m_scrollWindow.targetEndCol;
 
-    // 映射改变方案：不 move note，只更新窗口
-    // note 留在原始列（0-7），滚动只改 dfjk 映射（getKeyMapping 返回 startCol+0..3）
-    // 离开窗口列的未判定note由 JudgeQueue::update() 自动miss
-    // (scroll discard simulation 已预丢弃会导致问题的note)
+    // 映射改变方案：不 move note，只更新窗口；窗外冲突 note 应在 parser 转换期丢弃。
     m_scrollWindow.startCol = newStart;
     m_scrollWindow.endCol = newEnd;
     m_scrollWindow.scrolling = false;
+    m_lastTransitionEndMs = std::max(
+        m_lastTransitionEndMs,
+        m_scrollWindow.scrollStartMs + static_cast<int64_t>(m_scrollWindow.scrollDurationMs));
 
     MM_LOG_INFO("Playing", "Scroll completed: window now " +
                 std::to_string(m_scrollWindow.startCol) + "-" +
                 std::to_string(m_scrollWindow.endCol));
 }
 
+/// 处理单条键盘事件（由 Kernel 在同步时钟后调用）
 void PlayingState::handleKeyEvent(int32_t key, bool pressed, int64_t eventTimeMs) {
     if (!m_gameplayInitialized || m_leadInActive) return;
     if (m_autoplay) return;  // Autoplay 期间锁定玩家输入
@@ -798,6 +861,7 @@ void PlayingState::handleKeyEvent(int32_t key, bool pressed, int64_t eventTimeMs
     }
 }
 
+/// 处理 Tap/Hold 头部按键判定结果，更新分数与视觉反馈
 void PlayingState::handlePressResult(gameplay::JudgmentResult result, int32_t column, int32_t row,
                                      int64_t pressTime, int64_t noteTime, bool isTapNote) {
     switch (result) {
@@ -853,6 +917,7 @@ void PlayingState::handlePressResult(gameplay::JudgmentResult result, int32_t co
     m_popups.push_back({column, result, JudgePopup::DURATION});
 }
 
+/// 处理 Hold 尾部释放判定结果
 void PlayingState::handleHoldTailEvent(const gameplay::HoldTailEvent& evt) {
     const int32_t column = evt.col;
     switch (evt.result) {
@@ -862,7 +927,6 @@ void PlayingState::handleHoldTailEvent(const gameplay::HoldTailEvent& evt) {
         m_comboManager.onHit();
         m_scoreManager.addScore(gameplay::JudgmentResult::Perfect, m_comboManager.current());
         m_hpManager.onJudgment(gameplay::JudgmentResult::Perfect);
-        m_audio.playSfx(audio::SfxType::HitNormal);
         m_popups.push_back({column, gameplay::JudgmentResult::Perfect, JudgePopup::DURATION});
         break;
     case gameplay::HoldReleaseResult::Good:
@@ -871,7 +935,6 @@ void PlayingState::handleHoldTailEvent(const gameplay::HoldTailEvent& evt) {
         m_comboManager.onHit();
         m_scoreManager.addScore(gameplay::JudgmentResult::Good, m_comboManager.current());
         m_hpManager.onJudgment(gameplay::JudgmentResult::Good);
-        m_audio.playSfx(audio::SfxType::HitNormal);
         m_popups.push_back({column, gameplay::JudgmentResult::Good, JudgePopup::DURATION});
         break;
     case gameplay::HoldReleaseResult::Miss:
@@ -901,6 +964,11 @@ void PlayingState::handleHoldTailEvent(const gameplay::HoldTailEvent& evt) {
     }
 }
 
+// ══════════════════════════════════════════════════════════════════════════════
+//  渲染
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// 渲染 HUD 与 ImGui 覆盖层
 void PlayingState::render() {
     if (!m_gameplayInitialized) return;
 
@@ -908,10 +976,12 @@ void PlayingState::render() {
     renderImGuiOverlay();
 }
 
+/// OpenGL HUD 渲染（预留，当前由 Renderer 负责主画面）
 void PlayingState::renderHUD() {
     // [TODO] OpenGL HUD rendering
 }
 
+/// 渲染 ImGui 覆盖层：前导倒计时、分数/连击、偏移条、调试 HUD
 void PlayingState::renderImGuiOverlay() {
     using namespace ui;
 

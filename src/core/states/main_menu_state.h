@@ -1,3 +1,9 @@
+// ============================================================
+// main_menu_state.h — 主菜单状态
+//
+// 标题屏幕：提供开始游戏、设置、导入 .osz 铺面与退出选项。
+// 设置以左侧滑入侧边栏覆盖层形式呈现，支持分辨率与全屏切换。
+// ============================================================
 #pragma once
 
 #include "core/game_state_base.h"
@@ -15,9 +21,13 @@ class MainMenuState : public GameStateBase {
 public:
     MainMenuState() = default;
 
+    /// 进入主菜单：加载背景、分辨率设置与已导入哈希
     void onEnter() override;
+    /// 退出主菜单
     void onExit() override;
+    /// 每帧更新：延迟分辨率变更、侧边栏动画、导入消息计时
     GameState update(float dt) override;
+    /// 渲染背景、主面板与设置侧边栏
     void render() override;
 
     /// 获取已导入铺面的 SHA256 哈希集合（供导入去重使用）
@@ -25,31 +35,38 @@ public:
     const std::unordered_set<std::string>& importedHashes() const { return m_importedHashes; }
 
 private:
+    /// 渲染主菜单 ImGui 面板（标题、按钮、导入）
     void renderImGuiPanel();
+    /// 渲染设置侧边栏外的半透明遮罩
     void renderSettingsOverlay();
+    /// 渲染左侧滑入的设置侧边栏（分辨率、全屏等）
     void renderSettingsSidebar();
+    /// 尝试从多个路径加载菜单背景纹理
     void loadBackgroundTexture();
 
     // ── 导入功能 ──
+    /// 导入 .osz 文件入口（设置消息与计时器）
     void importOszFile(const std::string& oszPath);
+    /// 校验并解压 .osz，遍历内部 .osu 逐一导入
     util::Result<void> validateAndImportOsz(const std::string& oszPath);
+    /// 解析单个 .osu 并序列化为 .mma 写入 assets/beatmaps/
     util::Result<void> importSingleOsu(const std::string& osuPath, const std::string& extractRoot);
 
     GameState m_nextState = GameState::Count;
     bool m_settingsOpen = false;
-    float m_settingsSlideProgress = 0.0f; // 0.0 = 关闭, 1.0 = 完全打开
+    float m_settingsSlideProgress = 0.0f; ///< 0.0 = 关闭, 1.0 = 完全打开
 
-    // Resolution selection
-    int m_selectedResolutionIndex = 1; // default 1920x1080
+    // ── 分辨率选择 ──
+    int m_selectedResolutionIndex = 1; ///< 默认 1920x1080
     bool m_fullscreen = false;
 
-    // Deferred resolution change (applied in update(), not during ImGui render)
+    // 延迟分辨率变更（在 update() 中应用，避免 ImGui 渲染期间改窗口）
     int m_pendingResolutionW = 0;
     int m_pendingResolutionH = 0;
     bool m_pendingFullscreen = false;
     bool m_hasPendingFullscreen = false;
 
-    // Background texture
+    // ── 背景纹理 ──
     renderer::Texture2D m_bgTexture;
 
     // ── 导入状态 ──

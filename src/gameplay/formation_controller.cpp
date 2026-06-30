@@ -1,3 +1,7 @@
+// ──────────────────────────────────────────────────────
+//  formation_controller.cpp — 阵型时间线实现
+// ──────────────────────────────────────────────────────
+
 #include "gameplay/formation_controller.h"
 #include "util/logger.h"
 
@@ -6,11 +10,12 @@
 
 namespace melody_matrix::gameplay {
 
+/// 加载阵型并按时间排序
 void FormationController::load(const std::vector<beatmap::Formation>& formations) {
     m_formations = formations;
     m_currentIndex = 0;
 
-    // Ensure sorted by time
+    // 确保按时间升序
     std::sort(m_formations.begin(), m_formations.end(),
               [](const beatmap::Formation& a, const beatmap::Formation& b) {
                   return a.time < b.time;
@@ -29,12 +34,13 @@ int32_t FormationController::currentCols() const {
     return m_formations[m_currentIndex].cols;
 }
 
+/// 根据当前时间推进活动阵型索引；变化时触发 onFormationChanged
 bool FormationController::update(int64_t nowMs) {
     if (m_formations.empty()) return false;
 
     size_t newIndex = m_currentIndex;
 
-    // Find the active formation at current time
+    // 查找当前时刻应生效的阵型
     for (size_t i = 0; i < m_formations.size(); ++i) {
         if (m_formations[i].time <= nowMs) {
             newIndex = i;
@@ -44,7 +50,7 @@ bool FormationController::update(int64_t nowMs) {
     }
 
     if (newIndex != m_currentIndex) {
-        // Formation transition triggered
+        // 阵型切换：发出变换事件
         if (onFormationChanged) {
             FormationChangedEvent evt;
             evt.previous = m_formations[m_currentIndex];
@@ -66,6 +72,7 @@ bool FormationController::update(int64_t nowMs) {
     return false;
 }
 
+/// 转换进度 0~1（ease-in-out cubic 插值前的线性 t）
 float FormationController::transitionProgress(int64_t nowMs) const {
     if (m_transitionStartMs == 0) return 1.0f;
 
@@ -91,6 +98,7 @@ void FormationController::reset() {
     m_transitionStartMs = 0;
 }
 
+/// ease-in-out 三次缓动：t∈[0,1] 映射到平滑 S 曲线
 float FormationController::easeInOutCubic(float t) {
     return t < 0.5f
         ? 4.0f * t * t * t

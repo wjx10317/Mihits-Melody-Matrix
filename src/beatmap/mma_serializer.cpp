@@ -1,3 +1,8 @@
+// ──────────────────────────────────────────────────────
+//  mma_serializer.cpp — .mma 序列化实现
+//  输出 MMA2 各标准段落；短格式省略默认 Formation 字段。
+// ──────────────────────────────────────────────────────
+
 #include "mma_serializer.h"
 #include "util/error_codes.h"
 #include "util/logger.h"
@@ -10,10 +15,9 @@
 
 namespace melody_matrix::beatmap {
 
-// ──────────────────────────────────────────────────────
-//  序列化
-// ──────────────────────────────────────────────────────
+// ── 序列化 ──
 
+/// 将 Beatmap 序列化为 MMA2 文本（含宏段、短格式 Formation 优化）
 std::string MmaSerializer::serialize(const Beatmap& beatmap, const std::string& sourceHash) {
     std::ostringstream oss;
 
@@ -106,6 +110,7 @@ std::string MmaSerializer::serialize(const Beatmap& beatmap, const std::string& 
     return oss.str();
 }
 
+/// 序列化并写入磁盘，自动创建父目录
 util::Result<void> MmaSerializer::writeToFile(const Beatmap& beatmap,
                                                const std::string& filePath,
                                                const std::string& sourceHash) {
@@ -140,6 +145,7 @@ util::Result<void> MmaSerializer::writeToFile(const Beatmap& beatmap,
     }
 }
 
+/// 读取文件头最多 10 行，解析 # source_hash= 注释
 std::string MmaSerializer::readSourceHash(const std::string& filePath) {
     std::ifstream ifs(filePath);
     if (!ifs) return "";

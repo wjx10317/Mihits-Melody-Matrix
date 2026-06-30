@@ -1,5 +1,11 @@
 #pragma once
 
+// ============================================================
+// renderer.h — 主渲染器
+// 管理渲染管线：背景 → 格子/note（NoteRenderer 实例化）→ 遮罩。
+// 统一计算 scrollOffset / blockSize / 阵型过渡动画，再下发给 NoteRenderer。
+// ============================================================
+
 #include "renderer/shader.h"
 #include "renderer/texture.h"
 #include "renderer/note_renderer.h"
@@ -14,10 +20,10 @@
 
 namespace melody_matrix::renderer {
 
-/// 渲染层顺序（从后到前）
+/// 渲染层顺序（从后到前，概念分层；实际合批在 NoteRenderer 内完成）
 enum class RenderLayer { Background = 0, Grid = 1, Notes = 2, Border = 3, Effect = 4 };
 
-/// 阵型过渡渲染状态
+/// 阵型过渡状态（Formation 切换时的 prev/next 及动画进度）
 struct FormationTransition {
     int32_t prevRows = 0;
     int32_t prevCols = 0;
@@ -34,38 +40,50 @@ struct FormationTransition {
 
 namespace melody_matrix::renderer {
 
-/// 主渲染器 — 管理渲染管线和 GL 状态。
+/// 主渲染器 — 管理 OpenGL 状态、背景、NoteRenderer 与阵型/滚动参数。
 class Renderer {
 public:
     Renderer() = default;
     ~Renderer() = default;
 
+    /// 初始化 grid/bg shader、全屏四边形 VAO、NoteRenderer 及 note 纹理
     bool init();
+
+    /// 每帧入口：背景 →（gameplay 时）格子占位 + note 实例化绘制
     void renderFrame(int64_t interpolatedTimeMs);
+
     void setGameplayRendering(bool enabled);
     void setBackgroundPath(const std::string& path);
+
+    /// 瞬间设置阵型（无过渡动画）
     void setFormation(int32_t rows, int32_t cols,
                       float blockSize = 1.0f);
+
+    /// 开始阵型过渡（prev → next，transformType 决定动画类型）
     void beginFormationTransition(int32_t prevRows, int32_t prevCols, float prevBlockSize,
                                   int32_t nextRows, int32_t nextCols, float nextBlockSize,
                                   int32_t transformType);
+
+    /// 更新过渡进度；progress>=1 时切换到 next 阵型
     void updateFormationTransition(float progress);
+
     void setNotes(const std::vector<beatmap::Note>& notes, float ar);
-    /// 设置滚动状态。scrollOffset 由 renderer 内部根据 scrollProgress 和 m_gridCols 统一计算，
-    /// 确保 renderGrid / renderNotes / note_renderer 三处 gw 基准完全一致，消除抽搐和错位。
+
+    /// 设置列滚动状态。scrollOffset 在此统一计算（ease-in-out × gw），
+    /// 确保 NoteRenderer 与 GridLayout 使用相同基准，消除滚动抽搐。
     void setScrollState(int32_t activeStartCol, int32_t activeEndCol,
                         int32_t targetStartCol, int32_t targetEndCol,
                         bool scrolling, float scrollProgress);
-    /// 更新各列判定头指针（用于跳过已判定的音符）
+
+    /// 更新各列判定头指针（NoteRenderer 用于跳过已判定 note）
     void setColumnHeads(const std::array<size_t, 8>& heads, int32_t columnCount);
     void setHitEffects(const std::vector<CellHitEffect>& effects) { m_hitEffects = effects; }
     void shutdown();
 
-    /// 设置背景遮罩透明度（0.0=无遮罩, 1.0=完全遮盖）
+    /// 背景遮罩透明度（0.0=无遮罩, 1.0=完全遮盖）
     void setBgDim(float dim);
 
-    /// 设置游戏界面（矩阵+note+遮罩）整体淡入淡出（0.0=完全隐藏, 1.0=完全显示）
-    /// 用于休息段：>10s 空挡时渐变隐藏，新 note 前 3s 渐变回来
+    /// 游戏界面整体淡入淡出（休息段：>10s 空挡隐藏，新 note 前 3s 恢复）
     void setGameplayFade(float fade) { m_gameplayFade = std::max(0.0f, std::min(1.0f, fade)); }
 
 private:
@@ -93,20 +111,20 @@ private:
 
     int32_t m_gridRows = 3;
     int32_t m_gridCols = 4;
-    float m_blockSize = 1.0f;  ///< 格子内容缩放（Formation.blockSize，background 与 note 同步）
+    float m_blockSize = 1.0f;  ///< Formation.blockSize，同步到 NoteRenderer
     FormationTransition m_transition;
 
-    float m_bgDim = 0.67f;  ///< 背景遮罩透明度（默认67%）
-    float m_gameplayFade = 1.0f;  ///< 游戏界面整体淡入淡出（休息段用，0=隐藏, 1=显示）
+    float m_bgDim = 0.67f;
+    float m_gameplayFade = 1.0f;
 
-    // ── 列活跃状态 ──
+    // ── 列活跃与滚动 ──
     int32_t m_activeStartCol = 0;
     int32_t m_activeEndCol = 3;
-    float m_scrollOffset = 0.0f;          ///< 滚动偏移（像素）
-    int32_t m_targetStartCol = 0;         ///< 目标起始列
-    int32_t m_targetEndCol = 3;           ///< 目标结束列
-    bool m_scrolling = false;             ///< 是否正在滚动
-    float m_scrollProgress = 0.0f;        ///< 滚动进度 [0,1]
+    float m_scrollOffset = 0.0f;          ///< 像素水平偏移（负=矩阵左移）
+    int32_t m_targetStartCol = 0;
+    int32_t m_targetEndCol = 3;
+    bool m_scrolling = false;
+    float m_scrollProgress = 0.0f;
 
     // ── 列判定头指针 ──
     std::array<size_t, 8> m_colHeads = {};

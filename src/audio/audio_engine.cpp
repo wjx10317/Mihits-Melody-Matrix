@@ -1,34 +1,253 @@
 #include "audio_engine.h"
 #include "util/logger.h"
 
-// 必须在 cpp 中定义 MINIAUDIO_IMPLEMENTATION，且只能定义一次
+// MINIAUDIO_IMPLEMENTATION 仅能在单个 .cpp 中定义一次
 #define MINIAUDIO_IMPLEMENTATION
 #include <miniaudio.h>
 
 #include <cmath>
 #include <algorithm>
+#include <cctype>
+#include <filesystem>
+#include <string_view>
+
+// ──────────────────────────────────────────────────────
+//  audio_engine.cpp — miniaudio 音频引擎实现
+//
+//  模块：引擎生命周期、ActiveSound 池、预览淡入淡出、
+//  SFX 全量加载与轮转播放、res/ 路径探测。
+// ──────────────────────────────────────────────────────
 
 namespace melody_matrix::audio {
 
-// ============================================================
-// 工具函数：绕过 Windows min/max 宏
-// ============================================================
+namespace {
+
+/// 后缀名不区分大小写比较
+static bool endsWithIgnoreCase(std::string_view name, std::string_view suffix) {    if (name.size() < suffix.size()) {
+        return false;
+    }
+    const auto tail = name.substr(name.size() - suffix.size());
+    for (size_t i = 0; i < suffix.size(); ++i) {
+        const unsigned char a = static_cast<unsigned char>(tail[i]);
+        const unsigned char b = static_cast<unsigned char>(suffix[i]);
+        if (std::tolower(a) != std::tolower(b)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/// 相对 res 目录搜索顺序（兼容不同工作目录）
+static const char* kResDirs[] = { "res", "../res", "../../res" };
+
+static const char* sfxTypeName(SfxType type) {
+    switch (type) {
+    case SfxType::MenuClick:  return "MenuClick";
+    case SfxType::MenuHit:    return "MenuHit";
+    case SfxType::HitNormal:  return "HitNormal";
+    case SfxType::SliderTick: return "SliderTick";
+    default:                  return "Unknown";
+    }
+}
+
+static const char* describeMaResult(ma_result result) {
+    const char* desc = ma_result_description(result);
+    return (desc && desc[0] != '\0') ? desc : "unknown error";
+}
+
+static std::string resolveResFile(const char* relativeFile) {
+    for (const char* dir : kResDirs) {
+        const std::filesystem::path path = std::filesystem::path(dir) / relativeFile;
+        if (std::filesystem::exists(path)) {
+            return path.string();
+        }
+    }
+    return {};
+}
+
+static void logSfxPathProbe(const char* sfxName, const char* relativeFile) {
+    MM_LOG_WARN("Audio", "SFX not found: type=%s fixed=%s", sfxName, relativeFile);
+    for (const char* dir : kResDirs) {
+        const std::filesystem::path path = std::filesystem::path(dir) / relativeFile;
+        const bool dirExists = std::filesystem::is_directory(dir);
+        const bool fileExists = std::filesystem::exists(path);
+        MM_LOG_WARN("Audio", "  probe dir=%s dirExists=%s file=%s fileExists=%s",
+                    dir, dirExists ? "yes" : "no",
+                    path.string().c_str(), fileExists ? "yes" : "no");
+    }
+}
+
+static void logSfxLoadFailure(const char* sfxName, const std::string& filePath,
+                              int slot, ma_result result) {
+    std::error_code ec;
+    const bool exists = std::filesystem::exists(filePath, ec);
+    std::string sizeInfo = "n/a";
+    if (exists) {
+        const auto size = std::filesystem::file_size(filePath, ec);
+        if (!ec) {
+            sizeInfo = std::to_string(size) + " bytes";
+        }
+    }
+
+    MM_LOG_WARN("Audio",
+                "SFX load failed: type=%s slot=%d path=%s exists=%s size=%s "
+                "ma_result=%d (%s)",
+                sfxName, slot, filePath.c_str(),
+                exists ? "yes" : "no", sizeInfo.c_str(),
+                static_cast<int>(result), describeMaResult(result));
+}
+
+static void logHitNormalDiscoveryMiss() {
+    MM_LOG_WARN("Audio",
+                "HitNormal: no file matching *_normal.{wav,ogg} or *-hitnormal.{wav,ogg}");
+    for (const char* dir : kResDirs) {
+        const std::filesystem::path dirPath(dir);
+        if (!std::filesystem::is_directory(dirPath)) {
+            MM_LOG_WARN("Audio", "  scan dir=%s (missing)", dir);
+            continue;
+        }
+
+        MM_LOG_WARN("Audio", "  scan dir=%s", dir);
+        bool listedAny = false;
+        for (const auto& entry : std::filesystem::directory_iterator(dirPath)) {
+            if (!entry.is_regular_file()) {
+                continue;
+            }
+            const std::string ext = entry.path().extension().string();
+            if (ext != ".wav" && ext != ".ogg" && ext != ".WAV" && ext != ".OGG") {
+                continue;
+            }
+            listedAny = true;
+            MM_LOG_WARN("Audio", "    audio: %s", entry.path().filename().string().c_str());
+        }
+        if (!listedAny) {
+            MM_LOG_WARN("Audio", "    (no .wav/.ogg files)");
+        }
+    }
+}
+
+/// 击打音后缀：测试用 *_normal.*，osu 式 *-hitnormal.*
+static constexpr const char* kHitNormalSuffixes[] = {
+    "_normal.wav", "_normal.ogg",
+    "-hitnormal.wav", "-hitnormal.ogg",
+};
+
+/// 在 res 目录中按文件名后缀匹配音效，多个命中时取最近修改的文件。
+static std::string findSfxBySuffixes(std::initializer_list<const char*> suffixes) {
+    std::string bestPath;
+    std::filesystem::file_time_type bestTime{};
+    bool found = false;
+
+    for (const char* dir : kResDirs) {
+        const std::filesystem::path dirPath(dir);
+        if (!std::filesystem::is_directory(dirPath)) {
+            continue;
+        }
+
+        for (const auto& entry : std::filesystem::directory_iterator(dirPath)) {
+            if (!entry.is_regular_file()) {
+                continue;
+            }
+            const std::string filename = entry.path().filename().string();
+            bool matched = false;
+            for (const char* suffix : suffixes) {
+                if (endsWithIgnoreCase(filename, suffix)) {
+                    matched = true;
+                    break;
+                }
+            }
+            if (!matched) {
+                continue;
+            }
+
+            const auto mtime = entry.last_write_time();
+            if (!found || mtime > bestTime) {
+                found = true;
+                bestTime = mtime;
+                bestPath = entry.path().string();
+            }
+        }
+    }
+
+    return bestPath;
+}
+
+static ma_result loadSfxInstance(ma_engine* engine, const std::string& filePath,
+                                 ma_sound** outSound) {
+    if (outSound) {
+        *outSound = nullptr;
+    }
+    if (!engine || filePath.empty()) {
+        return MA_INVALID_ARGS;
+    }
+
+    auto* sound = (ma_sound*)ma_malloc(sizeof(ma_sound), nullptr);
+    if (!sound) {
+        return MA_OUT_OF_MEMORY;
+    }
+
+    const ma_result result = ma_sound_init_from_file(
+        engine, filePath.c_str(), 0, nullptr, nullptr, sound);
+    if (result != MA_SUCCESS) {
+        ma_free(sound, nullptr);
+        return result;
+    }
+
+    if (outSound) {
+        *outSound = sound;
+    } else {
+        ma_sound_uninit(sound);
+        ma_free(sound, nullptr);
+    }
+    return MA_SUCCESS;
+}
+
+static int loadSfxPool(ma_engine* engine,
+                       ma_sound* pool[],
+                       int poolSize,
+                       const std::string& filePath,
+                       const char* sfxName) {
+    int loadedCount = 0;
+    for (int slot = 0; slot < poolSize; ++slot) {
+        ma_sound* sound = nullptr;
+        const ma_result result = loadSfxInstance(engine, filePath, &sound);
+        if (result != MA_SUCCESS) {
+            logSfxLoadFailure(sfxName, filePath, slot, result);
+            break;
+        }
+        pool[slot] = sound;
+        ++loadedCount;
+    }
+
+    if (loadedCount > 0 && loadedCount < poolSize) {
+        MM_LOG_WARN("Audio",
+                    "SFX partial load: type=%s path=%s loaded=%d/%d",
+                    sfxName, filePath.c_str(), loadedCount, poolSize);
+    }
+    return loadedCount;
+}
+
+} // namespace
+
+// ── 工具：绕过 Windows min/max 宏 ──
+
 static float mm_min(float a, float b) { return a < b ? a : b; }
 static float mm_clamp(float v, float lo, float hi) {
     return v < lo ? lo : (v > hi ? hi : v);
 }
-// seek 辅助函数 —— 秒 → PCM帧（miniaudio 无 set_cursor_in_seconds）
+
+/// seek 辅助：秒 → PCM 帧（miniaudio 无 set_cursor_in_seconds）
 static void seekSoundToSeconds(ma_sound* sound, float seconds) {
     if (!sound) return;
-    const ma_engine* engine = ma_sound_get_engine(sound);//获取当前音乐的引擎指针，每个音乐初始化时必须绑定一个engine
+    const ma_engine* engine = ma_sound_get_engine(sound);
     if (!engine) return;
-    ma_uint32 sampleRate = ma_engine_get_sample_rate(engine);//得到采样率
-    ma_uint64 frameIdx = static_cast<ma_uint64>(seconds * static_cast<float>(sampleRate));//类型转换为float与second相乘得到音频定位再转换为参数里面的数字类型
+    ma_uint32 sampleRate = ma_engine_get_sample_rate(engine);
+    ma_uint64 frameIdx = static_cast<ma_uint64>(seconds * static_cast<float>(sampleRate));
     ma_sound_seek_to_pcm_frame(sound, frameIdx);
 }
-// ActiveSound::release —— 释放 ma_sound（需 miniaudio.h，故放 .cpp）
-void ActiveSound::release() {
-    if (sound) {
+
+/// 释放 ActiveSound 持有的 ma_sound
+void ActiveSound::release() {    if (sound) {
         ma_sound_stop(sound);
         ma_sound_uninit(sound);
         ma_free(sound, nullptr);
@@ -37,10 +256,10 @@ void ActiveSound::release() {
 }
 
 
-// init / shutdown
+// ── 引擎 init / shutdown ──
 
 bool AudioEngine::init() {
-    if (m_initialized) return true;//防止多重初始化
+    if (m_initialized) return true;  ///< 防止重复初始化
 
     MM_LOG_INFO("Audio", "Initializing audio engine...");
 
@@ -48,7 +267,7 @@ bool AudioEngine::init() {
     if (!m_engine) return false;
     std::memset(m_engine, 0, sizeof(ma_engine));
 
-    ma_result result = ma_engine_init(nullptr, m_engine);//第一个参数传空，采用默认参数
+    ma_result result = ma_engine_init(nullptr, m_engine);  ///< 默认设备与采样率
     if (result != MA_SUCCESS) {
         MM_LOG_ERROR("Audio", "Failed to init miniaudio engine: " + std::to_string(result));
         ma_free(m_engine, nullptr);
@@ -88,14 +307,14 @@ void AudioEngine::shutdown() {
     MM_LOG_INFO("Audio", "Audio engine shut down");
 }
 
-// createSound / destroySound
+// ── createSound / destroySound ──
+
 ma_sound* AudioEngine::createSound(const std::string& filePath, bool streaming) {
     if (!m_initialized || !m_engine) return nullptr;
 
     auto* sound = (ma_sound*)ma_malloc(sizeof(ma_sound), nullptr);
     if (!sound) return nullptr;
-    // 不 memset —— ma_sound_init_from_file 会正确初始化
-
+    // ma_sound_init_from_file 会完整初始化，无需 memset
     ma_uint32 flags = streaming ? MA_SOUND_FLAG_STREAM : 0;
 
     ma_result result = ma_sound_init_from_file(
@@ -116,7 +335,8 @@ void AudioEngine::destroySound(ma_sound* sound) {
     ma_free(sound, nullptr);
 }
 
-// playSong（兼容原有接口，游戏内播放，单路）
+// ── playSong：游戏内单路 BGM ──
+
 bool AudioEngine::playSong(const std::string& filePath) {
     if (!m_initialized) return false;
 
@@ -156,7 +376,7 @@ void AudioEngine::stop() {
 }
 
 void AudioEngine::setVolume(float volume) {
-    m_volume = mm_clamp(volume, 0.0f, 1.0f);//限制全局音量在这个范围
+    m_volume = mm_clamp(volume, 0.0f, 1.0f);
     // 更新所有活动声音的实际音量
     for (auto& snd : m_activeSounds) {
         if (snd.sound) {
@@ -164,7 +384,8 @@ void AudioEngine::setVolume(float volume) {
         }
     }
 }
-// playPreview —— 选歌界面预览播放
+// ── playPreview：选歌预览（同路径不重启、旧预览淡出）──
+
 void AudioEngine::playPreview(const std::string& filePath,
                               int64_t startTimeMs,
                               float   fadeInDurationS,
@@ -261,11 +482,9 @@ void AudioEngine::playPreview(const std::string& filePath,
     MM_LOG_INFO("Audio", "Preview: " + filePath + " startMs=" + std::to_string(startTimeMs));
 }
 
-// ============================================================
-// stopWithFade
-// ============================================================
-void AudioEngine::stopWithFade(float durationS) {
-    if (durationS > 0.0f) {
+// ── stopWithFade ──
+
+void AudioEngine::stopWithFade(float durationS) {    if (durationS > 0.0f) {
         for (auto& snd : m_activeSounds) {
             if (!snd.sound || snd.isFadingOut) continue;
             snd.isFadingOut  = true;
@@ -280,53 +499,47 @@ void AudioEngine::stopWithFade(float durationS) {
     }
 }
 
-// ============================================================
-// update —— 每帧调用，驱动淡入淡出 + 预览循环
-// ============================================================
-void AudioEngine::update(float dt) {
-    if (!m_initialized) return;
+// ── update：淡入淡出 + 预览循环（swap-and-pop 移除槽位）──
+
+void AudioEngine::update(float dt) {    if (!m_initialized) return;
 
     for (size_t i = 0; i < m_activeSounds.size(); ) {
-        auto& snd = m_activeSounds[i];//引用
+        auto& snd = m_activeSounds[i];
 
         if (!snd.sound) {
-            // 声音已被释放，移除槽位
-            snd = std::move(m_activeSounds.back());//o(1)删除，把末尾元素移动到当前位置，然后直接移除末尾元素
+            snd = std::move(m_activeSounds.back());  ///< O(1) 移除空槽
             m_activeSounds.pop_back();
             continue;
         }
 
-        // ---- 淡入处理 ----
         if (snd.isFadingIn && snd.fadeDuration > 0.0f) {
-            snd.fadeTimer += dt;//当前已经淡入的时间
-            float t = mm_min(snd.fadeTimer / snd.fadeDuration, 1.0f);//插值计算，是否达到了淡入最大时间
-            float vol = snd.fadeStartVol + (snd.fadeTargetVol - snd.fadeStartVol) * t;//平滑音量计算
+            snd.fadeTimer += dt;
+            float t = mm_min(snd.fadeTimer / snd.fadeDuration, 1.0f);
+            float vol = snd.fadeStartVol + (snd.fadeTargetVol - snd.fadeStartVol) * t;
             ma_sound_set_volume(snd.sound, vol);
             if (snd.fadeTimer >= snd.fadeDuration) {
                 snd.isFadingIn = false;
             }
         }
 
-        // ---- 淡出处理 ----
+        // 淡出：完成后 release 并 swap-and-pop
         if (snd.isFadingOut && snd.fadeDuration > 0.0f) {
             snd.fadeTimer += dt;
             float t = mm_min(snd.fadeTimer / snd.fadeDuration, 1.0f);
             float vol = snd.fadeStartVol + (snd.fadeTargetVol - snd.fadeStartVol) * t;
             ma_sound_set_volume(snd.sound, vol);
             if (snd.fadeTimer >= snd.fadeDuration) {
-                // 淡出完成，释放
-                ActiveSound tmp;//中转元素负责资源释放，snd值负责遍历，代码逻辑解耦
+                ActiveSound tmp;
                 tmp.sound = snd.sound;
                 snd.sound = nullptr;
                 tmp.release();
-                // 移除槽位（swap-and-pop）
                 snd = std::move(m_activeSounds.back());
                 m_activeSounds.pop_back();
-                continue;  // 不增加 i，当前位置已被新元素填充
+                continue;
             }
         }
 
-        // ---- 预览循环检测 ----
+        // 预览：到达 previewEnd 或文件末尾前 500ms 则 seek 回起点
         if (!snd.isFadingOut && snd.type == SoundType::Preview && snd.previewStartMs >= 0) {
             float cursorS = 0.0f;
             ma_sound_get_cursor_in_seconds(snd.sound, &cursorS);
@@ -355,11 +568,9 @@ void AudioEngine::update(float dt) {
     }
 }
 
-// ============================================================
-// 查询接口
-// ============================================================
-bool AudioEngine::isPlaying() const {
-    for (const auto& snd : m_activeSounds) {
+// ── 查询：播放状态、位置、时长、seek ──
+
+bool AudioEngine::isPlaying() const {    for (const auto& snd : m_activeSounds) {
         if (snd.sound && !snd.isFadingOut) {
             if (ma_sound_is_playing(snd.sound)) {
                 return true;
@@ -372,8 +583,7 @@ bool AudioEngine::isPlaying() const {
 int64_t AudioEngine::positionMs() const {
     for (const auto& snd : m_activeSounds) {
         if (snd.sound && !snd.isFadingOut) {
-            // 用 PCM 帧整数运算替代 float 秒数截断，避免精度损失。
-            // ms = frames * 1000 / sampleRate，+sampleRate/2 实现四舍五入。
+            // PCM 帧整数运算 + 四舍五入，避免 float 秒数截断误差
             ma_uint64 cursorFrames = 0;
             ma_sound_get_cursor_in_pcm_frames(snd.sound, &cursorFrames);
             ma_uint32 sampleRate = ma_engine_get_sample_rate(m_engine);
@@ -399,18 +609,16 @@ void AudioEngine::seekTo(int64_t positionMs) {
     for (auto& snd : m_activeSounds) {
         if (snd.sound && !snd.isFadingOut) {
             ma_uint64 frameIndex = static_cast<ma_uint64>(
-                positionMs * ma_engine_get_sample_rate(m_engine) / 1000);//采样率
+                positionMs * ma_engine_get_sample_rate(m_engine) / 1000);
             ma_sound_seek_to_pcm_frame(snd.sound, frameIndex);
             return;
         }
     }
 }
 
-// ============================================================
-// 音量分组控制
-// ============================================================
-void AudioEngine::setTypeVolume(SoundType type, float volume) {
-    int idx = static_cast<int>(type);
+// ── 分组音量 ──
+
+void AudioEngine::setTypeVolume(SoundType type, float volume) {    int idx = static_cast<int>(type);
     if (idx < 0 || idx > 2) return;
     m_typeVolumes[idx] = mm_clamp(volume, 0.0f, 1.0f);
     // 更新该类型所有活动声音
@@ -433,63 +641,57 @@ float AudioEngine::calcVolume(SoundType type) const {
     return m_volume * m_typeVolumes[idx];
 }
 
-// ============================================================
-// 音效（SFX）—— 全量加载（非流式）+ 播放
-// ============================================================
+// ── SFX：全量加载 + 轮转播放 ──
+
 bool AudioEngine::loadSfx() {
     if (!m_initialized) return false;
     if (m_sfxLoaded) return true;
 
-    // 音效文件相对路径（工作目录可能不同，尝试多个）
-    static const char* kSfxFiles[static_cast<int>(SfxType::Count)] = {
-        "res/menuclick.wav",          // MenuClick
-        "res/menuhit.wav",            // MenuHit
-        "res/normal-hitnormal.wav",   // HitNormal
-        "res/normal-slidertick.wav"   // SliderTick
+    struct SfxSpec {
+        SfxType type;
+        const char* fixedFile; ///< 固定文件名（相对 res/）
+        bool discoverHitNormal; ///< 扫描 res/ 下击打音，无固定回退
     };
 
-    for (int i = 0; i < static_cast<int>(SfxType::Count); ++i) {
-        // 构造候选路径（工作目录可能不同，尝试多个）
-        std::string baseName = std::string(kSfxFiles[i]).substr(4);  // 去掉 "res/"
-        std::string up1 = "../res/" + baseName;
-        std::string up2 = "../../res/" + baseName;
-        const char* relPaths[3] = {
-            kSfxFiles[i],
-            up1.c_str(),
-            up2.c_str()
-        };
+    static const SfxSpec kSfxSpecs[] = {
+        { SfxType::MenuClick,  "menuclick.wav",         false },
+        { SfxType::MenuHit,    "menuhit.wav",           false },
+        { SfxType::HitNormal,  nullptr,                 true },
+        { SfxType::SliderTick, "normal-slidertick.wav", false },
+    };
 
-        // 为每个 SfxType 加载 SFX_POOL_SIZE 个实例，构成声音池
-        int loadedCount = 0;
-        for (int slot = 0; slot < SFX_POOL_SIZE; ++slot) {
-            ma_sound* sound = nullptr;
-            for (int p = 0; p < 3 && !sound; ++p) {
-                if (!relPaths[p]) continue;
-                // 全量加载：不使用 MA_SOUND_FLAG_STREAM
-                sound = (ma_sound*)ma_malloc(sizeof(ma_sound), nullptr);
-                if (!sound) continue;
-                ma_result result = ma_sound_init_from_file(
-                    m_engine, relPaths[p], 0, nullptr, nullptr, sound);
-                if (result != MA_SUCCESS) {
-                    ma_free(sound, nullptr);
-                    sound = nullptr;
-                    continue;
-                }
-                MM_LOG_INFO("Audio", "SFX loaded: %s (slot %d)", relPaths[p], slot);
+    for (const SfxSpec& spec : kSfxSpecs) {
+        const char* sfxName = sfxTypeName(spec.type);
+        std::string filePath;
+        if (spec.discoverHitNormal) {
+            filePath = findSfxBySuffixes({
+                kHitNormalSuffixes[0], kHitNormalSuffixes[1],
+                kHitNormalSuffixes[2], kHitNormalSuffixes[3],
+            });
+            if (filePath.empty()) {
+                logHitNormalDiscoveryMiss();
+                continue;
             }
-
-            if (!sound) {
-                // 该 slot 加载失败，跳出（剩余 slot 也大概率失败）
-                break;
+        } else if (spec.fixedFile) {
+            filePath = resolveResFile(spec.fixedFile);
+            if (filePath.empty()) {
+                logSfxPathProbe(sfxName, spec.fixedFile);
+                continue;
             }
-            m_sfxSounds[i][slot] = sound;
-            ++loadedCount;
-        }
-
-        if (loadedCount == 0) {
-            MM_LOG_WARN("Audio", "SFX load failed: %s", kSfxFiles[i]);
+        } else {
+            MM_LOG_WARN("Audio", "SFX spec missing path: type=%s", sfxName);
             continue;
         }
+
+        const int idx = static_cast<int>(spec.type);
+        const int loadedCount = loadSfxPool(
+            m_engine, m_sfxSounds[idx], SFX_POOL_SIZE, filePath, sfxName);
+        if (loadedCount == 0) {
+            continue;
+        }
+
+        MM_LOG_INFO("Audio", "SFX loaded: type=%s slots=%d path=%s",
+                    sfxName, loadedCount, filePath.c_str());
     }
 
     m_sfxLoaded = true;
@@ -501,7 +703,7 @@ void AudioEngine::playSfx(SfxType type) {
     int idx = static_cast<int>(type);
     if (idx < 0 || idx >= static_cast<int>(SfxType::Count)) return;
 
-    // 轮转选择一个 slot，避免快速连击时截断正在播放的实例
+    // 轮转 slot，快速连击不截断上一实例
     int slot = m_sfxRoundRobin[idx];
     m_sfxRoundRobin[idx] = (slot + 1) % SFX_POOL_SIZE;
 

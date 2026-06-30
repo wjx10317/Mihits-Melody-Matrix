@@ -1,5 +1,11 @@
 #pragma once
 
+// ──────────────────────────────────────────────────────
+//  beatmap_builder.h — 谱面构建与验证
+//  流式 set/add API，build() 时集中执行八条验证规则
+//  （含软验证：丢弃冲突音符而非整谱失败）。
+// ──────────────────────────────────────────────────────
+
 #include "beatmap/beatmap.h"
 #include "util/result.h"
 #include "util/error_codes.h"
@@ -21,21 +27,21 @@ namespace melody_matrix::beatmap {
 ///       .build();
 class BeatmapBuilder {
 public:
-    // ── Fluent setters ──
+    // ── 流式 setter ──
 
     BeatmapBuilder& setMeta(const Meta& meta);
     BeatmapBuilder& mergeMeta(const Meta& meta);  ///< 将非空字段合并到现有元数据中
     BeatmapBuilder& setDifficulty(const Difficulty& diff);
     BeatmapBuilder& setFormatVersion(const std::string& version); ///< 设置来源格式版本（如 "MMA1"、"osu"）
 
-    // ── Fluent adders ──
+    // ── 流式 adder ──
 
     BeatmapBuilder& addFormation(const Formation& formation);
     BeatmapBuilder& addNote(const Note& note);
     BeatmapBuilder& addFormations(const std::vector<Formation>& formations);
     BeatmapBuilder& addNotes(const std::vector<Note>& notes);
 
-    // ── Build + validate ──
+    // ── 构建与验证 ──
 
     /// 构建谱面。运行所有六条验证规则。
     /// 成功时返回 Beatmap，失败时返回错误。
@@ -45,7 +51,7 @@ public:
     void reset();
 
 private:
-    // ── Validation helpers ──
+    // ── 验证辅助函数 ──
     bool validateVersion() const;        ///< 规则 1：版本字符串检查（由解析器完成）
     bool validateAudioFile() const;      ///< 规则 2：音频文件路径非空
     bool validateNoteBounds() const;     ///< 规则 3：音符坐标在阵型边界内
@@ -55,7 +61,7 @@ private:
     bool validateHoldTapOverlap();       ///< 规则 7：同列 Hold+Tap 禁止重叠（软验证：丢弃冲突音符）
     bool validateFormationBuffer();      ///< 规则 8：阵型变化前 500ms 无即将判定的音符（软验证：丢弃冲突音符）
 
-    // ── Builder state ──
+    // ── 构建器内部状态 ──
     Meta                   m_meta;
     Difficulty             m_difficulty;
     std::vector<Formation> m_formations;

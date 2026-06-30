@@ -1,5 +1,11 @@
 #pragma once
 
+// ──────────────────────────────────────────────────────
+//  judge_queue.h — 多列判定队列
+//  每列独立维护音符队列与 Hold 状态；支持按键按下/释放判定、
+//  自动 Miss、事件回调，供 PlayingState 与渲染层查询。
+// ──────────────────────────────────────────────────────
+
 #include "gameplay/judge_strategy.h"
 #include "beatmap/note.h"
 

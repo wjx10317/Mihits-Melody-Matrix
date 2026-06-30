@@ -1,3 +1,9 @@
+// ============================================================
+// boot_state.h — 启动状态
+//
+// 游戏启动时的首个状态：播放品牌加载动画，同时在后台扫描铺面并
+// 预加载纹理，全部完成后自动过渡到主菜单。
+// ============================================================
 #pragma once
 
 #include "core/game_state_base.h"
@@ -10,13 +16,19 @@ class BootState : public GameStateBase {
 public:
     BootState() = default;
 
+    /// 进入状态：重置动画与加载标志
     void onEnter() override;
+    /// 退出状态：等待异步加载线程结束
     void onExit() override;
+    /// 每帧更新：驱动异步扫描、纹理预加载与状态过渡
     GameState update(float dt) override;
+    /// 渲染加载动画与进度条
     void render() override;
 
 private:
+    /// 绘制 "Mi hits" 品牌加载动画（M 路径 / i 竖线 / i 点 / hits 滑入）
     void renderLoadingAnimation();
+    /// 绘制底部渐变进度条与百分比文字
     void renderProgressBar(float progress);
 
     // ── 动画状态 ──

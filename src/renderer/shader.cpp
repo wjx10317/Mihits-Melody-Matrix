@@ -1,3 +1,7 @@
+// ============================================================
+// shader.cpp — 着色器编译/链接与 uniform 设置
+// ============================================================
+
 #include "shader.h"
 #include "util/logger.h"
 #include "util/error_codes.h"
@@ -6,7 +10,7 @@
 
 namespace melody_matrix::renderer {
 
-// ── RAII ──
+// ── RAII：析构/移动时释放 GL 程序 ──
 
 Shader::~Shader() {
     if (m_programId != 0) {
@@ -30,7 +34,7 @@ Shader& Shader::operator=(Shader&& other) noexcept {
     return *this;
 }
 
-// ── Compilation ──
+// ── 编译与链接 ──
 
 util::Result<uint32_t> Shader::compileShader(uint32_t type, const std::string& source) {
     uint32_t shader = glCreateShader(type);
@@ -85,7 +89,7 @@ util::Result<Shader> Shader::compile(const std::string& vertexSource,
 
     auto programResult = linkProgram(vertResult.value(), fragResult.value());
 
-    // Clean up individual shader objects (no longer needed after linking)
+    // 链接完成后删除独立 shader 对象（程序已持有副本）
     glDeleteShader(vertResult.value());
     glDeleteShader(fragResult.value());
 
@@ -96,7 +100,7 @@ util::Result<Shader> Shader::compile(const std::string& vertexSource,
     return Shader(programResult.value());
 }
 
-// ── Usage ──
+// ── 激活与 uniform 上传 ──
 
 void Shader::use() const {
     if (m_programId != 0) {
@@ -134,7 +138,7 @@ void Shader::setMat4(const std::string& name, const float* value) const {
     if (loc != -1) glUniformMatrix4fv(loc, 1, GL_FALSE, value);
 }
 
-// ── Fallback shader ──
+// ── 后备纯色 shader（编译失败时的兜底）──
 
 Shader FallbackShader::createFallback() {
     const std::string vertSrc = R"(
@@ -158,7 +162,7 @@ Shader FallbackShader::createFallback() {
     if (result.ok()) {
         return std::move(result.value());
     }
-    // If even the fallback fails, return an empty shader
+    // 连后备 shader 都失败则返回空程序
     MM_LOG_ERROR("Shader", "Fallback shader compilation failed!");
     return Shader(0);
 }

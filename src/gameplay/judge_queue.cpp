@@ -1,3 +1,8 @@
+// ──────────────────────────────────────────────────────
+//  judge_queue.cpp — 多列判定队列实现
+//  Tap/Hold 判定、Hold 尾部释放、过期自动 Miss、列分发与排序。
+// ──────────────────────────────────────────────────────
+
 #include "gameplay/judge_queue.h"
 #include "util/logger.h"
 
@@ -9,6 +14,7 @@ namespace melody_matrix::gameplay {
 JudgeQueue::JudgeQueue()
     : m_strategy(std::make_unique<StandardJudgeStrategy>()) {}
 
+/// 按 col 字段将音符分发到各列，并按时间升序排序
 void JudgeQueue::loadNotes(const std::vector<beatmap::Note>& notes) {
     // 清空所有列
     for (auto& col : m_columns) {
@@ -44,10 +50,12 @@ void JudgeQueue::loadNotes(const std::vector<beatmap::Note>& notes) {
                 " notes across " + std::to_string(m_columnCount) + " columns");
 }
 
+/// 替换判定策略；传入 nullptr 则回退到 StandardJudgeStrategy
 void JudgeQueue::setStrategy(std::unique_ptr<IJudgeStrategy> strategy) {
     m_strategy = strategy ? std::move(strategy) : std::make_unique<StandardJudgeStrategy>();
 }
 
+/// Hold 尾部时序判定：与 Tap 共用 Perfect/Good 窗口
 HoldReleaseResult JudgeQueue::judgeHoldTailTiming(int64_t dt, float od) const {
     const int32_t pw = m_strategy->perfectWindow(od);
     const int32_t gw = m_strategy->goodWindow(od);
@@ -56,6 +64,7 @@ HoldReleaseResult JudgeQueue::judgeHoldTailTiming(int64_t dt, float od) const {
     return HoldReleaseResult::Miss;
 }
 
+/// 提交 Hold 尾部判定：计算结果、推进队列、触发 onHoldTail
 HoldReleaseResult JudgeQueue::commitHoldTail(int32_t column, int64_t releaseTimeMs, float od) {
     auto& hold = m_activeHolds[column];
     if (!hold.holding) {
@@ -84,6 +93,7 @@ HoldReleaseResult JudgeQueue::commitHoldTail(int32_t column, int64_t releaseTime
     return result;
 }
 
+/// 每帧更新：Hold 尾部超时自动 Miss；Tap 过期自动 Miss
 void JudgeQueue::update(int64_t nowMs, float od) {
     const int64_t miss = m_strategy->missThreshold(od);
 
@@ -108,6 +118,7 @@ void JudgeQueue::update(int64_t nowMs, float od) {
     }
 }
 
+/// 列上按键按下：Tap 即时判定；Hold 进入 active 状态，尾部另行判定
 JudgmentResult JudgeQueue::onKeyPress(int64_t pressTimeMs, int32_t column, float od) {
     if (column < 0 || column >= m_columnCount) {
         MM_LOG_WARN("JudgeQueue", "onKeyPress: column " + std::to_string(column) +
@@ -203,6 +214,7 @@ JudgmentResult JudgeQueue::onKeyPress(int64_t pressTimeMs, int32_t column, float
     return JudgmentResult::Ignored;
 }
 
+/// 列上按键释放：提交 Hold 尾部判定
 HoldReleaseResult JudgeQueue::onKeyRelease(int64_t releaseTimeMs, int32_t column, float od) {
     if (column < 0 || column >= m_columnCount) {
         return HoldReleaseResult::Ignored;
@@ -210,6 +222,7 @@ HoldReleaseResult JudgeQueue::onKeyRelease(int64_t releaseTimeMs, int32_t column
     return commitHoldTail(column, releaseTimeMs, od);
 }
 
+/// 返回该列正在按住的 Hold 音符（head 在释放前不推进）
 const beatmap::Note* JudgeQueue::getActiveHold(int32_t column) const {
     if (column < 0 || column >= m_columnCount) {
         return nullptr;
@@ -254,6 +267,7 @@ size_t JudgeQueue::totalNotes() const {
     return total;
 }
 
+/// 提交 Tap 击中：触发 onHit 并推进列头
 void JudgeQueue::commitHit(int32_t column, JudgmentResult result, int64_t pressTimeMs) {
     const auto& note = m_columns[column].front();
 
@@ -270,6 +284,7 @@ void JudgeQueue::commitHit(int32_t column, JudgmentResult result, int64_t pressT
     m_columns[column].advance();
 }
 
+/// 发出 Miss 事件并推进列头
 void JudgeQueue::emitMiss(int32_t column) {
     const auto& note = m_columns[column].front();
 

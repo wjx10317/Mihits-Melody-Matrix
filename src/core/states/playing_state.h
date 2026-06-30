@@ -1,3 +1,9 @@
+// ============================================================
+// playing_state.h — 核心游玩状态
+//
+// 玩家游玩谱面的主状态：负责音频播放、判定队列、分数/连击/HP、
+// 列滚动、变阵过渡、Autoplay 模组与 ImGui HUD 覆盖层。
+// ============================================================
 #pragma once
 
 #include "core/game_state_base.h"
@@ -23,9 +29,13 @@ class PlayingState : public GameStateBase {
 public:
     PlayingState() = default;
 
+    /// 进入游玩：首次初始化或从暂停/重试恢复
     void onEnter() override;
+    /// 退出游玩：暂停音频与时钟（不清除渲染，供暂停覆盖层使用）
     void onExit() override;
+    /// 每帧更新：时钟同步、判定、滚动、变阵、HP、结束检测
     GameState update(float dt) override;
+    /// 渲染 HUD 与 ImGui 覆盖层
     void render() override;
 
     /// 立即处理一条键盘事件。eventTimeMs 是事件发生时换算出的歌曲时间。
@@ -56,19 +66,27 @@ public:
     void setMods(const std::vector<std::string>& modIds) { m_modIds = modIds; }
 
 private:
+    /// 首次加载谱面并初始化全部游戏子系统
     void initGameplay();
+    /// 重置全部子系统以支持重试（不重新解析谱面路径）
     void resetGameplay();
+    /// 渲染 OpenGL HUD（预留）
     void renderHUD();
+    /// 渲染 ImGui 覆盖层（前导倒计时、分数、偏移条、调试 HUD）
     void renderImGuiOverlay();
 
+    /// SDL 按键到谱面列的映射（随滚动窗口动态变化）
     struct KeyColumnMapping {
         int32_t sdlKey;
         int32_t column;
     };
+    /// 根据当前滚动窗口与列数生成按键映射
     std::vector<KeyColumnMapping> getKeyMapping() const;
 
+    /// 处理按键判定结果：更新分数/连击/HP/特效/偏移条
     void handlePressResult(gameplay::JudgmentResult result, int32_t column, int32_t row,
                            int64_t pressTime, int64_t noteTime, bool isTapNote = true);
+    /// 处理 Hold 尾部释放判定
     void handleHoldTailEvent(const gameplay::HoldTailEvent& evt);
 
     /// 歌曲时间 → 判定时间（用户 timing offset，默认 0）
@@ -76,9 +94,13 @@ private:
         return songTimeMs - m_timingOffsetMs;
     }
 
+    /// Autoplay 模组：自动在 note 时间点模拟按键
     void processAutoplay(int64_t nowMs, float od);
+    /// 根据列号查找对应按键索引（0~3），未映射返回 -1
     int keyIndexForColumn(int32_t column) const;
+    /// 按键是否应显示为按下状态（含 Autoplay 模拟）
     bool isKeyVisuallyDown(int keyIndex) const;
+    /// 变阵过渡期间是否应锁定判定（SCALE_ONLY 同形状除外）
     bool isFormationJudgmentBlocked(int64_t songTimeMs) const;
 
     // ── 游戏子系统 ──
@@ -167,11 +189,14 @@ private:
         }
     };
     ScrollWindow m_scrollWindow;
+    int64_t m_lastTransitionEndMs = 0;  ///< 上次滚动/变阵结束时刻（对齐 parser lastTransitionEnd）
 
     /// 检查是否需要滚动并触发
     void checkAndTriggerScroll(int64_t nowMs);
     /// 完成滚动，更新映射
     void completeScroll();
+    /// 变阵后将滚动窗口对齐到包含触发 note 的有效窗（与 parser chooseScrollActiveStart 一致）
+    void snapScrollWindowForFormation(int32_t newCols, int64_t formationTimeMs);
 
     // ── 前导/倒计时 ──
     static constexpr int64_t LEAD_IN_BEFORE_NOTE_MS = 3000;  ///< 第一个note前3秒开始游玩

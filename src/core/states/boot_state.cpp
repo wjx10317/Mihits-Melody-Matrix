@@ -1,3 +1,12 @@
+// ============================================================
+// boot_state.cpp — 启动状态实现
+//
+// 职责：
+//   - 播放 "Mi hits" 品牌加载动画
+//   - 后台线程扫描铺面（无 GL 上下文）
+//   - 主线程预加载分组背景纹理
+//   - 动画 + 加载均完成后过渡到 MainMenu
+// ============================================================
 #include "boot_state.h"
 #include "core/kernel.h"
 #include "core/states/song_select_state.h"
@@ -15,6 +24,7 @@ namespace melody_matrix::core {
 //  生命周期
 // ══════════════════════════════════════════════════════════════════════════════
 
+/// 进入启动状态，重置所有动画与加载标志
 void BootState::onEnter() {
     MM_LOG_INFO("Boot", "Entering Boot state");
     m_time = 0.0f;
@@ -24,12 +34,14 @@ void BootState::onEnter() {
     m_texturesLoaded = false;
 }
 
+/// 退出启动状态，阻塞等待后台加载线程完成
 void BootState::onExit() {
     MM_LOG_INFO("Boot", "Exiting Boot state");
     // 确保加载线程完成
     m_loader.wait();
 }
 
+/// 每帧更新：启动异步扫描、主线程纹理预加载、检测过渡条件
 GameState BootState::update(float dt) {
     m_time += dt;
 
@@ -80,11 +92,13 @@ GameState BootState::update(float dt) {
 //  渲染
 // ══════════════════════════════════════════════════════════════════════════════
 
+/// 渲染加载动画与进度条
 void BootState::render() {
     renderLoadingAnimation();
     renderProgressBar(m_loader.progress());
 }
 
+/// 绘制 "Mi hits" 品牌动画（ImDrawList 逐段路径绘制 + 光谱渐变）
 void BootState::renderLoadingAnimation() {
     using namespace ui;
 
@@ -323,6 +337,7 @@ void BootState::renderLoadingAnimation() {
     }
 }
 
+/// 绘制底部圆角进度条（青→紫渐变）与百分比文字
 void BootState::renderProgressBar(float progress) {
     ImVec2 displaySize = ImGui::GetIO().DisplaySize;
     float W = displaySize.x;

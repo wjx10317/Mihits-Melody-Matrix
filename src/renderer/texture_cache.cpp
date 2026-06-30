@@ -1,3 +1,7 @@
+// ============================================================
+// texture_cache.cpp — 全局纹理缓存实现（单例）
+// ============================================================
+
 #include "texture_cache.h"
 #include "util/logger.h"
 
@@ -10,6 +14,7 @@ TextureCache& TextureCache::instance() {
     return s_instance;
 }
 
+/// 按路径加载；命中缓存直接返回指针
 Texture2D* TextureCache::load(const std::string& path, bool genMipmap) {
     auto it = m_cache.find(path);
     if (it != m_cache.end()) {
@@ -26,6 +31,11 @@ Texture2D* TextureCache::load(const std::string& path, bool genMipmap) {
     return nullptr;
 }
 
+void TextureCache::unload(const std::string& path) {
+    m_cache.erase(path);
+}
+
+/// 仅查询，不触发加载
 Texture2D* TextureCache::get(const std::string& path) {
     auto it = m_cache.find(path);
     if (it != m_cache.end()) {
@@ -53,6 +63,7 @@ void TextureCache::preloadRange(const std::vector<std::string>& paths, int start
                 start, end, m_cache.size());
 }
 
+/// 滑动窗口卸载：保留 centerIndex ± radius 范围内的路径
 void TextureCache::unloadDistant(const std::vector<std::string>& paths, int centerIndex, int radius) {
     // 构建需要保留的路径集合
     std::unordered_set<std::string> keepPaths;

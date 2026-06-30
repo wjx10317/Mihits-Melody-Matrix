@@ -1,6 +1,7 @@
 #include "beatmap/osu_parser.h"
 #include "beatmap/beatmap_parser.h"
 #include "beatmap/mma_parser.h"
+#include "beatmap/scroll_simulation.h"
 #include "util/logger.h"
 #include "util/error_codes.h"
 
@@ -8,10 +9,24 @@
 #include <cmath>
 #include <algorithm>
 
+// ──────────────────────────────────────────────────────
+//  osu_parser.cpp — osu! 谱面转换实现
+//
+//  主要算法块：
+//    1. makeConvertedNotes      — HitObject → ConvertedNote + 时间窗口
+//    2. generateFormationsAndFilter — 密度驱动阵型、滚动、scheduleTransition
+//    3. arrangeRemainingNotes   — 同拍冲突消解、稳定列/边缘列编排
+//    4. resolveScrollConflict   — 滚动时序可达性，不可达则 dropped
+//    5. scroll_simulation.h     — 滚动公式（本文件调用，定义见头文件）
+//
+//  坐标：osu 512×384 → floor(x/512×cols), floor(y/384×rows)
+// ──────────────────────────────────────────────────────
+
 namespace melody_matrix::beatmap {
 
-// ── Helpers ──
+// ── 字符串与曲线解析工具 ──
 
+/// 去除首尾空白
 static std::string trim(const std::string& s) {
     auto start = s.find_first_not_of(" \t\r\n");
     if (start == std::string::npos) return "";
@@ -47,8 +62,9 @@ static void parseSliderCurve(const std::string& curveStr,
     }
 }
 
-// ── Coordinate conversion ──
+// ── 像素坐标 → 网格坐标 ──
 
+/// osu 像素 (x,y) 映射到 rows×cols 网格；边界用 511.999/383.999 clamp
 void OsuParser::pixelToGrid(int x, int y, int32_t rows, int32_t cols,
                              int32_t& outRow, int32_t& outCol) {
     // 对齐参考转换器：用 511.999/383.999 clamp，避免边界像素溢出
@@ -60,8 +76,9 @@ void OsuParser::pixelToGrid(int x, int y, int32_t rows, int32_t cols,
     outRow = std::max(0, std::min(outRow, rows - 1));
 }
 
-// ── TimingPoint helpers ──
+// ── TimingPoint 解析与 BPM/SV 查询 ──
 
+/// 解析 [TimingPoints] 段 CSV 行，区分独立型/继承型
 void OsuParser::parseTimingPoints(const std::vector<std::string>& lines) {
     m_timingPoints.clear();
     for (const auto& line : lines) {
@@ -100,8 +117,9 @@ const OsuParser::TimingPoint* OsuParser::getBaseTimingPoint(int64_t time) const 
     return result;
 }
 
+/// 指定时刻的 ms/beat：独立型基准 × 继承型 SV 倍率（msPerBeat<0 时）
 double OsuParser::getMsPerBeatAt(int64_t time) const {
-    // 找最近的独立型 TimingPoint 作为基准
+    // 找最近的独立型 TimingPoint 作为 BPM 基准
     const TimingPoint* base = getBaseTimingPoint(time);
     if (!base) return 60000.0 / 120.0; // 默认 120 BPM = 500ms/beat
 
@@ -124,8 +142,28 @@ double OsuParser::getMsPerBeatAt(int64_t time) const {
     return base->msPerBeat;
 }
 
-// ── HitObject parsing ──
+/// BPM → 编排细分分母：≥140 → 1/3；100–140 → 1/4；<100 → 1/6。
+double OsuParser::arrangeRhythmSubdivDenominator(double bpm) const {
+    if (bpm >= kArrangeSubdivBpmHigh) {
+        return 3.0;
+    }
+    if (bpm >= kArrangeSubdivBpmMid) {
+        return 4.0;
+    }
+    return 6.0;
+}
 
+int64_t OsuParser::arrangeRhythmWindowMs(int64_t timeMs) const {
+    const TimingPoint* base = getBaseTimingPoint(timeMs);
+    const double msPerBeat = base ? base->msPerBeat : 60000.0 / 120.0;
+    const double bpm = 60000.0 / msPerBeat;
+    const double denom = arrangeRhythmSubdivDenominator(bpm);
+    return static_cast<int64_t>(std::llround(msPerBeat / denom));
+}
+
+// ── HitObject 解析 ──
+
+/// 解析 [HitObjects]：Circle/Slider/Spinner 字段与曲线点
 void OsuParser::parseHitObjects(const std::vector<std::string>& lines) {
     m_rawObjects.clear();
     for (const auto& line : lines) {
@@ -173,8 +211,9 @@ void OsuParser::parseHitObjects(const std::vector<std::string>& lines) {
     MM_LOG_INFO("OsuParser", "Parsed " + std::to_string(m_rawObjects.size()) + " hit objects");
 }
 
-// ── 转换辅助（对齐参考转换器 osz_to_mma.cpp）──
+// ── 转换辅助（对齐 osz_to_mma.cpp）──
 
+/// 指定时刻的 Slider 速度倍率（继承型 TP：-100/msPerBeat）
 double OsuParser::getSliderVelocityAt(int64_t time) const {
     // 获取继承型 TimingPoint 的 SV 倍率（-100 / msPerBeat）
     double sliderVelocity = 1.0;
@@ -187,6 +226,7 @@ double OsuParser::getSliderVelocityAt(int64_t time) const {
     return sliderVelocity;
 }
 
+/// 构造 note 显示/判定窗口：displayStart、earliestHit、latestHit
 OsuParser::NoteWindow OsuParser::makeWindow(int64_t time) const {
     // 计算 note 的显示/判定时间窗口（对齐参考转换器 makeWindow）
     double approachMs = std::max(0.0, 1800.0 - m_ar * 120.0);
@@ -199,6 +239,7 @@ OsuParser::NoteWindow OsuParser::makeWindow(int64_t time) const {
     return w;
 }
 
+/// Slider 结束时间：length×slides / (SliderMultiplier×100×SV) × beatLength
 int64_t OsuParser::estimateSliderEndTime(const RawHitObject& obj) const {
     // 对齐参考转换器 estimateSliderEndTime 公式
     double beatLength = getMsPerBeatAt(obj.time);
@@ -208,6 +249,12 @@ int64_t OsuParser::estimateSliderEndTime(const RawHitObject& obj) const {
     int64_t duration = static_cast<int64_t>(std::llround(beats * beatLength));
     return obj.time + std::max<int64_t>(1, duration);
 }
+
+// ══════════════════════════════════════════════════════
+//  makeConvertedNotes — RawHitObject → ConvertedNote
+//  Circle→Tap，Slider→Hold（估算 endTime），Spinner→Tap（中心）
+//  同时计算击打窗口与 Hold 释放窗口（releaseWindow）
+// ══════════════════════════════════════════════════════
 
 std::vector<OsuParser::ConvertedNote> OsuParser::makeConvertedNotes() const {
     // RawHitObject → ConvertedNote（含窗口计算 + slider endTime 估算）
@@ -240,6 +287,7 @@ std::vector<OsuParser::ConvertedNote> OsuParser::makeConvertedNotes() const {
     return notes;
 }
 
+/// ±1500ms 窗口内 note 密度 → 目标 rows×cols（2×3 ~ 4×6）
 OsuParser::MatrixShape OsuParser::targetShapeForDensity(const std::vector<ConvertedNote>& notes, size_t index) const {
     // 基于 ±1500ms 窗口内 note 数量映射目标阵型
     if (notes.empty()) return {kBaseRows, kBaseCols};
@@ -253,7 +301,7 @@ OsuParser::MatrixShape OsuParser::targetShapeForDensity(const std::vector<Conver
     MatrixShape s;
     if (dps < 1.5)      s = {2, 3};
     else if (dps < 2.5) s = {3, 4};
-    else if (dps < 4.0) s = {4, 5};
+    else if (dps < 3.0) s = {4, 5};
     else                s = {4, 6};
     return s;
 }
@@ -313,9 +361,40 @@ int OsuParser::nextKeptIndex(const std::vector<ConvertedNote>& notes, size_t aft
     return -1;
 }
 
+int OsuParser::mappedColForShape(int x, int cols) {
+    const double clampedX = std::max(0.0, std::min(511.999, static_cast<double>(x)));
+    return std::max(0, std::min(static_cast<int>(std::floor(clampedX / 512.0 * cols)), cols - 1));
+}
+
 int64_t OsuParser::blockingLatestHit(const ConvertedNote& note) {
     // Hold 取释放窗口的 latestHit，Tap 取判定窗口的 latestHit
     return note.type == 'H' ? note.releaseWindow.latestHit : note.window.latestHit;
+}
+
+bool OsuParser::downgradeHoldToTapIfSafe(ConvertedNote& note, int64_t cutoffMs) {
+    if (note.type != 'H' || note.window.latestHit > cutoffMs) {
+        return false;
+    }
+
+    note.type = 'T';
+    note.endTime = note.time;
+    note.releaseWindow = note.window;
+    return true;
+}
+
+int OsuParser::blockingConflictIndexBefore(const std::vector<ConvertedNote>& notes,
+                                           size_t before, int64_t cutoffMs) {
+    int conflict = -1;
+    int64_t latestBlock = cutoffMs;
+    for (size_t i = 0; i < before; ++i) {
+        if (notes[i].dropped) continue;
+        const int64_t latestHit = blockingLatestHit(notes[i]);
+        if (latestHit > latestBlock) {
+            latestBlock = latestHit;
+            conflict = static_cast<int>(i);
+        }
+    }
+    return conflict;
 }
 
 int64_t OsuParser::maxBlockingLatestHitBefore(const std::vector<ConvertedNote>& notes, size_t before) {
@@ -344,6 +423,102 @@ bool OsuParser::isDenseRhythmAround(const std::vector<ConvertedNote>& notes, siz
     return false;
 }
 
+int64_t OsuParser::scrollStartMsForNote(const std::vector<ConvertedNote>& notes, size_t noteIndex,
+                                        const MatrixShape& holdShape, int holdWindowStart,
+                                        int64_t lastTransitionEnd) const {
+    // 滚动最早开始时刻 = max(approach 触发, 变阵结束, 窗内 Hold 尾部阻塞)
+    const int holdWindowEnd = holdWindowStart + kActiveCols - 1;
+    const int64_t targetTime = notes[noteIndex].time;
+    const int64_t triggerMs = scrollTriggerMs(targetTime, lastTransitionEnd, m_ar);
+
+    int64_t readyMs = triggerMs;
+    for (size_t j = 0; j < noteIndex; ++j) {
+        if (notes[j].dropped || notes[j].type != 'H') {
+            continue;
+        }
+        if (notes[j].time >= targetTime) {
+            continue;
+        }
+
+        const int col = mappedColForShape(notes[j].x, holdShape.cols);
+        if (col < holdWindowStart || col > holdWindowEnd) {
+            continue;
+        }
+
+        // releaseWindow 由 estimateSliderEndTime → makeWindow(endTime) 得出，即 osu 滑条实际尾长。
+        if (notes[j].releaseWindow.latestHit <= triggerMs) {
+            continue;
+        }
+
+        readyMs = std::max(readyMs, notes[j].releaseWindow.latestHit);
+    }
+
+    return readyMs;
+}
+
+// ══════════════════════════════════════════════════════
+//  resolveScrollConflict — 解析期滚动冲突消解
+//  目标列须在 nextActiveStart 窗内；scrollStart ≤ earliestHit；
+//  scrollEnd ≤ earliestHit，否则标记 dropped。
+//  公式来自 scroll_simulation.h（scrollDurationMs 等）。
+// ══════════════════════════════════════════════════════
+
+bool OsuParser::resolveScrollConflict(std::vector<ConvertedNote>& notes, size_t noteIndex,
+                                      const MatrixShape& holdShape, int holdWindowStart,
+                                      const MatrixShape& targetShape, int nextActiveStart,
+                                      int64_t lastTransitionEnd, int64_t& outScrollEndMs) {
+    const int targetCol = mappedColForShape(notes[noteIndex].x, targetShape.cols);
+    if (targetCol < nextActiveStart || targetCol >= nextActiveStart + kActiveCols) {
+        notes[noteIndex].dropped = true;
+        return false;
+    }
+
+    const int64_t targetTime = notes[noteIndex].time;
+    const int64_t earliestHit = notes[noteIndex].window.earliestHit;
+    const int64_t scrollStartMs = scrollStartMsForNote(
+        notes, noteIndex, holdShape, holdWindowStart, lastTransitionEnd);
+
+    if (scrollStartMs > earliestHit) {
+        notes[noteIndex].dropped = true;
+        return false;
+    }
+
+    const int64_t duration = scrollDurationMs(targetTime, scrollStartMs, m_od);
+    const int64_t scrollEndMs = scrollStartMs + duration;
+    if (scrollEndMs > earliestHit) {
+        notes[noteIndex].dropped = true;
+        return false;
+    }
+
+    outScrollEndMs = scrollEndMs;
+    return true;
+}
+
+/// 在 note 前瞻窗内用 chooseScrollWindowStart 选 nextActiveStart
+int OsuParser::chooseScrollActiveStart(const std::vector<ConvertedNote>& notes, size_t noteIndex,
+                                       const MatrixShape& shape, int currentStart, int targetCol) const {
+    std::vector<Note> windowNotes;
+    windowNotes.reserve(notes.size() - noteIndex);
+    for (size_t i = noteIndex; i < notes.size(); ++i) {
+        if (notes[i].dropped) {
+            continue;
+        }
+        Note n;
+        n.time = notes[i].time;
+        n.col = mappedColForShape(notes[i].x, shape.cols);
+        windowNotes.push_back(n);
+    }
+    return chooseScrollWindowStart(currentStart, targetCol, shape.cols, kActiveCols,
+                                   notes[noteIndex].time, windowNotes);
+}
+
+void OsuParser::restoreNoteMutations(std::vector<ConvertedNote>& notes,
+                                      const std::vector<NoteRestore>& restore) {
+    for (auto it = restore.rbegin(); it != restore.rend(); ++it) {
+        notes[it->index] = it->note;
+    }
+}
+
 bool OsuParser::hasStableFormationTarget(const std::vector<ConvertedNote>& notes, size_t index,
                                           const MatrixShape& current, const MatrixShape& target) const {
     // 检查前瞻窗口内是否有足够多数 note 稳定指向同一目标阵型
@@ -365,6 +540,7 @@ bool OsuParser::hasStableFormationTarget(const std::vector<ConvertedNote>& notes
     return considered >= kMinStableTargetNotes && targetVotes * 2 >= considered + 1;
 }
 
+/// 在 note 判定/显示窗口前插入变阵动画；冲突时降级 Hold→Tap 或 dropped
 bool OsuParser::scheduleTransitionBefore(std::vector<ConvertedNote>& notes, size_t noteIndex,
                                            int64_t durationMs, bool includesFormation,
                                            int64_t lastTransitionEnd, int maxDrops, int64_t& startMs) const {
@@ -376,28 +552,45 @@ bool OsuParser::scheduleTransitionBefore(std::vector<ConvertedNote>& notes, size
         ? notes[noteIndex].window.displayStart
         : notes[noteIndex].window.earliestHit;
     std::vector<size_t> droppedForAttempt;
+    std::vector<NoteRestore> mutatedForAttempt;
 
     while (true) {
-        const int prevIndex = previousKeptIndex(notes, noteIndex);
+        const int64_t latestStart = std::max<int64_t>(lastTransitionEnd, endLimit - durationMs);
         const int64_t safeAfter = maxBlockingLatestHitBefore(notes, noteIndex);
         const int64_t earliestStart = std::max(safeAfter, lastTransitionEnd);
         if (endLimit - earliestStart >= durationMs) {
             startMs = std::max(earliestStart, endLimit - durationMs);
             return true;
         }
-        if (prevIndex >= 0 && maxDrops > 0) {
-            notes[prevIndex].dropped = true;
-            droppedForAttempt.push_back(static_cast<size_t>(prevIndex));
+
+        const int conflictIndex = blockingConflictIndexBefore(notes, noteIndex, latestStart);
+        if (conflictIndex >= 0) {
+            auto& conflict = notes[static_cast<size_t>(conflictIndex)];
+            mutatedForAttempt.push_back(NoteRestore{static_cast<size_t>(conflictIndex), conflict});
+            if (downgradeHoldToTapIfSafe(conflict, latestStart)) {
+                continue;
+            }
+
+            if (maxDrops <= 0) {
+                restoreNoteMutations(notes, mutatedForAttempt);
+                for (size_t index : droppedForAttempt) {
+                    notes[index].dropped = false;
+                }
+                return false;
+            }
+
+            conflict.dropped = true;
+            droppedForAttempt.push_back(static_cast<size_t>(conflictIndex));
             --maxDrops;
             continue;
         }
+
         if (endLimit >= durationMs && lastTransitionEnd <= endLimit - durationMs) {
             const int64_t fallbackStart = std::max<int64_t>(lastTransitionEnd, endLimit - durationMs);
             std::vector<size_t> holdsToDowngrade;
             bool hasUndowngradableConflict = false;
 
-            // Fallback may only ignore conflicts that can be made non-blocking.
-            // A preceding Hold can be softened to Tap, but Tap conflicts must still block.
+            // Fallback：仅当冲突 Hold 可降级为 Tap 时才忽略 blocking
             for (size_t i = 0; i < noteIndex; ++i) {
                 if (notes[i].dropped) continue;
                 if (blockingLatestHit(notes[i]) <= fallbackStart) continue;
@@ -421,20 +614,27 @@ bool OsuParser::scheduleTransitionBefore(std::vector<ConvertedNote>& notes, size
             }
         }
         if (endLimit >= durationMs && lastTransitionEnd <= endLimit - durationMs) {
-            // Previous fallback path was unsafe because it bypassed safeAfter.
-            // Restore dropped notes before failing when conflicts cannot be downgraded.
+            // 上一 fallback 路径不安全（绕过 safeAfter）：恢复后失败
+            restoreNoteMutations(notes, mutatedForAttempt);
             for (size_t index : droppedForAttempt) {
                 notes[index].dropped = false;
             }
             return false;
         }
         // 无法安排：恢复本次尝试丢弃的 note
+        restoreNoteMutations(notes, mutatedForAttempt);
         for (size_t index : droppedForAttempt) {
             notes[index].dropped = false;
         }
         return false;
     }
 }
+
+// ══════════════════════════════════════════════════════
+//  generateFormationsAndFilter — 动态呼吸矩阵主循环
+//  逐步扫描 note：密度→目标阵型；冷却/稳定度/密集节奏门控；
+//  纯滚动 vs 变阵+滚动；scheduleTransitionBefore 安排 Formation。
+// ══════════════════════════════════════════════════════
 
 std::vector<Formation> OsuParser::generateFormationsAndFilter(std::vector<ConvertedNote>& notes) {
     // 生成 formations 并过滤冲突 note（对齐参考转换器：稳定性检查 + 居中 + maxDrops + 排序）
@@ -461,68 +661,91 @@ std::vector<Formation> OsuParser::generateFormationsAndFilter(std::vector<Conver
 
         MatrixShape target = targetShapeForDensity(notes, i);
         const bool denseRhythm = isDenseRhythmAround(notes, i);
+        const bool highDensityTarget = target.cols >= kHighDensityCols;
         bool needsFormation = target.rows != current.rows || target.cols != current.cols;
-        // 密集节奏/冷却期/不稳定阵型时放弃变换
+        // 高密度目标允许在密集节奏中变阵，否则 6 列段会被 denseRhythm 长时间压住。
         if (needsFormation && (
-                denseRhythm ||
+                (denseRhythm && !highDensityTarget) ||
                 notes[i].time - lastFormationTime < kFormationCooldownMs ||
                 !hasStableFormationTarget(notes, i, current, target))) {
             target = current;
             needsFormation = false;
         }
 
-        // 居中：将 activeStart 限制在合法范围内，变换时取目标列中点
-        const int maxActiveStart = std::max(0, target.cols - kActiveCols);
-        activeStart = std::max(0, std::min(activeStart, maxActiveStart));
-        const int targetCol = static_cast<int>(std::floor(std::max(0.0, std::min(511.999, static_cast<double>(notes[i].x))) / 512.0 * target.cols));
-        const int clampedTargetCol = std::max(0, std::min(targetCol, target.cols - 1));
+        // 将 activeStart 限制在当前阵型合法范围；变阵/滚动目标窗在 target 空间单独计算。
+        const int currentMaxActiveStart = std::max(0, current.cols - kActiveCols);
+        activeStart = std::max(0, std::min(activeStart, currentMaxActiveStart));
+        notes[i].scrollWindowStart = activeStart;
+        const int clampedTargetCol = mappedColForShape(notes[i].x, target.cols);
         bool needsScroll = false;
         int nextActiveStart = activeStart;
         if (needsFormation) {
             if (target.cols > kActiveCols) {
-                nextActiveStart = std::max(0, std::min(clampedTargetCol - kActiveCols / 2, maxActiveStart));
+                nextActiveStart = chooseScrollActiveStart(notes, i, target, activeStart, clampedTargetCol);
             } else {
                 nextActiveStart = 0;
             }
-        } else if (!denseRhythm && target.cols > kActiveCols) {
+        } else if (target.cols > kActiveCols) {
             if (clampedTargetCol < activeStart) {
                 needsScroll = true;
-                nextActiveStart = std::max(0, std::min(clampedTargetCol, maxActiveStart));
+                nextActiveStart = chooseScrollActiveStart(notes, i, target, activeStart, clampedTargetCol);
             } else if (clampedTargetCol >= activeStart + kActiveCols) {
                 needsScroll = true;
-                nextActiveStart = std::max(0, std::min(clampedTargetCol - kActiveCols + 1, maxActiveStart));
+                nextActiveStart = chooseScrollActiveStart(notes, i, target, activeStart, clampedTargetCol);
             }
         }
 
         if (!needsFormation && !needsScroll) continue;
 
-        const int64_t duration = std::max(
-            needsFormation ? static_cast<int64_t>(kFormationDurationMs) : 0,
-            needsScroll ? static_cast<int64_t>(kScrollDurationMs) : 0);
+        // ── 仅滚动（不变阵）──
+        if (!needsFormation && needsScroll) {
+            int64_t scrollEndMs = 0;
+            if (!resolveScrollConflict(
+                    notes, i, current, activeStart, target, nextActiveStart,
+                    lastTransitionEnd, scrollEndMs)) {
+                continue;
+            }
+            notes[i].scrollWindowStart = nextActiveStart;
+            lastTransitionEnd = scrollEndMs;
+            activeStart = nextActiveStart;
+            continue;
+        }
+
+        // ── 变阵前若需滚动，先 resolveScrollConflict ──
+        if (needsScroll) {
+            int64_t scrollEndMs = 0;
+            if (!resolveScrollConflict(
+                    notes, i, current, activeStart, target, nextActiveStart,
+                    lastTransitionEnd, scrollEndMs)) {
+                continue;
+            }
+            lastTransitionEnd = std::max(lastTransitionEnd, scrollEndMs);
+        }
+
+        // ── 安排变阵动画并写入 Formation ──
+        const int64_t duration = static_cast<int64_t>(kFormationDurationMs);
 
         int64_t transitionStart = 0;
-        // 矩阵变换最多丢弃 5 个前向 note（也允许丢弃 Hold），滚动不丢弃 note
-        const int maxDrops = needsFormation ? 5 : 0;
+        const int maxDrops = 5;
         if (!scheduleTransitionBefore(
-                notes, i, duration, needsFormation, lastTransitionEnd, maxDrops, transitionStart)) {
+                notes, i, duration, true, lastTransitionEnd, maxDrops, transitionStart)) {
             continue;
         }
 
         lastTransitionEnd = transitionStart + duration;
         activeStart = nextActiveStart;
-        if (needsFormation) {
-            const int type = transformTypeFor(current, target);
-            Formation f;
-            f.time = transitionStart;
-            f.rows = target.rows;
-            f.cols = target.cols;
-            f.transformType = type;
-            f.transformDurationMs = kFormationDurationMs;
-            f.blockSize = static_cast<float>(kDefaultBlockSize);
-            formations.push_back(f);
-            current = target;
-            lastFormationTime = transitionStart;
-        }
+        notes[i].scrollWindowStart = nextActiveStart;
+        const int type = transformTypeFor(current, target);
+        Formation f;
+        f.time = transitionStart;
+        f.rows = target.rows;
+        f.cols = target.cols;
+        f.transformType = type;
+        f.transformDurationMs = kFormationDurationMs;
+        f.blockSize = static_cast<float>(kDefaultBlockSize);
+        formations.push_back(f);
+        current = target;
+        lastFormationTime = transitionStart;
     }
 
     // 按时间排序
@@ -530,6 +753,311 @@ std::vector<Formation> OsuParser::generateFormationsAndFilter(std::vector<Conver
               [](const Formation& a, const Formation& b) { return a.time < b.time; });
     MM_LOG_INFO("OsuParser", "Generated " + std::to_string(formations.size()) + " formations");
     return formations;
+}
+
+// ── arrangeRemainingNotes 辅助：稳定列 / 边缘列判定 ──
+
+/// 滚动窗内「稳定列」区间（滚后仍留在窗内）：如 0-3→1-3，1-4→2-3
+void OsuParser::stableArrangeColRange(int totalCols, int winStart, int winEnd,
+                                      int& stableStart, int& stableEnd) {
+    stableStart = winStart;
+    stableEnd = winEnd;
+    if (totalCols <= kActiveCols || winEnd <= winStart) {
+        return;
+    }
+
+    if (winStart == 0) {
+        stableStart = 1;
+        stableEnd = winEnd;
+    } else if (winEnd == totalCols - 1) {
+        stableEnd = winEnd - 1;
+        stableStart = (winStart == 1) ? 2 : winStart;
+    } else {
+        stableStart = winStart + 1;
+        stableEnd = winEnd - 1;
+    }
+
+    stableStart = std::max(winStart, std::min(stableStart, winEnd));
+    stableEnd = std::max(stableStart, std::min(stableEnd, winEnd));
+}
+
+bool OsuParser::isStableArrangeCol(int col, int stableStart, int stableEnd) {
+    return col >= stableStart && col <= stableEnd;
+}
+
+bool OsuParser::isScrollEdgeCol(int col, int winStart, int winEnd,
+                                int stableStart, int stableEnd) {
+    return col >= winStart && col <= winEnd && !isStableArrangeCol(col, stableStart, stableEnd);
+}
+
+bool OsuParser::moveAffectsScroll(int newCol, int winStart, int winEnd,
+                                  int stableStart, int stableEnd,
+                                  int nextWinStart, int64_t nextScrollStartMs,
+                                  int64_t latestHit) {
+    if (!isScrollEdgeCol(newCol, winStart, winEnd, stableStart, stableEnd)) {
+        return false;
+    }
+    if (nextWinStart < 0) {
+        return false;
+    }
+    const int nextWinEnd = nextWinStart + kActiveCols - 1;
+    if (newCol >= nextWinStart && newCol <= nextWinEnd) {
+        return false;
+    }
+    return nextScrollStartMs < latestHit;
+}
+
+// ══════════════════════════════════════════════════════
+//  arrangeRemainingNotes — 滚动/变阵完成后的行列编排
+//  按时间批次处理同拍 note：列密度超阈值时重定位；
+//  稳定列优先；边缘列+后续滚动冲突时回退稳定列；
+//  Hold 占列至 endTime（colHoldUntil）。
+// ══════════════════════════════════════════════════════
+
+void OsuParser::arrangeRemainingNotes(std::vector<ConvertedNote>& notes,
+                                      const std::vector<Formation>& formations) const {
+    struct AssignEntry {
+        size_t index = 0;
+        int64_t time = 0;
+        char type = 'T';
+        int64_t endTime = 0;
+        int64_t latestHit = 0;
+        int scrollWindowStart = 0;
+        int32_t origRow = 0;
+        int32_t origCol = 0;
+        int32_t row = 0;
+        int32_t col = 0;
+    };
+
+    /// 同列在 ±节奏窗内的 note 数量（含当前）；窗 = 当前 BPM 下需编排的拍子细分时长
+    auto colLoadInWindow = [this](const std::vector<AssignEntry>& assigned, size_t before,
+                                  int64_t time, int32_t col, int maxCols) {
+        const int64_t rhythmWindowMs = arrangeRhythmWindowMs(time);
+        int load = 0;
+        for (size_t p = 0; p < before; ++p) {
+            const auto& prev = assigned[p];
+            if (prev.col != col) {
+                continue;
+            }
+            if (std::llabs(prev.time - time) > rhythmWindowMs) {
+                continue;
+            }
+            if (col < 0 || col >= maxCols) {
+                continue;
+            }
+            ++load;
+        }
+        return load;
+    };
+
+    /// 同批次内 (row,col) 是否已被占用
+    auto cellTaken = [](const std::vector<AssignEntry>& assigned, size_t batchBegin, size_t before,
+                        int32_t row, int32_t col) {
+        for (size_t s = batchBegin; s < before; ++s) {
+            if (assigned[s].row == row && assigned[s].col == col) {
+                return true;
+            }
+        }
+        return false;
+    };
+
+    /// 收集未 dropped 的 note，按 formations 时刻 pixelToGrid 得 origRow/origCol
+    std::vector<AssignEntry> entries;
+    entries.reserve(notes.size());
+    for (size_t i = 0; i < notes.size(); ++i) {
+        if (notes[i].dropped) {
+            continue;
+        }
+        AssignEntry entry;
+        entry.index = i;
+        entry.time = notes[i].time;
+        entry.type = notes[i].type;
+        entry.endTime = notes[i].endTime;
+        entry.latestHit = notes[i].window.latestHit;
+        entry.scrollWindowStart = notes[i].scrollWindowStart;
+        const MatrixShape shape = shapeAtTime(formations, entry.time);
+        pixelToGrid(notes[i].x, notes[i].y, shape.rows, shape.cols, entry.origRow, entry.origCol);
+        entries.push_back(entry);
+    }
+
+    /// 为 entry 在 col 上选首个未占用的 row（优先 preferredRow）
+    auto pickRow = [&](const AssignEntry& entry, const MatrixShape& shape, int32_t col,
+                       size_t batchBegin, size_t before, int32_t preferredRow) {
+        if (!cellTaken(entries, batchBegin, before, preferredRow, col)) {
+            return preferredRow;
+        }
+        for (int r = 0; r < shape.rows; ++r) {
+            if (!cellTaken(entries, batchBegin, before, static_cast<int32_t>(r), col)) {
+                return static_cast<int32_t>(r);
+            }
+        }
+        return preferredRow;
+    };
+
+    /// 稳定列区间是否全部达到密度阈值
+    auto stableColsOverloaded = [&](int stableStart, int stableEnd, int maxCols, size_t before,
+                                    int64_t time, int threshold) {
+        for (int c = stableStart; c <= stableEnd; ++c) {
+            if (colLoadInWindow(entries, before, time, static_cast<int32_t>(c), maxCols) < threshold) {
+                return false;
+            }
+        }
+        return true;
+    };
+
+    std::vector<int64_t> colHoldUntil;
+    int relocatedCount = 0;
+
+    /// 按相同 time 分批（同拍 note 一起编排）
+    size_t batchBegin = 0;
+    while (batchBegin < entries.size()) {
+        size_t batchEnd = batchBegin + 1;
+        while (batchEnd < entries.size() && entries[batchEnd].time == entries[batchBegin].time) {
+            ++batchEnd;
+        }
+
+        for (size_t b = batchBegin; b < batchEnd; ++b) {
+            auto& entry = entries[b];
+            const MatrixShape shape = shapeAtTime(formations, entry.time);
+            if (shape.cols <= 0 || shape.rows <= 0) {
+                entry.row = entry.origRow;
+                entry.col = entry.origCol;
+                continue;
+            }
+
+            if (static_cast<int>(colHoldUntil.size()) < shape.cols) {
+                colHoldUntil.assign(static_cast<size_t>(shape.cols), 0);
+            }
+
+            const int maxStart = std::max(0, shape.cols - kActiveCols);
+            const int winStart = std::max(0, std::min(entry.scrollWindowStart, maxStart));
+            const int winEnd = shape.cols <= kActiveCols
+                ? shape.cols - 1
+                : std::min(shape.cols - 1, winStart + kActiveCols - 1);
+            int stableStart = winStart;
+            int stableEnd = winEnd;
+            if (shape.cols > kActiveCols) {
+                stableArrangeColRange(shape.cols, winStart, winEnd, stableStart, stableEnd);
+            }
+
+            entry.row = entry.origRow;
+            entry.col = std::max(winStart, std::min(entry.origCol, winEnd));
+
+            int nextWinStart = -1;
+            int64_t nextScrollStartMs = INT64_MAX;
+            if (shape.cols > kActiveCols) {
+                for (size_t j = b + 1; j < entries.size(); ++j) {
+                    const MatrixShape futureShape = shapeAtTime(formations, entries[j].time);
+                    if (futureShape.cols <= kActiveCols) {
+                        continue;
+                    }
+                    if (entries[j].scrollWindowStart != winStart) {
+                        nextWinStart = entries[j].scrollWindowStart;
+                        const MatrixShape holdShape = futureShape;
+                        nextScrollStartMs = scrollStartMsForNote(
+                            notes, entries[j].index, holdShape, winStart, 0);
+                        break;
+                    }
+                }
+            }
+
+            const int32_t activeCol = entry.col;
+            const int origColLoad =
+                colLoadInWindow(entries, b, entry.time, activeCol, shape.cols);
+            const bool origColOverloaded =
+                origColLoad + 1 >= kArrangeColDensityThreshold;
+
+            if (origColOverloaded) {
+                const bool origInStable =
+                    activeCol >= stableStart && activeCol <= stableEnd;
+                if (shape.cols > kActiveCols && origInStable &&
+                    stableColsOverloaded(stableStart, stableEnd, shape.cols, b, entry.time,
+                                         kArrangeColDensityThreshold)) {
+                    entry.row = pickRow(entry, shape, activeCol, batchBegin, b, entry.origRow);
+                    if (entry.type == 'H') {
+                        colHoldUntil[static_cast<size_t>(entry.col)] =
+                            std::max(colHoldUntil[static_cast<size_t>(entry.col)], entry.endTime);
+                    }
+                    continue;
+                }
+
+                int32_t bestCol = activeCol;
+                int bestLoad = origColLoad + 1;
+                bool found = false;
+
+                bool hasEdgeScrollConflict = false;
+                if (shape.cols > kActiveCols && nextWinStart >= 0) {
+                    for (int c = winStart; c <= winEnd; ++c) {
+                        if (moveAffectsScroll(c, winStart, winEnd, stableStart, stableEnd,
+                                              nextWinStart, nextScrollStartMs, entry.latestHit)) {
+                            hasEdgeScrollConflict = true;
+                            break;
+                        }
+                    }
+                }
+
+                auto tryCol = [&](int c) {
+                    if (c < winStart || c > winEnd) {
+                        return;
+                    }
+                    if (entry.type != 'H' &&
+                        colHoldUntil[static_cast<size_t>(c)] > entry.time) {
+                        return;
+                    }
+                    const int load =
+                        colLoadInWindow(entries, b, entry.time, static_cast<int32_t>(c), shape.cols);
+                    if (load >= bestLoad) {
+                        return;
+                    }
+                    const int32_t row = pickRow(entry, shape, static_cast<int32_t>(c), batchBegin, b,
+                                                entry.origRow);
+                    if (cellTaken(entries, batchBegin, b, row, static_cast<int32_t>(c))) {
+                        return;
+                    }
+                    bestLoad = load;
+                    bestCol = static_cast<int32_t>(c);
+                    entry.row = row;
+                    found = true;
+                };
+
+                if (hasEdgeScrollConflict) {
+                    for (int c = stableStart; c <= stableEnd; ++c) {
+                        tryCol(c);
+                    }
+                } else {
+                    for (int c = winStart; c <= winEnd; ++c) {
+                        tryCol(c);
+                    }
+                }
+
+                if (found && bestCol != activeCol) {
+                    entry.col = bestCol;
+                    ++relocatedCount;
+                } else {
+                    entry.row = pickRow(entry, shape, activeCol, batchBegin, b, entry.origRow);
+                    entry.col = activeCol;
+                }
+            } else {
+                entry.row = pickRow(entry, shape, activeCol, batchBegin, b, entry.origRow);
+            }
+
+            if (entry.type == 'H') {
+                colHoldUntil[static_cast<size_t>(entry.col)] =
+                    std::max(colHoldUntil[static_cast<size_t>(entry.col)], entry.endTime);
+            }
+        }
+
+        batchBegin = batchEnd;
+    }
+
+    for (const auto& entry : entries) {
+        notes[entry.index].gridRow = entry.row;
+        notes[entry.index].gridCol = entry.col;
+    }
+
+    MM_LOG_INFO("OsuParser", "Arranged layout for " + std::to_string(entries.size()) +
+                " notes, relocated " + std::to_string(relocatedCount) +
+                " (rhythmSubdiv: >=140→1/3, 100-140→1/4, <100→1/6)");
 }
 
 OsuParser::MatrixShape OsuParser::shapeAtTime(const std::vector<Formation>& formations, int64_t time) {
@@ -542,7 +1070,7 @@ OsuParser::MatrixShape OsuParser::shapeAtTime(const std::vector<Formation>& form
     return s;
 }
 
-// ── Main parse ──
+// ── 主 parse：分段读取 → 转换流水线 → 写入 BeatmapBuilder ──
 
 util::Result<void> OsuParser::parse(const std::string& content, BeatmapBuilder& builder) {
     std::istringstream stream(content);
@@ -566,9 +1094,9 @@ util::Result<void> OsuParser::parse(const std::string& content, BeatmapBuilder& 
         line = trim(line);
         if (line.empty() || line[0] == '#' || line[0] == '/') continue;
 
-        // Section header
+        // 段落头 [Section]
         if (line.front() == '[' && line.back() == ']') {
-            // 先刷出之前的段落
+            // 切换段落（TimingPoints/HitObjects 等行已在上方累积）
             std::string sectionName = line.substr(1, line.size() - 2);
             if (sectionName == "General")          currentSection = Section::General;
             else if (sectionName == "Metadata")    currentSection = Section::Metadata;
@@ -656,13 +1184,20 @@ util::Result<void> OsuParser::parse(const std::string& content, BeatmapBuilder& 
     // ── 生成 formations 并过滤冲突 note（对齐参考转换器）──
     auto convertedNotes = makeConvertedNotes();
     auto formations = generateFormationsAndFilter(convertedNotes);
+    arrangeRemainingNotes(convertedNotes, formations);
 
     // ── 将 ConvertedNote 转换为 Note（跳过 dropped）──
     for (const auto& cn : convertedNotes) {
         if (cn.dropped) continue;
         MatrixShape shape = shapeAtTime(formations, cn.time);
-        int32_t row, col;
-        pixelToGrid(cn.x, cn.y, shape.rows, shape.cols, row, col);
+        int32_t row = 0;
+        int32_t col = 0;
+        if (cn.gridRow >= 0 && cn.gridCol >= 0) {
+            row = cn.gridRow;
+            col = cn.gridCol;
+        } else {
+            pixelToGrid(cn.x, cn.y, shape.rows, shape.cols, row, col);
+        }
         Note note;
         note.time = cn.time;
         note.row = row;
@@ -702,8 +1237,9 @@ util::Result<void> OsuParser::parse(const std::string& content, BeatmapBuilder& 
     return util::success();
 }
 
-// ── Factory function ──
+// ── 解析器工厂（同 beatmap_parser.h）──
 
+/// 按扩展名 .mma / .osu 创建解析器；未知格式默认 MmaParser
 std::unique_ptr<BeatmapParser> createParserForFile(const std::string& filename) {
     auto dotPos = filename.rfind('.');
     if (dotPos != std::string::npos) {

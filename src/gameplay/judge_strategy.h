@@ -1,5 +1,11 @@
 #pragma once
 
+// ──────────────────────────────────────────────────────
+//  judge_strategy.h — 判定策略
+//  根据 OD 计算 Perfect/Good 窗口与 Miss 阈值。
+//  StandardJudgeStrategy 采用 osu!mania 风格线性公式。
+// ──────────────────────────────────────────────────────
+
 #include <cstdint>
 
 namespace melody_matrix::gameplay {
@@ -27,22 +33,22 @@ public:
     virtual int64_t missThreshold(float od) const = 0;
 };
 
-/// 标准判定策略（遵循 osu!mania 风格公式）
+/// 标准判定策略（osu!mania 风格线性 OD 公式）
 class StandardJudgeStrategy : public IJudgeStrategy {
 public:
+    /// Perfect 窗口：OD=0 时 ±22ms，OD=10 时 ±11.5ms
     int32_t perfectWindow(float od) const override {
-        // OD=0 时 ±22ms，线性缩放到 OD=10 时 ±11.5ms
         return static_cast<int32_t>(22.0f - 1.05f * od);
     }
 
+    /// Good 窗口：OD=0 时 ±65ms，OD=10 时 ±39ms
     int32_t goodWindow(float od) const override {
-        // OD=0 时 ±65ms，线性缩放到 OD=10 时 ±39ms
         return static_cast<int32_t>(65.0f - 2.6f * od);
     }
 
+    /// Miss 阈值：Good 窗口 + 50ms 缓冲后自动 Miss
     int64_t missThreshold(float od) const override {
-        // Good 窗口 + 50ms 自动 Miss 缓冲
-        return goodWindow(od) + 50;
+        return static_cast<int64_t>(goodWindow(od)) + 50;
     }
 };
 

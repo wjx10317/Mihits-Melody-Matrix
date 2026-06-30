@@ -1,5 +1,11 @@
 #pragma once
 
+// ──────────────────────────────────────────────────────
+//  score_manager.h — 分数与准确度
+//  按判定精度与连击倍率累积分；维护加权准确度。
+//  公式见设计文档 8.1：BASE_SCORE × accuracy × comboMultiplier
+// ──────────────────────────────────────────────────────
+
 #include "gameplay/judge_strategy.h"
 #include "gameplay/combo_manager.h"
 

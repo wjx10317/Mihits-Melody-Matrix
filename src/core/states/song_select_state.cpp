@@ -1,7 +1,18 @@
+// ============================================================
+// song_select_state.cpp — 选歌状态实现
+//
+// 职责：
+//   - 扫描 assets/beatmaps/ 构建分组铺面列表
+//   - 左右分割 UI：排行榜 + 铺面列表
+//   - Mod 选择、预览音频、删除铺面
+//   - 选中铺面后过渡到 PlayingState
+// ============================================================
 #include "song_select_state.h"
 #include "core/kernel.h"
 #include "core/state_manager.h"
 #include "core/states/playing_state.h"
+#include "core/states/main_menu_state.h"
+#include "beatmap/mma_serializer.h"
 #include "ui/theme.h"
 #include "util/logger.h"
 #include "beatmap/beatmap_parser.h"
@@ -15,6 +26,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <unordered_set>
 
 namespace melody_matrix::core {
 
@@ -22,6 +34,7 @@ namespace melody_matrix::core {
 //  响应式布局计算
 // ══════════════════════════════════════════════════════════════════════════════
 
+/// 根据屏幕尺寸计算左右面板宽度、行高等响应式参数
 void SongSelectState::computeLayout(float screenW, float screenH) {
     m_ly.W = screenW;
     m_ly.H = screenH;
@@ -44,6 +57,7 @@ void SongSelectState::computeLayout(float screenW, float screenH) {
 //  生命周期
 // ══════════════════════════════════════════════════════════════════════════════
 
+/// 进入选歌状态
 void SongSelectState::onEnter() {
     MM_LOG_INFO("SongSelect", "Entering Song Select");
 
@@ -78,11 +92,12 @@ void SongSelectState::onEnter() {
     if (!m_groups.empty() && m_selectedGroup < 0) {
         m_selectedGroup = rand() % static_cast<int>(m_groups.size());
         m_selectedSet = 0;
-        tryLoadGroupImage(m_selectedGroup);
+        syncSelectionBackground();
         tryPlayPreview();   // 随机选中后触发预览
     }
 }
 
+/// 退出选歌状态：停止预览、关闭音频引擎
 void SongSelectState::onExit() {
     MM_LOG_INFO("SongSelect", "Exiting Song Select");
 
@@ -98,6 +113,11 @@ void SongSelectState::onExit() {
     m_bgImageGroup = -1;
 }
 
+// ══════════════════════════════════════════════════════════════════════════════
+//  更新
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// 每帧更新：驱动预览音频、同步背景、检测开始游戏
 GameState SongSelectState::update(float dt) {
     // 驱动音频引擎（淡入淡出 + 预览循环）
     m_audio.update(dt);
@@ -126,29 +146,23 @@ GameState SongSelectState::update(float dt) {
 
     // 全屏背景图跟随选中组更新
     if (m_selectedGroup >= 0 && m_bgImageGroup != m_selectedGroup) {
-        tryLoadGroupImage(m_selectedGroup);
-        m_bgImageGroup = m_selectedGroup;
-        // 同步 Renderer 背景图：有谱面背景时使用谱面背景，否则用默认
-        auto& renderer = Kernel::instance().renderer();
-        if (m_selectedGroup >= 0 && m_selectedGroup < static_cast<int>(m_groups.size())) {
-            const auto& group = m_groups[m_selectedGroup];
-            // 只有当背景图不是默认的 menu-bg.jpg 时才设置
-            if (group.imagePath.find("menu-bg.jpg") == std::string::npos) {
-                renderer.setBackgroundPath(group.imagePath);
-            } else {
-                renderer.setBackgroundPath("");
-            }
-        }
+        syncSelectionBackground();
     }
 
     return m_nextState;
 }
 
+// ══════════════════════════════════════════════════════════════════════════════
+//  渲染
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// 渲染选歌 UI、Mod 弹窗、顶部遮罩与延迟删除
 void SongSelectState::render() {
     renderImGuiPanel();
     if (m_modPopupOpen) {
         renderModPopup();
     }
+    applyPendingDelete();
 
     // ── 右侧面板顶部遮罩（遮挡滚入的列表项）──
     // 底部轮廓：1/4屏宽直线(全高) → 1/5屏宽内弧(余弦过渡) → 剩余直线(薄条至屏幕右侧)
@@ -227,6 +241,7 @@ void SongSelectState::render() {
 //  铺面扫描
 // ══════════════════════════════════════════════════════════════════════════════
 
+/// 扫描铺面目录，解析 .mma 文件并构建分组列表（可安全在后台线程调用）
 void SongSelectState::scanBeatmaps() {
     MM_LOG_INFO("SongSelect", "Scanning beatmaps in: " + m_beatmapDir);
 
@@ -359,6 +374,7 @@ void SongSelectState::scanBeatmaps() {
 //  辅助
 // ══════════════════════════════════════════════════════════════════════════════
 
+/// 获取当前选中的难度 set 条目
 const SongSelectState::BeatmapEntry* SongSelectState::getSelectedSet() const {
     if (m_selectedGroup < 0 || m_selectedGroup >= static_cast<int>(m_groups.size())) return nullptr;
     const auto& group = m_groups[m_selectedGroup];
@@ -366,6 +382,196 @@ const SongSelectState::BeatmapEntry* SongSelectState::getSelectedSet() const {
     return &group.sets[m_selectedSet];
 }
 
+/// 删除铺面后修正选中组/set 索引并刷新预览与背景
+void SongSelectState::fixSelectionAfterDelete() {
+    m_selectedBeatmap.clear();
+
+    if (m_groups.empty()) {
+        m_selectedGroup = -1;
+        m_selectedSet = -1;
+        syncSelectionBackground();
+        return;
+    }
+
+    if (m_selectedGroup < 0) {
+        m_selectedGroup = 0;
+    }
+    if (m_selectedGroup >= static_cast<int>(m_groups.size())) {
+        m_selectedGroup = static_cast<int>(m_groups.size()) - 1;
+    }
+
+    auto& group = m_groups[m_selectedGroup];
+    if (group.sets.empty()) {
+        m_groups.erase(m_groups.begin() + m_selectedGroup);
+        fixSelectionAfterDelete();
+        return;
+    }
+
+    if (m_selectedSet < 0) {
+        m_selectedSet = 0;
+    }
+    if (m_selectedSet >= static_cast<int>(group.sets.size())) {
+        m_selectedSet = static_cast<int>(group.sets.size()) - 1;
+    }
+
+    syncSelectionBackground();
+    tryPlayPreview();
+}
+
+/// 在 render 末尾执行待处理的删除操作（支持同帧多条，按索引降序避免错位）
+void SongSelectState::applyPendingDelete() {
+    if (m_pendingDeletes.empty()) {
+        return;
+    }
+
+    auto actions = std::move(m_pendingDeletes);
+    m_pendingDeletes.clear();
+
+    std::sort(actions.begin(), actions.end(),
+              [](const PendingDeleteAction& a, const PendingDeleteAction& b) {
+                  if (a.groupIndex != b.groupIndex) {
+                      return a.groupIndex > b.groupIndex;
+                  }
+                  return a.setIndex > b.setIndex;
+              });
+
+    for (const auto& action : actions) {
+        if (action.setIndex < 0) {
+            deleteBeatmapGroup(action.groupIndex);
+        } else {
+            deleteBeatmapSet(action.groupIndex, action.setIndex);
+        }
+    }
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  删除铺面
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// 删除整组铺面（磁盘文件 + 内存列表）
+void SongSelectState::deleteBeatmapGroup(int groupIndex) {
+    if (groupIndex < 0 || groupIndex >= static_cast<int>(m_groups.size())) {
+        return;
+    }
+
+    const auto& group = m_groups[groupIndex];
+    m_audio.stop();
+    m_lastPreviewAudioPath.clear();
+
+    std::vector<std::string> imagePaths;
+    std::vector<std::string> sourceHashes;
+    if (!group.imagePath.empty()) {
+        imagePaths.push_back(group.imagePath);
+    }
+    for (const auto& set : group.sets) {
+        const std::string hash = beatmap::MmaSerializer::readSourceHash(set.filePath);
+        if (!hash.empty()) {
+            sourceHashes.push_back(hash);
+        }
+        if (!set.imagePath.empty() &&
+            std::find(imagePaths.begin(), imagePaths.end(), set.imagePath) == imagePaths.end()) {
+            imagePaths.push_back(set.imagePath);
+        }
+    }
+
+    if (group.sets.empty()) {
+        m_groups.erase(m_groups.begin() + groupIndex);
+        releaseDeletedBeatmapAssets(imagePaths, sourceHashes);
+        fixSelectionAfterDelete();
+        return;
+    }
+
+    std::filesystem::path dir = std::filesystem::path(group.sets[0].filePath).parent_path();
+    bool sameDir = true;
+    for (const auto& set : group.sets) {
+        if (std::filesystem::path(set.filePath).parent_path() != dir) {
+            sameDir = false;
+            break;
+        }
+    }
+
+    std::error_code ec;
+    if (sameDir) {
+        std::filesystem::remove_all(dir, ec);
+        if (ec == std::errc::no_such_file_or_directory) {
+            ec.clear();
+        }
+        if (ec) {
+            MM_LOG_WARN("SongSelect", "Failed to delete beatmap folder: %s (%s)",
+                        dir.string().c_str(), ec.message().c_str());
+        }
+    } else {
+        for (const auto& set : group.sets) {
+            std::filesystem::remove(set.filePath, ec);
+            if (ec == std::errc::no_such_file_or_directory) {
+                ec.clear();
+                continue;
+            }
+            if (ec) {
+                MM_LOG_WARN("SongSelect", "Failed to delete beatmap file: %s (%s)",
+                            set.filePath.c_str(), ec.message().c_str());
+                break;
+            }
+        }
+    }
+
+    MM_LOG_INFO("SongSelect", "Deleted beatmap group: %s - %s",
+                group.artist.c_str(), group.title.c_str());
+    m_groups.erase(m_groups.begin() + groupIndex);
+    releaseDeletedBeatmapAssets(imagePaths, sourceHashes);
+    fixSelectionAfterDelete();
+    m_audio.playSfx(audio::SfxType::MenuClick);
+}
+
+/// 删除组内单个难度 set
+void SongSelectState::deleteBeatmapSet(int groupIndex, int setIndex) {
+    if (groupIndex < 0 || groupIndex >= static_cast<int>(m_groups.size())) {
+        return;
+    }
+
+    auto& group = m_groups[groupIndex];
+    if (setIndex < 0 || setIndex >= static_cast<int>(group.sets.size())) {
+        return;
+    }
+
+    const std::string path = group.sets[setIndex].filePath;
+    m_audio.stop();
+    m_lastPreviewAudioPath.clear();
+
+    std::vector<std::string> imagePaths;
+    std::vector<std::string> sourceHashes;
+    const std::string hash = beatmap::MmaSerializer::readSourceHash(path);
+    if (!hash.empty()) {
+        sourceHashes.push_back(hash);
+    }
+    const bool removingLastSet = group.sets.size() == 1;
+    if (removingLastSet && !group.imagePath.empty()) {
+        imagePaths.push_back(group.imagePath);
+    }
+
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+    if (ec && ec != std::errc::no_such_file_or_directory) {
+        MM_LOG_WARN("SongSelect", "Failed to delete beatmap file: %s (%s)",
+                    path.c_str(), ec.message().c_str());
+    }
+
+    MM_LOG_INFO("SongSelect", "Deleted beatmap set: %s", path.c_str());
+    group.sets.erase(group.sets.begin() + setIndex);
+    if (group.sets.empty()) {
+        m_groups.erase(m_groups.begin() + groupIndex);
+    }
+
+    releaseDeletedBeatmapAssets(imagePaths, sourceHashes);
+    fixSelectionAfterDelete();
+    m_audio.playSfx(audio::SfxType::MenuClick);
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  纹理 / 头像
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// 加载用户头像纹理
 void SongSelectState::loadAvatarTexture() {
     if (!m_avatarTexture.valid()) {
         const char* paths[] = {
@@ -387,6 +593,7 @@ void SongSelectState::loadAvatarTexture() {
     }
 }
 
+/// 按需加载指定分组的背景图到全局 TextureCache
 void SongSelectState::tryLoadGroupImage(int groupIndex) {
     if (groupIndex < 0 || groupIndex >= static_cast<int>(m_groups.size())) return;
 
@@ -397,6 +604,48 @@ void SongSelectState::tryLoadGroupImage(int groupIndex) {
     renderer::TextureCache::instance().load(group.imagePath, false);
 }
 
+void SongSelectState::syncSelectionBackground() {
+    auto& renderer = Kernel::instance().renderer();
+    renderer.setBackgroundPath("");
+
+    if (m_selectedGroup < 0 || m_selectedGroup >= static_cast<int>(m_groups.size())) {
+        m_bgImageGroup = -1;
+        return;
+    }
+
+    const auto& group = m_groups[m_selectedGroup];
+    if (!group.imagePath.empty()) {
+        tryLoadGroupImage(m_selectedGroup);
+    }
+    m_bgImageGroup = m_selectedGroup;
+
+    if (group.imagePath.find("menu-bg.jpg") == std::string::npos) {
+        renderer.setBackgroundPath(group.imagePath);
+    }
+}
+
+void SongSelectState::releaseDeletedBeatmapAssets(
+    const std::vector<std::string>& imagePaths,
+    const std::vector<std::string>& sourceHashes) {
+    auto& cache = renderer::TextureCache::instance();
+    for (const auto& path : imagePaths) {
+        if (path.empty() || path.find("menu-bg.jpg") != std::string::npos) {
+            continue;
+        }
+        cache.unload(path);
+    }
+
+    auto* mainMenu = Kernel::instance().stateManager().getStateAs<MainMenuState>(GameState::MainMenu);
+    if (mainMenu) {
+        for (const auto& hash : sourceHashes) {
+            mainMenu->importedHashes().erase(hash);
+        }
+    }
+
+    unloadUnusedImages();
+}
+
+/// 卸载当前未选中分组的背景纹理（节省显存）
 void SongSelectState::unloadUnusedImages() {
     auto paths = getGroupImagePaths();
     renderer::TextureCache::instance().unloadDistant(paths, m_selectedGroup, 5);
@@ -406,6 +655,11 @@ void SongSelectState::unloadUnusedImages() {
 //  主面板渲染
 // ══════════════════════════════════════════════════════════════════════════════
 
+// ══════════════════════════════════════════════════════════════════════════════
+//  UI 渲染
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// 渲染选歌主面板（左右分割 + 底部操作栏）
 void SongSelectState::renderImGuiPanel() {
     ImVec2 displaySize = ImGui::GetIO().DisplaySize;
     float W = displaySize.x;
@@ -498,6 +752,7 @@ void SongSelectState::renderImGuiPanel() {
 //  左侧面板
 // ══════════════════════════════════════════════════════════════════════════════
 
+/// 渲染左侧面板：头像、歌曲信息、排行榜、Mod 按钮
 void SongSelectState::renderLeftPanel(float panelWidth, float panelHeight) {
     using namespace ui;
 
@@ -738,6 +993,7 @@ void SongSelectState::renderLeftPanel(float panelWidth, float panelHeight) {
 //  右侧面板 — 分组铺面列表
 // ══════════════════════════════════════════════════════════════════════════════
 
+/// 渲染右侧铺面列表（分组头 + 难度条目 + 滚动）
 void SongSelectState::renderRightPanel(float panelX, float panelWidth, float panelHeight) {
     using namespace ui;
 
@@ -844,13 +1100,20 @@ void SongSelectState::renderRightPanel(float panelX, float panelWidth, float pan
         // 组头可点击区域
         ImGui::InvisibleButton("##groupHeader", ImVec2(headerWidth, m_ly.groupHeaderH));
 
-        if (ImGui::IsItemClicked()) {
+        if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) {
             m_selectedGroup = g;
             m_selectedSet = 0;  // 自动选中第一个 set
             m_scrollToSelected = true;
             tryLoadGroupImage(g);
             tryPlayPreview();   // 组头点击后触发预览
             m_audio.playSfx(audio::SfxType::MenuClick);
+        }
+        if (ImGui::BeginPopupContextItem()) {
+            if (ImGui::MenuItem("Delete")) {
+                m_pendingDeletes.push_back(PendingDeleteAction{g, -1});
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::EndPopup();
         }
 
         // ── 组头缩略图 ──
@@ -969,7 +1232,7 @@ void SongSelectState::renderRightPanel(float panelX, float panelWidth, float pan
                 // set 可点击区域（含缩进空间）
                 ImGui::InvisibleButton("##set", ImVec2(setWidth + m_ly.setIndent, m_ly.setItemH));
 
-                if (ImGui::IsItemClicked()) {
+                if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) {
                     m_selectedSet = s;
                     tryPlayPreview();   // set 单击后触发预览
                     m_audio.playSfx(audio::SfxType::MenuClick);
@@ -979,6 +1242,13 @@ void SongSelectState::renderRightPanel(float panelX, float panelWidth, float pan
                     m_selectedBeatmap = set.filePath;
                     m_audio.playSfx(audio::SfxType::MenuHit);
                     tryPlayPreview();   // 双击时也触发（防重复逻辑在内部）
+                }
+                if (ImGui::BeginPopupContextItem()) {
+                    if (ImGui::MenuItem("Delete")) {
+                        m_pendingDeletes.push_back(PendingDeleteAction{g, s});
+                        ImGui::CloseCurrentPopup();
+                    }
+                    ImGui::EndPopup();
                 }
 
                 // set 文字
@@ -1099,6 +1369,7 @@ void SongSelectState::renderRightPanel(float panelX, float panelWidth, float pan
 //  Mod 弹窗
 // ══════════════════════════════════════════════════════════════════════════════
 
+/// 渲染 Mod 选择弹窗（NoFail / Autoplay 等）
 void SongSelectState::renderModPopup() {
     using namespace ui;
 
@@ -1245,9 +1516,11 @@ void SongSelectState::renderModPopup() {
     }
 }
 
-// ============================================================
-//  tryPlayPreview —— 尝试播放当前选中 set 的预览音频
-// ============================================================
+// ══════════════════════════════════════════════════════════════════════════════
+//  预览音频
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// 尝试播放当前选中 set 的预览音频（同路径不重启）
 void SongSelectState::tryPlayPreview() {
     const auto* sel = getSelectedSet();
     if (!sel) return;
@@ -1267,6 +1540,7 @@ void SongSelectState::tryPlayPreview() {
 //  预加载与路径查询
 // ══════════════════════════════════════════════════════════════════════════════
 
+/// 扫描铺面并预加载全部分组背景图到 TextureCache
 void SongSelectState::scanAndPreload() {
     if (!m_scanDone) {
         scanBeatmaps();
@@ -1281,6 +1555,7 @@ void SongSelectState::scanAndPreload() {
                 m_groups.size(), paths.size());
 }
 
+/// 获取所有分组的背景图路径列表（供 BootState 预加载）
 std::vector<std::string> SongSelectState::getGroupImagePaths() const {
     std::vector<std::string> paths;
     paths.reserve(m_groups.size());

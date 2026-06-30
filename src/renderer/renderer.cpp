@@ -1,3 +1,9 @@
+// ============================================================
+// renderer.cpp — 主渲染器实现
+// 帧流程：renderBackground → renderGrid（占位）→ renderNotes。
+// scrollOffset 在此统一计算；阵型过渡按 MatrixTransform 分发动画参数。
+// ============================================================
+
 #include "renderer.h"
 #include "note_renderer.h"
 #include "renderer/grid_layout.h"
@@ -17,7 +23,7 @@ namespace melody_matrix::renderer {
 bool Renderer::init() {
     MM_LOG_INFO("Renderer", "Initializing renderer...");
 
-    // ── Compile grid shader ──
+    // ── 网格线 shader（现主要用于全屏 dim 遮罩）──
     const std::string gridVertSrc = R"(
         #version 330 core
         layout(location = 0) in vec2 aPos;
@@ -42,7 +48,7 @@ bool Renderer::init() {
         MM_LOG_WARN("Renderer", "Grid shader failed, using fallback: " + shaderResult.error().message);
     }
 
-    // ── Create grid VAO/VBO ──
+    // ── 网格 VAO/VBO（动态顶点，用于 dim 四边形）──
     glGenVertexArrays(1, &m_gridVao);
     glGenBuffers(1, &m_gridVbo);
 
@@ -53,7 +59,7 @@ bool Renderer::init() {
     glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), (void*)0);
     glBindVertexArray(0);
 
-    // ── Compile background shader (textured fullscreen quad) ──
+    // ── 背景纹理 shader（全屏四边形采样 uTexture）──
     const std::string bgVertSrc = R"(
         #version 330 core
         layout(location = 0) in vec2 aPos;
@@ -83,10 +89,9 @@ bool Renderer::init() {
         MM_LOG_WARN("Renderer", "Background shader failed: " + bgShaderResult.error().message);
     }
 
-    // ── Create fullscreen quad VAO/VBO for background ──
-    // Projection is Y-down (top=0, bottom=1080). With stb_flip_on_load=1,
-    // OpenGL texture v=0 is image bottom, v=1 is image top.
-    // So screen top (Y=0) needs v=1, screen bottom (Y=1080) needs v=0.
+    // ── 全屏背景四边形 VAO/VBO ──
+    // 投影 Y 向下（top=0）。stb_flip_on_load=1 后 OpenGL v=0 为图像底部。
+    // 因此屏幕 top(Y=0) 对应 v=1，bottom(Y=1080) 对应 v=0。
     float quadVertices[] = {
         // pos              // texcoord
         0.0f,    0.0f,      0.0f, 1.0f,   // top-left     -> image top-left
@@ -112,18 +117,18 @@ bool Renderer::init() {
 
     glBindVertexArray(0);
 
-    // ── Load default background texture ──
+    // ── 默认菜单背景 ──
     if (!m_bgTexture.loadFromFile("assets/textures/menu-bg.jpg")) {
         MM_LOG_WARN("Renderer", "Failed to load menu background texture — will use solid color");
     }
 
-    // ── Initialize note renderer ──
+    // ── NoteRenderer 初始化 ──
     m_noteRenderer = std::make_unique<NoteRenderer>();
     if (!m_noteRenderer->init()) {
         MM_LOG_WARN("Renderer", "NoteRenderer initialization failed");
     }
 
-    // ── 加载 note 纹理资源（从 res/ 目录，相对 exe）──
+    // ── 加载 note 纹理（res/ 目录，多路径后备）──
     // 路径后备：尝试 res/、../res/、../../res/（适配不同工作目录）
     auto loadNoteTexture = [](const std::string& name) -> const Texture2D* {
         auto& cache = TextureCache::instance();
@@ -181,7 +186,7 @@ void Renderer::setFormation(int32_t rows, int32_t cols,
     m_gridRows = rows;
     m_gridCols = cols;
     m_blockSize = blockSize;
-    // 同步 blockSize 到 note renderer
+    // blockSize 同步到 NoteRenderer（格内 note/background 缩放）
     if (m_noteRenderer) {
         m_noteRenderer->setBlockSize(blockSize);
     }
@@ -192,6 +197,7 @@ void Renderer::setFormation(int32_t rows, int32_t cols,
 void Renderer::beginFormationTransition(int32_t prevRows, int32_t prevCols, float prevBlockSize,
                                           int32_t nextRows, int32_t nextCols, float nextBlockSize,
                                           int32_t transformType) {
+    // 记录 prev/next 阵型与 v2 MatrixTransform 类型，供 renderNotes 选择动画
     m_transition.prevRows = prevRows;
     m_transition.prevCols = prevCols;
     m_transition.prevBlockSize = prevBlockSize;
@@ -230,8 +236,8 @@ void Renderer::setScrollState(int32_t activeStartCol, int32_t activeEndCol,
     m_scrolling = scrolling;
     m_scrollProgress = scrollProgress;
 
-    // ── 内部统一计算 scrollOffset，固定逻辑格宽与 note_renderer 完全一致 ──
-    // scrollOffset 符号：向右滚(targetStart>activeStart)→矩阵向左移→scrollOffset 为负
+    // ── scrollOffset 统一计算（GridLayout::gw 为步长）──
+    // 向右滚 (targetStart>activeStart) → 矩阵向左移 → scrollOffset 为负
     m_scrollOffset = 0.0f;
     if (scrolling) {
         float p = std::max(0.0f, std::min(1.0f, scrollProgress));
@@ -335,9 +341,9 @@ void Renderer::renderBackground() {
 }
 
 void Renderer::renderGrid(int64_t /*timeMs*/) {
-    // 判定矩阵的格子背景已改由 NoteRenderer 用 background.png 按块渲染（layer 5），
-    // 活跃4列正常 alpha、非活跃列半透明预览，不再需要划线。
-    // 阵型过渡（Fade）也由 NoteRenderer 处理（prev/next cols 切换），无需此处画两套网格线。
+    // 格子 background 已改由 NoteRenderer 用 background.png 按块渲染（layer 5），
+    // 活跃列高亮 / 非活跃列半透明预览；不再需要此处画网格线。
+    // 阵型过渡动画也由 NoteRenderer::setAnimParams 处理。
     (void)0;
 }
 
@@ -351,16 +357,16 @@ void Renderer::renderNotes(int64_t timeMs) {
         float p = m_transition.progress;
         int32_t tt = m_transition.transformType;
 
-        // 计算缓动（ease-in-out）
+        // ease-in-out 缓动
         float easedP = p < 0.5f ? 2.0f * p * p : 1.0f - (-2.0f * p + 2.0f) * (-2.0f * p + 2.0f) / 2.0f;
 
         const float PI = 3.14159265358979f;
 
-        // ── 按 v2 宏分类分发动画 ──
-        // SCALE_ONLY(100)        → 缩放
-        // SLIDE_ROW/COL_*(201~226) → 滑入/滑出（单轴）
-        // ROTATE_*(301~399)      → 旋转一周
-        // 其他(0等)              → 切换式
+        // ── 阵型过渡动画分发（formation animation）──
+        // SCALE_ONLY(100)           → blockSize 插值缩放
+        // SLIDE_ROW/COL_*(201~226)  → 新行/列滑入（setAnimParams slideRows/slideCols）
+        // ROTATE_*(301~399)         → 整屏旋转一周（setAnimParams rotation）
+        // 其他(NONE 等)             → 中点切换 prev/next 阵型
         char cat = beatmap::MatrixTransform::category(tt);
         bool isSlideAdd = beatmap::MatrixTransform::isSlideRowAdd(tt) || beatmap::MatrixTransform::isSlideColAdd(tt);
         bool isSlideRemove = beatmap::MatrixTransform::isSlideRowRemove(tt) || beatmap::MatrixTransform::isSlideColRemove(tt);

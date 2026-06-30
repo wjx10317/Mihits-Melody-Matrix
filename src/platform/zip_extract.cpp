@@ -1,3 +1,17 @@
+/**
+ * @file zip_extract.cpp
+ * @brief ZIP 解压实现（Windows 多策略回退）
+ *
+ * 文件职责：
+ *   实现 ZipExtract 类：tar.exe → PowerShell ZipFile 双策略解压，
+ *   以及临时目录生命周期管理与 .osu 扫描。
+ *
+ * 主要依赖：
+ *   zip_extract.h、util/logger.h、Windows API（CreateProcess）、<filesystem>。
+ *
+ * 在项目中的用法：
+ *   由 song_select 等谱面导入模块调用，不直接暴露给 main。
+ */
 #include "zip_extract.h"
 #include "util/logger.h"
 
@@ -15,6 +29,12 @@ namespace melody_matrix::platform {
 // ──────────────────────────────────────────────────────
 //  辅助：生成随机后缀
 // ──────────────────────────────────────────────────────
+
+/**
+ * @brief 生成随机字母数字后缀
+ * @param length 后缀长度，默认 8
+ * @return 随机字符串
+ */
 static std::string randomSuffix(size_t length = 8) {
     static const char chars[] = "abcdefghijklmnopqrstuvwxyz0123456789";
     std::mt19937 rng(std::random_device{}());
@@ -28,8 +48,15 @@ static std::string randomSuffix(size_t length = 8) {
 }
 
 // ──────────────────────────────────────────────────────
-//  辅助：执行命令并等待完成（返回退出码，-1 表示创建进程失败）
+//  辅助：执行命令并等待完成
 // ──────────────────────────────────────────────────────
+
+/**
+ * @brief 启动隐藏子进程执行命令并等待退出
+ * @param cmdLine 宽字符命令行
+ * @param timeoutMs 等待超时（毫秒），默认 30 秒
+ * @return 进程退出码；-1 表示 CreateProcess 失败
+ */
 static int runCommand(const std::wstring& cmdLine, DWORD timeoutMs = 30000) {
     STARTUPINFOW si = {};
     si.cb = sizeof(si);
@@ -45,7 +72,7 @@ static int runCommand(const std::wstring& cmdLine, DWORD timeoutMs = 30000) {
     CreatePipe(&hReadOut, &hWriteOut, &sa, 0);
     CreatePipe(&hReadErr, &hWriteErr, &sa, 0);
 
-    // 确保子进程不继承读端
+    // 确保子进程不继承读端（否则管道无法检测 EOF）
     SetHandleInformation(hReadOut, HANDLE_FLAG_INHERIT, 0);
     SetHandleInformation(hReadErr, HANDLE_FLAG_INHERIT, 0);
 
@@ -62,14 +89,14 @@ static int runCommand(const std::wstring& cmdLine, DWORD timeoutMs = 30000) {
         nullptr,
         buf.data(),
         nullptr, nullptr,
-        TRUE,               // 继承句柄
+        TRUE,               // 继承句柄（管道写端）
         CREATE_NO_WINDOW,
         nullptr,
         nullptr,
         &si, &pi
     );
 
-    // 关闭父进程的写端
+    // 父进程关闭写端，子进程退出后读端才能收到 EOF
     CloseHandle(hWriteOut);
     CloseHandle(hWriteErr);
 
@@ -82,7 +109,7 @@ static int runCommand(const std::wstring& cmdLine, DWORD timeoutMs = 30000) {
 
     WaitForSingleObject(pi.hProcess, timeoutMs);
 
-    // 读取 stderr（最多 4KB）
+    // 读取 stderr（最多 4KB）用于诊断
     char errBuf[4096] = {};
     DWORD bytesRead = 0;
     ReadFile(hReadErr, errBuf, sizeof(errBuf) - 1, &bytesRead, nullptr);
@@ -106,12 +133,18 @@ static int runCommand(const std::wstring& cmdLine, DWORD timeoutMs = 30000) {
 }
 
 // ──────────────────────────────────────────────────────
-//  解压 ZIP — 策略1: tar.exe（Windows 10 内置）
+//  解压策略 1：tar.exe（Windows 10 1809+ 内置）
 // ──────────────────────────────────────────────────────
+
+/**
+ * @brief 使用 tar.exe 解压 ZIP
+ * @param zipPath ZIP 路径
+ * @param destDir 目标目录
+ * @return 退出码 0 为成功
+ */
 static bool extractWithTar(const std::string& zipPath, const std::string& destDir) {
 #ifdef _WIN32
-    // tar -xf <zip> -C <dest>   （tar.exe 在 Windows 10 1809+ 中可用）
-    // 注意：tar 路径用引号包裹以处理空格和特殊字符
+    // tar -xf <zip> -C <dest>；路径加引号以处理空格
     std::wstring wZip(zipPath.begin(), zipPath.end());
     std::wstring wDest(destDir.begin(), destDir.end());
 
@@ -132,15 +165,21 @@ static bool extractWithTar(const std::string& zipPath, const std::string& destDi
 }
 
 // ──────────────────────────────────────────────────────
-//  解压 ZIP — 策略2: PowerShell .NET ZipFile（比 Expand-Archive 更可靠）
+//  解压策略 2：PowerShell .NET ZipFile
 // ──────────────────────────────────────────────────────
+
+/**
+ * @brief 使用 PowerShell 调用 .NET ZipFile.ExtractToDirectory
+ * @param zipPath ZIP 路径
+ * @param destDir 目标目录
+ * @return 成功 true
+ */
 static bool extractWithPowerShell(const std::string& zipPath, const std::string& destDir) {
 #ifdef _WIN32
     std::wstring wZip(zipPath.begin(), zipPath.end());
     std::wstring wDest(destDir.begin(), destDir.end());
 
-    // 使用 .NET 的 System.IO.Compression.ZipFile 类，比 Expand-Archive 更轻量可靠
-    // 用单引号包裹路径避免变量展开问题
+    // 单引号包裹路径，避免 PowerShell 变量展开
     std::wstring cmd =
         L"powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command \""
         L"[System.IO.Compression.ZipFile]::ExtractToDirectory('" + wZip + L"','" + wDest + L"')"
@@ -161,8 +200,9 @@ static bool extractWithPowerShell(const std::string& zipPath, const std::string&
 }
 
 // ──────────────────────────────────────────────────────
-//  解压 ZIP（主入口）
+//  ZipExtract 公共 API
 // ──────────────────────────────────────────────────────
+
 bool ZipExtract::extract(const std::string& zipPath, const std::string& destDir) {
     MM_LOG_INFO("ZipExtract", "Extracting: %s -> %s", zipPath.c_str(), destDir.c_str());
 
@@ -174,17 +214,17 @@ bool ZipExtract::extract(const std::string& zipPath, const std::string& destDir)
         return false;
     }
 
-    // 1. 尝试策略1: tar.exe（最快最可靠）
+    // 1. 优先 tar.exe（最快最可靠）
     if (extractWithTar(zipPath, destDir)) {
         return true;
     }
 
-    // 2. 尝试策略2: PowerShell .NET ZipFile
+    // 2. 回退 PowerShell .NET ZipFile
     if (extractWithPowerShell(zipPath, destDir)) {
         return true;
     }
 
-    // 3. 验证：即使返回非零码，检查目录是否有内容（有些工具非零但实际成功）
+    // 3. 容错：部分工具非零退出但实际已解压成功
     try {
         if (std::filesystem::exists(destDir) && !std::filesystem::is_empty(destDir)) {
             MM_LOG_WARN("ZipExtract", "All tools reported failure but dest dir has content, accepting");
@@ -196,9 +236,6 @@ bool ZipExtract::extract(const std::string& zipPath, const std::string& destDir)
     return false;
 }
 
-// ──────────────────────────────────────────────────────
-//  临时目录
-// ──────────────────────────────────────────────────────
 std::string ZipExtract::createTempDir() {
     std::filesystem::path tempBase = std::filesystem::temp_directory_path();
     std::string suffix = randomSuffix();
@@ -215,9 +252,6 @@ std::string ZipExtract::createTempDir() {
     return tempDir.string();
 }
 
-// ──────────────────────────────────────────────────────
-//  清理临时目录
-// ──────────────────────────────────────────────────────
 void ZipExtract::removeDir(const std::string& dirPath) {
     try {
         if (std::filesystem::exists(dirPath)) {
@@ -229,9 +263,6 @@ void ZipExtract::removeDir(const std::string& dirPath) {
     }
 }
 
-// ──────────────────────────────────────────────────────
-//  查找 .osu 文件
-// ──────────────────────────────────────────────────────
 std::vector<std::string> ZipExtract::findOsuFiles(const std::string& dirPath) {
     std::vector<std::string> results;
 

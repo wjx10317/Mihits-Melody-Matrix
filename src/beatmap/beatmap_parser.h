@@ -1,5 +1,10 @@
 #pragma once
 
+// ──────────────────────────────────────────────────────
+//  beatmap_parser.h — 谱面解析器抽象接口
+//  MmaParser / OsuParser 实现 parse()，由工厂按扩展名选择。
+// ──────────────────────────────────────────────────────
+
 #include "beatmap/beatmap_builder.h"
 #include "util/result.h"
 
@@ -29,6 +34,7 @@ public:
 };
 
 /// 工厂函数：检测文件格式并返回相应的解析器
+/// 根据文件扩展名（.mma / .osu）创建对应解析器；未知则默认 MMA
 std::unique_ptr<BeatmapParser> createParserForFile(const std::string& filename);
 
 } // namespace melody_matrix::beatmap

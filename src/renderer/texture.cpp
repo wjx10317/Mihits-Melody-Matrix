@@ -1,3 +1,8 @@
+// ============================================================
+// texture.cpp — 2D 纹理加载与绑定
+// stb_image 垂直翻转以匹配 OpenGL 纹理坐标原点（左下）。
+// ============================================================
+
 #include "texture.h"
 #include "util/logger.h"
 
@@ -6,7 +11,7 @@
 
 namespace melody_matrix::renderer {
 
-// ── RAII ──
+// ── RAII：析构/移动时 glDeleteTextures ──
 
 Texture2D::~Texture2D() {
     release();
@@ -48,14 +53,13 @@ void Texture2D::release() {
     m_channels = 0;
 }
 
-// ── Loading ──
+// ── 从文件加载并上传 GPU ──
 
 bool Texture2D::loadFromFile(const std::string& path, bool genMipmap) {
-    // Clean up any existing texture
+    // 释放已有纹理再加载
     release();
 
-    // stb_image loads images with origin at top-left by default.
-    // OpenGL expects origin at bottom-left, so flip vertically for correct texel alignment.
+    // stb 默认左上原点；OpenGL 纹理左下原点 → 垂直翻转
     stbi_set_flip_vertically_on_load(1);
 
     int width = 0, height = 0, channels = 0;
@@ -66,7 +70,7 @@ bool Texture2D::loadFromFile(const std::string& path, bool genMipmap) {
         return false;
     }
 
-    // Determine GL format based on number of channels
+    // 按通道数选择 GL 内部格式
     GLenum internalFormat = 0;
     GLenum dataFormat = 0;
     if (channels == 4) {
@@ -87,29 +91,29 @@ bool Texture2D::loadFromFile(const std::string& path, bool genMipmap) {
     // 必须在 glTexImage2D 之前设置。
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
 
-    // Create OpenGL texture
+    // 创建并上传 GL 纹理
     glGenTextures(1, &m_textureId);
     glBindTexture(GL_TEXTURE_2D, m_textureId);
 
-    // Upload pixel data
+    // 上传像素数据
     glTexImage2D(GL_TEXTURE_2D, 0, internalFormat, width, height, 0,
                  dataFormat, GL_UNSIGNED_BYTE, data);
 
-    // Set texture parameters
+    // 纹理参数：边缘 clamp + 线性过滤
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER,
                     genMipmap ? GL_LINEAR_MIPMAP_LINEAR : GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 
-    // Generate mipmaps if requested
+    // 可选 mipmap
     if (genMipmap) {
         glGenerateMipmap(GL_TEXTURE_2D);
     }
 
     glBindTexture(GL_TEXTURE_2D, 0);
 
-    // Free stb_image data
+    // 释放 stb 堆内存
     stbi_image_free(data);
 
     m_width = width;
@@ -123,7 +127,7 @@ bool Texture2D::loadFromFile(const std::string& path, bool genMipmap) {
     return true;
 }
 
-// ── Binding ──
+// ── 纹理单元绑定/解绑 ──
 
 void Texture2D::bind(uint32_t unit) const {
     if (m_textureId == 0) return;

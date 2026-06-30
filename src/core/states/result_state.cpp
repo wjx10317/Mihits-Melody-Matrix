@@ -1,3 +1,11 @@
+// ============================================================
+// result_state.cpp — 结算状态实现
+//
+// 职责：
+//   - 展示分数、准确度、连击与判定统计
+//   - 根据准确度计算评级（S/A/B/C/D）
+//   - 提供重试与返回选歌操作
+// ============================================================
 #include "result_state.h"
 #include "core/kernel.h"
 #include "core/state_manager.h"
@@ -10,19 +18,26 @@
 
 namespace melody_matrix::core {
 
+// ══════════════════════════════════════════════════════════════════════════════
+//  生命周期
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// 进入结算状态
 void ResultState::onEnter() {
     MM_LOG_INFO("Result", "Entering Result state");
     m_action = ResultAction::None;
 }
 
+/// 退出结算状态
 void ResultState::onExit() {
     MM_LOG_INFO("Result", "Exiting Result state");
 }
 
+/// 根据用户选择决定下一状态
 GameState ResultState::update(float /*dt*/) {
     switch (m_action) {
     case ResultAction::Retry:
-        // Mark PlayingState for reinit before transitioning
+        // 重试前先标记 PlayingState 需要重新初始化
         {
             auto* playing = Kernel::instance().stateManager().getStateAs<PlayingState>(GameState::Playing);
             if (playing) {
@@ -45,12 +60,18 @@ GameState ResultState::update(float /*dt*/) {
     return GameState::Count;
 }
 
+// ══════════════════════════════════════════════════════════════════════════════
+//  渲染
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// 渲染结算 UI
 void ResultState::render() {
     renderImGuiPanel();
 }
 
+/// 绘制全屏结算面板：标题、分数、准确度、判定统计、评级与操作按钮
 void ResultState::renderImGuiPanel() {
-    using namespace ui; // for Theme constants
+    using namespace ui; // Theme 颜色常量
 
     ImVec2 displaySize = ImGui::GetIO().DisplaySize;
     ImGui::SetNextWindowPos(ImVec2(0, 0), ImGuiCond_Always);
@@ -70,7 +91,7 @@ void ResultState::renderImGuiPanel() {
     float contentWidth = 600.0f;
     float startX = centerX - contentWidth * 0.5f;
 
-    // ── Title ──
+    // ── 标题 ──
     ImGui::SetCursorPosX(startX);
     ImGui::PushStyleColor(ImGuiCol_Text,
         ImVec4(Theme::CYAN_R, Theme::CYAN_G, Theme::CYAN_B, 1.0f));
@@ -91,7 +112,7 @@ void ResultState::renderImGuiPanel() {
     ImGui::Separator();
     ImGui::Spacing();
 
-    // ── Score ──
+    // ── 分数 ──
     ImGui::SetCursorPosX(startX);
     ImGui::SetWindowFontScale(3.0f);
     if (playerDied) {
@@ -107,7 +128,7 @@ void ResultState::renderImGuiPanel() {
 
     ImGui::Spacing();
 
-    // ── Accuracy ──
+    // ── 准确度 ──
     float accuracy = totalNotes > 0 ?
         (perfectCount * 100.0f + goodCount * 60.0f) / (totalNotes * 100.0f) * 100.0f : 0.0f;
     ImGui::SetCursorPosX(startX);
@@ -119,7 +140,7 @@ void ResultState::renderImGuiPanel() {
     ImGui::Separator();
     ImGui::Spacing();
 
-    // ── Judgment breakdown ──
+    // ── 判定统计 ──
     ImGui::SetCursorPosX(startX);
     ImGui::Columns(3, "##judgeCols", false);
     ImGui::SetColumnWidth(0, 200);
@@ -162,7 +183,7 @@ void ResultState::renderImGuiPanel() {
     ImGui::Separator();
     ImGui::Spacing();
 
-    // ── Grade ──
+    // ── 评级 ──
     if (!playerDied) {
         const char* grade = "D";
         if (accuracy >= 95.0f) grade = "S";
@@ -182,7 +203,7 @@ void ResultState::renderImGuiPanel() {
     ImGui::Spacing();
     ImGui::Spacing();
 
-    // ── Buttons ──
+    // ── 操作按钮 ──
     float btnWidth = 200;
     float btnHeight = 44;
     float btnTotalWidth = btnWidth * 2 + 20;

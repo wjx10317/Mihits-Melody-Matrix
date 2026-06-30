@@ -1,7 +1,0 @@
-﻿閫傜敤浜?.NET Framework MSBuild 鐗堟湰 17.13.15+18b3035f6
-
-  imgui.vcxproj -> D:\colin\Melody-Matrix\build-vs\lib\Debug\imgui.lib
-  glm.vcxproj -> D:\colin\Melody-Matrix\build-vs\lib\Debug\glm.lib
-  glad_gl33_core.vcxproj -> D:\colin\Melody-Matrix\build-vs\lib\Debug\glad_gl33_core.lib
-  renderer.cpp
-D:\colin\Melody-Matrix\src\renderer\renderer.cpp(268,43): error C2065: 鈥淜EY_COUNT_RENDER鈥? 鏈０鏄庣殑鏍囪瘑绗?[D:\colin\Melody-Matrix\build-vs\melody_matrix.vcxproj]

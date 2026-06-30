@@ -1,3 +1,16 @@
+/**
+ * @file logger.cpp
+ * @brief Logger 类的实现
+ *
+ * 文件职责：
+ *   实现日志初始化、格式化输出、时间戳生成及文件 I/O。
+ *
+ * 主要依赖：
+ *   logger.h、<filesystem>（自动创建日志目录）。
+ *
+ * 在项目中的用法：
+ *   由 logger.h 间接链接，业务代码通过 MM_LOG_* 宏调用。
+ */
 #include "logger.h"
 
 #include <iostream>
@@ -10,7 +23,7 @@ void Logger::init(const std::string& logFilePath, Level minLevel) {
     s_minLevel = minLevel;
 
     if (!logFilePath.empty()) {
-        // Ensure parent directory exists
+        // 确保日志文件的父目录存在
         std::filesystem::path p(logFilePath);
         if (p.has_parent_path()) {
             std::filesystem::create_directories(p.parent_path());
@@ -29,7 +42,7 @@ void Logger::log(Level level, std::string_view file, int line, std::string_view 
         return;
     }
 
-    // Extract just the filename from the full path
+    // 从完整路径中提取文件名，缩短日志行长度
     std::string filename;
     auto pos = file.find_last_of("/\\");
     filename = (pos != std::string_view::npos) ? std::string(file.substr(pos + 1)) : std::string(file);
@@ -39,7 +52,7 @@ void Logger::log(Level level, std::string_view file, int line, std::string_view 
                           std::to_string(line) + ")";
 
     std::lock_guard<std::mutex> lock(s_mutex);
-    // Always output to stderr for ERROR/FATAL
+    // ERROR/FATAL 始终输出到 stderr，便于开发时在控制台即时看到
     if (level >= Level::ERR) {
         std::cerr << lineStr << std::endl;
     }

@@ -1,3 +1,10 @@
+// ============================================================
+// theme.cpp — ImGui 深霓虹主题实现
+//
+// 职责：
+//   - 设置圆角、间距等 ImGuiStyle 参数
+//   - 将深海军蓝 + 青/紫/粉配色应用到全部 ImGuiCol 条目
+// ============================================================
 #include "ui/theme.h"
 #include "util/logger.h"
 
@@ -5,13 +12,14 @@
 
 namespace melody_matrix::ui {
 
+/// 应用深霓虹主题：圆角/间距 + 完整配色表
 void Theme::apply() {
     MM_LOG_INFO("Theme", "Applying deep neon theme");
 
     ImGuiStyle& style = ImGui::GetStyle();
     ImVec4* colors = style.Colors;
 
-    // ── Rounded corners ──
+    // ── 圆角 ──
     style.WindowRounding = 8.0f;
     style.ChildRounding = 6.0f;
     style.FrameRounding = 4.0f;
@@ -20,7 +28,7 @@ void Theme::apply() {
     style.GrabRounding = 4.0f;
     style.TabRounding = 4.0f;
 
-    // ── Spacing ──
+    // ── 间距 ──
     style.WindowPadding = ImVec2(12, 12);
     style.FramePadding = ImVec2(8, 4);
     style.ItemSpacing = ImVec2(8, 6);
@@ -28,25 +36,25 @@ void Theme::apply() {
     style.WindowBorderSize = 0.0f;
     style.FrameBorderSize = 0.0f;
 
-    // ── Color palette ──
-    // Background shades (#1a1a2e family)
+    // ── 调色板 ──
+    // 背景色阶（#1a1a2e 系列）
     ImVec4 bgMain   = ImVec4(BG_R, BG_G, BG_B, 1.0f);           // #1a1a2e
     ImVec4 bgLight  = ImVec4(0.14f, 0.14f, 0.22f, 1.0f);        // #242438
     ImVec4 bgLighter= ImVec4(0.18f, 0.18f, 0.28f, 1.0f);        // #2e2e47
     ImVec4 bgPanel  = ImVec4(BG_R, BG_G, BG_B, 0.94f);
 
-    // Accent colors
+    // 强调色
     ImVec4 cyan     = ImVec4(CYAN_R, CYAN_G, CYAN_B, 1.0f);     // #00fff5
     ImVec4 purple   = ImVec4(PURP_R, PURP_G, PURP_B, 1.0f);     // #b300ff
     ImVec4 pink     = ImVec4(PINK_R, PINK_G, PINK_B, 1.0f);     // #ff006e
     ImVec4 cyanDim  = ImVec4(CYAN_R, CYAN_G, CYAN_B, 0.6f);
     ImVec4 purpleDim= ImVec4(PURP_R, PURP_G, PURP_B, 0.4f);
 
-    // Text
-    ImVec4 textMain = ImVec4(0.95f, 0.95f, 0.98f, 1.0f);        // near white
-    ImVec4 textDim  = ImVec4(0.55f, 0.55f, 0.65f, 1.0f);        // muted
+    // 文字
+    ImVec4 textMain = ImVec4(0.95f, 0.95f, 0.98f, 1.0f);        // 近白
+    ImVec4 textDim  = ImVec4(0.55f, 0.55f, 0.65f, 1.0f);        // 弱化色
 
-    // ── Apply colors ──
+    // ── 应用到 ImGui 颜色表 ──
     colors[ImGuiCol_Text]                  = textMain;
     colors[ImGuiCol_TextDisabled]          = textDim;
     colors[ImGuiCol_WindowBg]              = bgPanel;
