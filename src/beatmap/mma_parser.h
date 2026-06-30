@@ -73,9 +73,9 @@ private:
     util::Result<void> parseNotes(const std::vector<std::string>& lines, BeatmapBuilder& builder);
 
     /// v2 校验辅助：[FormationTransformMacros] 定义的合法宏值集合（用于校验 transformType）
-    std::set<int32_t> m_macroValues;
-    bool m_hasMacros = false;
-    int64_t m_lastFormationTime = -1;  ///< 用于校验 time 单调非递减
+    std::set<int32_t> m_macroValues;   ///< 宏整数值集合
+    bool m_hasMacros = false;          ///< 是否解析过宏段
+    int64_t m_lastFormationTime = -1;  ///< 上一条 Formation 的 time（单调校验）
 };
 
 } // namespace melody_matrix::beatmap

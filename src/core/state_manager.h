@@ -14,12 +14,12 @@
  */
 #pragma once
 
-#include "game_state.h"
-#include "game_state_base.h"
-#include "scene_transition.h"
+#include "game_state.h"        // GameState 枚举与 gameStateName()
+#include "game_state_base.h"   // 各具体状态的抽象基类
+#include "scene_transition.h"  // 场景切换黑屏淡入淡出
 
-#include <memory>
-#include <unordered_map>
+#include <memory>              // std::unique_ptr：状态实例所有权
+#include <unordered_map>       // GameState → 状态实例 映射表
 
 namespace melody_matrix::core {
 
@@ -81,11 +81,11 @@ public:
      */
     template <typename T>
     T* getStateAs(GameState id) {
-        auto it = m_states.find(id);
+        auto it = m_states.find(id);  // 在注册表中查找目标状态
         if (it != m_states.end()) {
-            return dynamic_cast<T*>(it->second.get());
+            return dynamic_cast<T*>(it->second.get());  // 运行时向下转型到具体状态类
         }
-        return nullptr;
+        return nullptr;  // 未注册或类型不匹配
     }
 
 private:
@@ -95,12 +95,12 @@ private:
      */
     void executeTransition(GameState newState);
 
-    std::unordered_map<GameState, std::unique_ptr<GameStateBase>> m_states;
+    std::unordered_map<GameState, std::unique_ptr<GameStateBase>> m_states;  ///< 已注册的状态实例表
     GameState m_currentState = GameState::Count; ///< 尚未进入任何状态（确保首次 transitionTo 触发 onEnter）
     GameState m_pendingState = GameState::Count; ///< 过渡完成后待切换的目标
 
-    SceneTransition m_transition;
-    bool m_transitioning = false;  ///< 是否正在执行过渡动画
+    SceneTransition m_transition;   ///< 黑屏淡入淡出控制器
+    bool m_transitioning = false;   ///< 是否正在执行过渡动画
 
     static constexpr float FADE_DURATION = 0.2f; ///< 淡入/淡出时长（200ms）
 };

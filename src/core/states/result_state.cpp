@@ -33,11 +33,10 @@ void ResultState::onExit() {
     MM_LOG_INFO("Result", "Exiting Result state");
 }
 
-/// 根据用户选择决定下一状态
+/// 根据用户选择决定下一状态（Retry→Playing reinit，Back→SongSelect 并清渲染）
 GameState ResultState::update(float /*dt*/) {
     switch (m_action) {
     case ResultAction::Retry:
-        // 重试前先标记 PlayingState 需要重新初始化
         {
             auto* playing = Kernel::instance().stateManager().getStateAs<PlayingState>(GameState::Playing);
             if (playing) {
@@ -50,7 +49,7 @@ GameState ResultState::update(float /*dt*/) {
             auto* playing = Kernel::instance().stateManager().getStateAs<PlayingState>(GameState::Playing);
             if (playing) {
                 playing->markNeedsReinit();
-                playing->cleanupRenderer();
+                playing->cleanupRenderer();                    // 返回选歌前释放 gameplay GL 资源
             }
         }
         return GameState::SongSelect;

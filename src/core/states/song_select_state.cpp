@@ -26,6 +26,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <unordered_set>
 
 namespace melody_matrix::core {
@@ -57,43 +58,42 @@ void SongSelectState::computeLayout(float screenW, float screenH) {
 //  生命周期
 // ══════════════════════════════════════════════════════════════════════════════
 
-/// 进入选歌状态
+/// 进入选歌状态：初始化预览音频、扫描谱面、Mod 列表
 void SongSelectState::onEnter() {
     MM_LOG_INFO("SongSelect", "Entering Song Select");
 
-    // 初始化音频引擎（每次进入时初始化，退出时 shutdown）
-    if (!m_audio.init()) {
+    if (!m_audio.init()) {                                   // 选歌专用音频引擎（与 Playing 分离）
         MM_LOG_ERROR("SongSelect", "Failed to initialize audio engine!");
     } else {
         m_audio.loadSfx();
     }
 
     m_nextState = GameState::Count;
-    m_selectedBeatmap.clear();
+    m_selectedBeatmap.clear();                               // 清空“待开始”路径
     m_modPopupOpen = false;
     m_bgImageGroup = -1;
 
-    if (!m_scanDone) {
-        scanBeatmaps();
-        // 补加载新图片到全局缓存（已缓存的无开销）
-        scanAndPreload();
+    if (!m_scanDone) {                                         // 首次进入或 markNeedsRescan
+        scanBeatmaps();                                        // 递归扫描 .mma/.osu
+        scanAndPreload();                                      // 预加载分组背景到 TextureCache
     }
 
-    // 加载头像
     loadAvatarTexture();
 
-    // 初始化 Mod 列表
-    if (m_mods.empty()) {
+    if (m_mods.empty()) {                                      // 初始化可选 mod
         m_mods.push_back({"NoFail", "nofail", false, true});
         m_mods.push_back({"Autoplay", "autoplay", false, true});
     }
 
-    // 随机选中一组铺面
-    if (!m_groups.empty() && m_selectedGroup < 0) {
+    if (!m_groups.empty() && m_selectedGroup < 0) {          // 首次进入随机选歌
         m_selectedGroup = rand() % static_cast<int>(m_groups.size());
         m_selectedSet = 0;
+    }
+
+    // 从 Playing/Result 返回时也要恢复全屏背景与预览（onExit 已 shutdown 音频）
+    if (m_selectedGroup >= 0 && m_selectedGroup < static_cast<int>(m_groups.size())) {
         syncSelectionBackground();
-        tryPlayPreview();   // 随机选中后触发预览
+        tryPlayPreview();
     }
 }
 
@@ -117,39 +117,36 @@ void SongSelectState::onExit() {
 //  更新
 // ══════════════════════════════════════════════════════════════════════════════
 
-/// 每帧更新：驱动预览音频、同步背景、检测开始游戏
+/// 每帧更新：驱动预览音频、同步背景、检测开始游戏（选中谱面后切 Playing）
 GameState SongSelectState::update(float dt) {
-    // 驱动音频引擎（淡入淡出 + 预览循环）
-    m_audio.update(dt);
+    m_audio.update(dt);                                      // 预览淡入淡出、循环
 
-    // 如果选中了铺面，传递给 PlayingState 并转换
+    // 用户双击 set 或点 START 后 m_selectedBeatmap 非空 → 配置 PlayingState 并切换
     if (!m_selectedBeatmap.empty()) {
         auto* playing = Kernel::instance().stateManager().getStateAs<PlayingState>(GameState::Playing);
         if (playing) {
-            playing->setBeatmapFile(m_selectedBeatmap);
-            playing->markNeedsReinit();
-            // 传递背景图路径
+            playing->setBeatmapFile(m_selectedBeatmap);    // .mma 或 .osu 路径
+            playing->markNeedsReinit();                      // 下次 onEnter 重新 initGameplay
             if (m_selectedGroup >= 0 && m_selectedGroup < static_cast<int>(m_groups.size())) {
-                playing->setBackgroundImage(m_groups[m_selectedGroup].imagePath);
+                playing->setBackgroundImage(m_groups[m_selectedGroup].imagePath);  // 组共享背景
             }
-            // 传递已激活的模组 ID
             std::vector<std::string> activeMods;
-            for (const auto& mod : m_mods) {
+            for (const auto& mod : m_mods) {                 // 收集已激活且已实装的 mod
                 if (mod.active && mod.implemented) {
-                    activeMods.push_back(mod.id);
+                    activeMods.push_back(mod.id);          // 如 nofail、autoplay
                 }
             }
             playing->setMods(activeMods);
         }
-        return GameState::Playing;
+        return GameState::Playing;                           // 请求状态机切到游玩
     }
 
-    // 全屏背景图跟随选中组更新
+    // 选中组变化时同步全屏背景（RANDOM、点击组头等）
     if (m_selectedGroup >= 0 && m_bgImageGroup != m_selectedGroup) {
         syncSelectionBackground();
     }
 
-    return m_nextState;
+    return m_nextState;                                      // BACK 等设置的下一状态
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -241,15 +238,143 @@ void SongSelectState::render() {
 //  铺面扫描
 // ══════════════════════════════════════════════════════════════════════════════
 
-/// 扫描铺面目录，解析 .mma 文件并构建分组列表（可安全在后台线程调用）
+// ══════════════════════════════════════════════════════════════════════════════
+//  铺面扫描与增量注册
+// ══════════════════════════════════════════════════════════════════════════════
+
+std::optional<SongSelectState::BeatmapEntry> SongSelectState::parseBeatmapEntry(
+    const std::string& filePath) {
+    try {
+        auto readResult = platform::FileSystem::readFile(filePath);
+        if (!readResult.ok()) {
+            return std::nullopt;
+        }
+
+        const std::string& content = readResult.value();
+        auto parser = beatmap::createParserForFile(filePath);
+        beatmap::BeatmapBuilder builder;
+        auto parseResult = parser->parse(content, builder);
+        if (!parseResult.ok()) {
+            return std::nullopt;
+        }
+
+        auto buildResult = builder.build();
+        if (!buildResult.ok()) {
+            return std::nullopt;
+        }
+
+        const auto& beatmap = buildResult.value();
+        const std::filesystem::path path(filePath);
+
+        BeatmapEntry e;
+        e.filePath = std::filesystem::absolute(path).string();
+        e.title = beatmap.meta.title;
+        e.artist = beatmap.meta.artist;
+        e.creator = beatmap.meta.creator;
+        e.version = beatmap.meta.version;
+        e.difficulty = beatmap.difficulty.star;
+        e.ar = beatmap.difficulty.ar;
+        e.od = beatmap.difficulty.od;
+        e.hp = beatmap.difficulty.hp;
+        e.noteCount = static_cast<int>(beatmap.noteCount());
+
+        if (!beatmap.notes.empty()) {
+            e.duration = static_cast<float>(beatmap.notes.back().time) / 1000.0f;
+        }
+
+        e.previewTime = beatmap.meta.previewTime;
+        if (!beatmap.meta.audioFile.empty()) {
+            auto audioPath = path.parent_path() / beatmap.meta.audioFile;
+            e.audioFilePath = std::filesystem::absolute(audioPath).string();
+        }
+
+        const auto bgDir = path.parent_path();
+        for (const char* bgName : {"background.jpg", "background.png", "bg.jpg", "bg.png"}) {
+            auto bgPath = bgDir / bgName;
+            if (platform::FileSystem::fileExists(bgPath.string())) {
+                e.imagePath = std::filesystem::absolute(bgPath).string();
+                break;
+            }
+        }
+        if (e.imagePath.empty()) {
+            e.imagePath = std::filesystem::absolute("assets/textures/menu-bg.jpg").string();
+        }
+
+        return e;
+    } catch (const std::exception& ex) {
+        MM_LOG_WARN("SongSelect", "Failed to parse beatmap %s: %s", filePath.c_str(), ex.what());
+        return std::nullopt;
+    }
+}
+
+void SongSelectState::mergeBeatmapEntry(BeatmapEntry entry) {
+    for (const auto& group : m_groups) {
+        for (const auto& set : group.sets) {
+            if (set.filePath == entry.filePath) {
+                return;
+            }
+        }
+    }
+
+    const auto sortSets = [](std::vector<BeatmapEntry>& sets) {
+        std::sort(sets.begin(), sets.end(),
+                  [](const BeatmapEntry& a, const BeatmapEntry& b) {
+                      return a.difficulty < b.difficulty;
+                  });
+    };
+
+    for (auto& group : m_groups) {
+        if (group.title == entry.title && group.artist == entry.artist) {
+            group.sets.push_back(std::move(entry));
+            sortSets(group.sets);
+            return;
+        }
+    }
+
+    BeatmapGroup group;
+    group.title = entry.title;
+    group.artist = entry.artist;
+    group.imagePath = entry.imagePath;
+    group.sets.push_back(std::move(entry));
+
+    const auto groupLess = [](const BeatmapGroup& a, const BeatmapGroup& b) {
+        if (a.title != b.title) {
+            return a.title < b.title;
+        }
+        return a.artist < b.artist;
+    };
+    auto insertIt = std::lower_bound(m_groups.begin(), m_groups.end(), group, groupLess);
+    m_groups.insert(insertIt, std::move(group));
+}
+
+void SongSelectState::registerImportedMma(const std::string& mmaPath) {
+    auto entry = parseBeatmapEntry(mmaPath);
+    if (!entry) {
+        MM_LOG_WARN("SongSelect", "registerImportedMma: failed to parse %s", mmaPath.c_str());
+        return;
+    }
+
+    const std::string imagePath = entry->imagePath;
+    mergeBeatmapEntry(std::move(*entry));
+    m_scanDone = true;
+
+    if (!imagePath.empty()) {
+        renderer::TextureCache::instance().requestLoad(imagePath, false);
+    }
+
+    MM_LOG_INFO("SongSelect", "Registered imported beatmap: %s (%zu groups)",
+                mmaPath.c_str(), m_groups.size());
+}
+
+/// 扫描铺面目录，解析 .mma/.osu 并构建分组列表（含导入的 osu 谱面，可后台线程调用）
 void SongSelectState::scanBeatmaps() {
     MM_LOG_INFO("SongSelect", "Scanning beatmaps in: " + m_beatmapDir);
 
-    m_groups.clear();
-    std::vector<BeatmapEntry> entries;
+    m_groups.clear();                                        // 清空旧列表
+    std::vector<BeatmapEntry> entries;                       // 扁平条目，后续再分组
 
     try {
-        std::filesystem::path beatmapDir(m_beatmapDir);
+        std::filesystem::path beatmapDir(m_beatmapDir);       // 默认 assets/beatmaps
         if (!std::filesystem::exists(beatmapDir)) {
             MM_LOG_WARN("SongSelect", "Beatmap directory does not exist: " + m_beatmapDir);
             m_scanDone = true;
@@ -257,77 +382,24 @@ void SongSelectState::scanBeatmaps() {
         }
 
         for (const auto& entry : std::filesystem::recursive_directory_iterator(beatmapDir)) {
-            if (!entry.is_regular_file()) continue;
+            if (!entry.is_regular_file()) continue;          // 跳过目录
 
             std::string ext = entry.path().extension().string();
-            for (auto& c : ext) c = static_cast<char>(tolower(c));
+            for (auto& c : ext) c = static_cast<char>(tolower(c));  // 扩展名小写
 
-            if (ext != ".mma" && ext != ".osu") continue;
+            if (ext != ".mma" && ext != ".osu") continue;     // 仅游戏支持的谱面格式
 
             std::string filePath = std::filesystem::absolute(entry.path()).string();
 
-            try {
-                auto readResult = platform::FileSystem::readFile(filePath);
-                if (!readResult.ok()) continue;
-
-                const std::string& content = readResult.value();
-                auto parser = beatmap::createParserForFile(filePath);
-                beatmap::BeatmapBuilder builder;
-                auto parseResult = parser->parse(content, builder);
-                if (!parseResult.ok()) continue;
-
-                auto buildResult = builder.build();
-                if (!buildResult.ok()) continue;
-
-                const auto& beatmap = buildResult.value();
-
-                BeatmapEntry e;
-                e.filePath = filePath;
-                e.title = beatmap.meta.title;
-                e.artist = beatmap.meta.artist;
-                e.creator = beatmap.meta.creator;
-                e.version = beatmap.meta.version;
-                e.difficulty = beatmap.difficulty.star;
-                e.ar = beatmap.difficulty.ar;
-                e.od = beatmap.difficulty.od;
-                e.hp = beatmap.difficulty.hp;
-                e.noteCount = static_cast<int>(beatmap.noteCount());
-
-                if (!beatmap.notes.empty()) {
-                    e.duration = static_cast<float>(beatmap.notes.back().time) / 1000.0f;
-                }
-
-                e.previewTime = beatmap.meta.previewTime;
-                // 音频文件路径：meta.audioFile 是相对于铺面文件所在目录的路径
-                if (!beatmap.meta.audioFile.empty()) {
-                    auto audioPath = entry.path().parent_path() / beatmap.meta.audioFile;
-                    e.audioFilePath = std::filesystem::absolute(audioPath).string();
-                }
-
-                // 背景图查找
-                auto bgDir = entry.path().parent_path();
-                for (const char* bgName : {"background.jpg", "background.png", "bg.jpg", "bg.png"}) {
-                    auto bgPath = bgDir / bgName;
-                    if (platform::FileSystem::fileExists(bgPath.string())) {
-                        e.imagePath = std::filesystem::absolute(bgPath).string();
-                        break;
-                    }
-                }
-                if (e.imagePath.empty()) {
-                    e.imagePath = std::filesystem::absolute("assets/textures/menu-bg.jpg").string();
-                }
-
-                entries.push_back(e);
-            } catch (const std::exception& e) {
-                MM_LOG_WARN("SongSelect", "Failed to parse beatmap %s: %s",
-                            filePath.c_str(), e.what());
+            if (auto parsed = parseBeatmapEntry(filePath)) {
+                entries.push_back(std::move(*parsed));
             }
         }
     } catch (const std::exception& e) {
         MM_LOG_WARN("SongSelect", "Failed to scan beatmaps: %s", e.what());
     }
 
-    // 如果没有扫描到任何铺面，保留 demo 数据
+    // 目录为空时注入 demo 谱面，保证可进入游玩
     if (entries.empty()) {
         BeatmapEntry e;
         e.filePath = "assets/beatmaps/demo.mma";
@@ -341,28 +413,27 @@ void SongSelectState::scanBeatmaps() {
         e.hp = 4.0f;
         e.noteCount = 18;
         e.duration = 10.0f;
-        e.imagePath = "assets/textures/menu-bg.jpg";
+        e.imagePath = std::filesystem::absolute("assets/textures/menu-bg.jpg").string();
         entries.push_back(e);
     }
 
-    // 按标题排序，同标题按难度排
     std::sort(entries.begin(), entries.end(),
         [](const BeatmapEntry& a, const BeatmapEntry& b) {
             if (a.title != b.title) return a.title < b.title;
-            return a.difficulty < b.difficulty;
+            return a.difficulty < b.difficulty;              // 同歌按星级升序
         });
 
-    // ── 按 title+artist 分组 ──
+    // ── 按 title+artist 合并为 BeatmapGroup（一组多难度 set）──
     for (auto& e : entries) {
         if (!m_groups.empty() && m_groups.back().title == e.title && m_groups.back().artist == e.artist) {
-            m_groups.back().sets.push_back(std::move(e));
+            m_groups.back().sets.push_back(std::move(e));    // 追加到当前组
         } else {
             BeatmapGroup g;
             g.title = e.title;
             g.artist = e.artist;
             g.imagePath = e.imagePath;
             g.sets.push_back(std::move(e));
-            m_groups.push_back(std::move(g));
+            m_groups.push_back(std::move(g));                // 新组
         }
     }
 
@@ -600,15 +671,14 @@ void SongSelectState::tryLoadGroupImage(int groupIndex) {
     const auto& group = m_groups[groupIndex];
     if (group.imagePath.empty()) return;
 
-    // 通过全局纹理缓存加载（已缓存则直接返回，无需磁盘 I/O）
-    renderer::TextureCache::instance().load(group.imagePath, false);
+    renderer::TextureCache::instance().requestLoad(group.imagePath, false);
 }
 
 void SongSelectState::syncSelectionBackground() {
     auto& renderer = Kernel::instance().renderer();
-    renderer.setBackgroundPath("");
 
     if (m_selectedGroup < 0 || m_selectedGroup >= static_cast<int>(m_groups.size())) {
+        renderer.setBackgroundPath("");
         m_bgImageGroup = -1;
         return;
     }
@@ -621,6 +691,8 @@ void SongSelectState::syncSelectionBackground() {
 
     if (group.imagePath.find("menu-bg.jpg") == std::string::npos) {
         renderer.setBackgroundPath(group.imagePath);
+    } else {
+        renderer.setBackgroundPath("");
     }
 }
 
@@ -638,7 +710,7 @@ void SongSelectState::releaseDeletedBeatmapAssets(
     auto* mainMenu = Kernel::instance().stateManager().getStateAs<MainMenuState>(GameState::MainMenu);
     if (mainMenu) {
         for (const auto& hash : sourceHashes) {
-            mainMenu->importedHashes().erase(hash);
+            mainMenu->importedHashes().erase(hash);          // 删除后允许重新 import 同一 osu
         }
     }
 

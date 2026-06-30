@@ -11,12 +11,12 @@
  * 在项目中的用法：
  *   谱面导入 UI 调用 FileDialog::openFile() 或 openFiles() 让用户选择 .osu/.osz。
  */
-#pragma once
+#pragma once  // 防止头文件重复包含
 
-#include <string>
-#include <vector>
+#include <string>        // 文件路径字符串
+#include <vector>        // 多选结果列表
 
-namespace melody_matrix::platform {
+namespace melody_matrix::platform {  // 平台层命名空间
 
 /**
  * @brief 原生文件对话框封装
@@ -34,7 +34,7 @@ public:
      */
     static std::string openFile(const std::string& title,
                                 const std::string& filterDesc,
-                                const std::string& filterExt);
+                                const std::string& filterExt);  // 单选文件
 
     /**
      * @brief 打开多选文件对话框
@@ -45,7 +45,7 @@ public:
      */
     static std::vector<std::string> openFiles(const std::string& title,
                                                const std::string& filterDesc,
-                                               const std::string& filterExt);
+                                               const std::string& filterExt);  // 多选文件
 };
 
 } // namespace melody_matrix::platform

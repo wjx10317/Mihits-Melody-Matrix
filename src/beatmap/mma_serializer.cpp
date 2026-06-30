@@ -49,7 +49,7 @@ std::string MmaSerializer::serialize(const Beatmap& beatmap, const std::string& 
 
     // ── [Difficulty] ──
     oss << "[Difficulty]\n";
-    oss << std::fixed << std::setprecision(1);
+    oss << std::fixed << std::setprecision(1);  // 一位小数
     oss << "HP=" << beatmap.difficulty.hp << "\n";
     oss << "OD=" << beatmap.difficulty.od << "\n";
     oss << "AR=" << beatmap.difficulty.ar << "\n";
@@ -100,9 +100,9 @@ std::string MmaSerializer::serialize(const Beatmap& beatmap, const std::string& 
     for (const auto& n : beatmap.notes) {
         oss << n.time << "," << n.row << "," << n.col << ",";
         if (n.type == NoteType::Hold) {
-            oss << "H," << n.holdEnd;
+            oss << "H," << n.holdEnd;  // Hold 带结束时间
         } else {
-            oss << "T";
+            oss << "T";                // Tap 无额外字段
         }
         oss << "\n";
     }
@@ -148,28 +148,22 @@ util::Result<void> MmaSerializer::writeToFile(const Beatmap& beatmap,
 /// 读取文件头最多 10 行，解析 # source_hash= 注释
 std::string MmaSerializer::readSourceHash(const std::string& filePath) {
     std::ifstream ifs(filePath);
-    if (!ifs) return "";
+    if (!ifs) return "";  // 文件打不开
 
     std::string line;
-    // 只需读前几行找 source_hash 注释
     int lineCount = 0;
     while (std::getline(ifs, line) && lineCount < 10) {
         ++lineCount;
-        // 去除 BOM 和空白
+        // 去除 UTF-8 BOM
         if (!line.empty() && line[0] == '\xEF' && line.size() >= 3) {
             line = line.substr(3);
         }
-        // 查找 # source_hash=xxxx
+        // 匹配 # source_hash=xxxx
         if (line.rfind("# source_hash=", 0) == 0) {
             return line.substr(15); // 15 = strlen("# source_hash=")
         }
-        // 如果已经过了注释区域（遇到非注释、非空行），可以停止
-        if (!line.empty() && line[0] != '#' && line[0] != '\r' && line[0] != '\n') {
-            // 继续读，因为可能 source_hash 在空行后面
-            // 但为效率起见，最多读 10 行
-        }
     }
-    return "";
+    return "";  // 未找到 source_hash
 }
 
 } // namespace melody_matrix::beatmap

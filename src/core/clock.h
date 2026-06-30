@@ -14,8 +14,8 @@
  */
 #pragma once
 
-#include <atomic>
-#include <cstdint>
+#include <atomic>   // std::atomic：音频时间在多线程间安全读写
+#include <cstdint>  // int64_t / uint64_t：毫秒级歌曲时间
 
 namespace melody_matrix::core {
 

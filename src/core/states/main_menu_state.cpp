@@ -30,23 +30,52 @@
 
 namespace melody_matrix::core {
 
+namespace {
+
+/// 异步预加载歌曲目录内的 background.*（与 scanBeatmaps 命名规则一致）
+void requestLoadBeatmapBackground(const std::filesystem::path& dir) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    if (!fs::exists(dir, ec) || !fs::is_directory(dir, ec)) {
+        return;
+    }
+    for (const auto& f : fs::directory_iterator(dir, ec)) {
+        if (ec) {
+            break;
+        }
+        std::string fileExt = f.path().extension().string();
+        for (char& c : fileExt) {
+            c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+        }
+        if (fileExt != ".png" && fileExt != ".jpg" && fileExt != ".jpeg" && fileExt != ".webp") {
+            continue;
+        }
+        if (f.path().stem().string() != "background") {
+            continue;
+        }
+        renderer::TextureCache::instance().requestLoad(fs::absolute(f.path()).string(), false);
+    }
+}
+
+} // namespace
+
 // ──────────────────────────────────────────────────────
 //  辅助函数
 // ──────────────────────────────────────────────────────
 
-/// 替换文件名中 Windows 不允许的字符
+/// 替换文件名中 Windows 不允许的字符（osu Title/Version → 安全目录名）
 static std::string sanitizeFilename(const std::string& name) {
     std::string result = name;
     for (auto& c : result) {
         if (c == '\\' || c == '/' || c == ':' || c == '*' || c == '?' ||
             c == '"' || c == '<' || c == '>' || c == '|') {
-            c = '_';
+            c = '_';                                         // 非法字符替换为下划线
         }
     }
-    while (!result.empty() && result.front() == ' ') result.erase(result.begin());
+    while (!result.empty() && result.front() == ' ') result.erase(result.begin());  // 去首尾空格
     while (!result.empty() && result.back() == ' ') result.pop_back();
-    if (result.empty()) result = "Unknown";
-    if (result.size() > 200) result = result.substr(0, 200);
+    if (result.empty()) result = "Unknown";                  // 空标题兜底
+    if (result.size() > 200) result = result.substr(0, 200); // 限制长度防路径过长
     return result;
 }
 
@@ -105,16 +134,16 @@ void MainMenuState::onEnter() {
         }
     }
 
-    // 构建已导入哈希集合：扫描 assets/beatmaps/ 下所有 .mma 文件
+    // 构建已导入哈希集合：扫描 assets/beatmaps/ 下所有 .mma 内嵌的 sourceHash（与 import 去重联动）
     if (m_importedHashes.empty()) {
         try {
             std::filesystem::path beatmapDir("assets/beatmaps");
             if (std::filesystem::exists(beatmapDir)) {
                 for (const auto& entry : std::filesystem::recursive_directory_iterator(beatmapDir)) {
-                    if (entry.is_regular_file() && entry.path().extension() == ".mma") {
+                    if (entry.is_regular_file() && entry.path().extension() == ".mma") {  // 仅 .mma
                         std::string hash = beatmap::MmaSerializer::readSourceHash(entry.path().string());
                         if (!hash.empty()) {
-                            m_importedHashes.insert(hash);
+                            m_importedHashes.insert(hash);   // 加入去重集合
                         }
                     }
                 }
@@ -172,93 +201,93 @@ GameState MainMenuState::update(float dt) {
 //  导入功能
 // ──────────────────────────────────────────────────────
 
-/// 导入 .osz 文件并设置成功/失败消息
+/// 导入 .osz 文件并设置成功/失败消息（UI 层入口，由 IMPORT 按钮触发）
 void MainMenuState::importOszFile(const std::string& oszPath) {
-    auto result = validateAndImportOsz(oszPath);
-    if (result.ok()) {
-        m_importSuccess = true;
-        m_importMessageTimer = 3.0f;
+    auto result = validateAndImportOsz(oszPath);              // 执行完整校验→解压→逐 .osu 导入流程
+    if (result.ok()) {                                       // 至少成功导入一个难度
+        m_importSuccess = true;                              // 标记成功，UI 用青色显示
+        m_importMessageTimer = 3.0f;                         // 成功消息显示 3 秒后淡出
         // result 不携带数据，消息由 validateAndImportOsz 内部设置
-    } else {
-        // ALREADY_IMPORTED 是静默跳过
+    } else {                                                 // 导入失败或全部跳过
+        // ALREADY_IMPORTED 是静默跳过（用户重复导入同一谱面集时不弹错误）
         if (result.error().code == static_cast<int32_t>(util::ErrorCode::ERROR_BEATMAP_ALREADY_IMPORTED)) {
-            m_importMessage.clear();
-            return;
+            m_importMessage.clear();                         // 不显示任何提示
+            return;                                          // 直接返回，保持界面干净
         }
-        m_importSuccess = false;
-        m_importMessage = "Import failed: " + result.error().message;
-        m_importMessageTimer = 5.0f;
+        m_importSuccess = false;                             // 标记失败，UI 用粉色显示
+        m_importMessage = "Import failed: " + result.error().message;  // 拼接具体错误原因
+        m_importMessageTimer = 5.0f;                         // 失败消息显示 5 秒（比成功更长便于阅读）
     }
 }
 
-/// 校验 .osz 扩展名、解压到临时目录并逐个导入 .osu
+/// 校验 .osz 扩展名、解压到临时目录并逐个导入 .osu（osu! 谱面集 → 本地 .mma）
 util::Result<void> MainMenuState::validateAndImportOsz(const std::string& oszPath) {
     using namespace util;
 
-    // ── V1: 文件扩展名 ──
+    // ── V1: 文件扩展名必须为 .osz（osu! 谱面集 zip 包）──
     std::string ext;
     {
-        auto dotPos = oszPath.rfind('.');
-        if (dotPos == std::string::npos) {
+        auto dotPos = oszPath.rfind('.');                  // 找最后一个点，定位扩展名
+        if (dotPos == std::string::npos) {                   // 无扩展名则拒绝
             return Result<void>(static_cast<int32_t>(ErrorCode::ERROR_IO),
                                 "File has no extension: " + oszPath);
         }
-        ext = oszPath.substr(dotPos + 1);
-        for (auto& c : ext) c = static_cast<char>(tolower(c));
-        if (ext != "osz") {
+        ext = oszPath.substr(dotPos + 1);                  // 截取扩展名子串
+        for (auto& c : ext) c = static_cast<char>(tolower(c));  // 转小写，兼容 .OSZ
+        if (ext != "osz") {                                  // 非 osz 格式直接报错
             return Result<void>(static_cast<int32_t>(ErrorCode::ERROR_IO),
                                 "Not an .osz file: " + oszPath);
         }
     }
 
     // ── V2: 文件可读（基本存在性检查）──
-    if (!std::filesystem::exists(oszPath)) {
+    if (!std::filesystem::exists(oszPath)) {                 // 路径不存在
         return Result<void>(static_cast<int32_t>(ErrorCode::ERROR_FILE_NOT_FOUND),
                             "File not found: " + oszPath);
     }
 
-    // ── V2.5: 解压 .osz 到临时目录 ──
-    std::string tempDir = platform::ZipExtract::createTempDir();
-    if (tempDir.empty()) {
+    // ── V2.5: 解压 .osz 到系统临时目录（osz 本质是 zip）──
+    std::string tempDir = platform::ZipExtract::createTempDir();  // 创建唯一临时文件夹
+    if (tempDir.empty()) {                                   // 创建失败（磁盘/权限问题）
         return Result<void>(static_cast<int32_t>(ErrorCode::ERROR_IO),
                             "Cannot create temp directory for extraction");
     }
 
-    // RAII 清理：函数退出时删除临时目录
+    // RAII 清理：函数退出时（成功/失败均）删除临时目录，避免泄漏
     struct TempDirGuard {
         std::string path;
         ~TempDirGuard() { platform::ZipExtract::removeDir(path); }
     } tempDirGuard{tempDir};
 
-    if (!platform::ZipExtract::extract(oszPath, tempDir)) {
+    if (!platform::ZipExtract::extract(oszPath, tempDir)) {  // 解压 zip 到 tempDir
         return Result<void>(static_cast<int32_t>(ErrorCode::ERROR_BEATMAP_INVALID_ARCHIVE),
                             "Failed to extract .osz file");
     }
 
-    // ── V2.6: 查找 .osu 文件 ──
+    // ── V2.6: 递归查找解压目录内全部 .osu 文件（一个 osz 可含多个难度）──
     auto osuFiles = platform::ZipExtract::findOsuFiles(tempDir);
-    if (osuFiles.empty()) {
+    if (osuFiles.empty()) {                                  // 空包或无 .osu
         return Result<void>(static_cast<int32_t>(ErrorCode::ERROR_BEATMAP_NO_OSU_IN_ARCHIVE),
                             "No .osu files found in .osz archive");
     }
 
     MM_LOG_INFO("Import", "Found %zu .osu files in archive", osuFiles.size());
 
-    // ── 逐个处理 .osu 文件 ──
-    int importedCount = 0;
-    int skippedCount = 0;
-    std::string firstTitle;
-    std::string lastError;
+    // ── 逐个处理 .osu 文件（每个 .osu → 一个 .mma 难度）──
+    int importedCount = 0;                                   // 本次新导入数量
+    int skippedCount = 0;                                  // SHA256 重复跳过数量
+    std::string firstTitle;                                  // 预留：首个成功标题（当前未用）
+    std::string lastError;                                   // 记录最后一个失败原因
 
-    for (const auto& osuPath : osuFiles) {
-        auto singleResult = importSingleOsu(osuPath, tempDir);
-        if (singleResult.ok()) {
+    for (const auto& osuPath : osuFiles) {                   // 遍历每个 .osu 路径
+        auto singleResult = importSingleOsu(osuPath, tempDir);  // 单文件解析→写入 assets
+        if (singleResult.ok()) {                             // 该难度导入成功
             ++importedCount;
         } else if (singleResult.error().code ==
                    static_cast<int32_t>(ErrorCode::ERROR_BEATMAP_ALREADY_IMPORTED)) {
-            ++skippedCount;
+            ++skippedCount;                                  // 内容哈希已存在，跳过
         } else {
-            // 记录错误但继续处理其他 .osu
+            // 记录错误但继续处理其他 .osu（一个难度失败不影响同包其他难度）
             lastError = singleResult.error().message;
             MM_LOG_WARN("Import", "Failed to import %s: %s",
                         osuPath.c_str(), lastError.c_str());
@@ -271,96 +300,68 @@ util::Result<void> MainMenuState::validateAndImportOsz(const std::string& oszPat
         if (skippedCount > 0) {
             m_importMessage += " (" + std::to_string(skippedCount) + " already exists)";
         }
-
-        // 通知 SongSelectState 重新扫描
-        auto* songSelect = Kernel::instance().stateManager().getStateAs<SongSelectState>(GameState::SongSelect);
-        if (songSelect) {
-            songSelect->markNeedsRescan();
-        }
-
-        // 即时缓存新导入的背景图到全局纹理缓存
-        {
-            namespace fs = std::filesystem;
-            fs::path beatmapsDir = fs::absolute("assets/beatmaps");
-            if (fs::exists(beatmapsDir) && fs::is_directory(beatmapsDir)) {
-                for (const auto& entry : fs::directory_iterator(beatmapsDir)) {
-                    if (!entry.is_directory()) continue;
-                    // 查找目录中的 background.* 文件
-                    for (const auto& f : fs::directory_iterator(entry.path())) {
-                        std::string fileExt = f.path().extension().string();
-                        for (char& c : fileExt) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
-                        if (fileExt == ".png" || fileExt == ".jpg" || fileExt == ".jpeg" || fileExt == ".webp") {
-                            std::string name = f.path().stem().string();
-                            if (name == "background") {
-                                renderer::TextureCache::instance().load(fs::absolute(f.path()).string(), false);
-                            }
-                        }
-                    }
-                }
-            }
-        }
     } else if (skippedCount > 0) {
-        // 全部已导入 = 静默跳过
+        // 全部已导入 = 静默跳过（与 importOszFile 配合不弹窗）
         return Result<void>(static_cast<int32_t>(ErrorCode::ERROR_BEATMAP_ALREADY_IMPORTED), "");
-    } else {
+    } else {                                                 // importedCount==0 且无跳过 → 全部解析失败
         // 全部失败
         return Result<void>(static_cast<int32_t>(ErrorCode::ERROR_BEATMAP_PARSE),
                             lastError.empty() ? "All .osu files failed to import" : lastError);
     }
 
-    return success();
+    return success();                                        // 至少一个成功则整体成功
 }
 
-/// 解析单个 .osu、构建 Beatmap、序列化为 .mma 并写入 assets/beatmaps/
+/// 解析单个 .osu、构建 Beatmap、序列化为 .mma 并写入 assets/beatmaps/（单难度导入核心）
 util::Result<void> MainMenuState::importSingleOsu(const std::string& osuPath, const std::string& extractRoot) {
     using namespace util;
 
-    // ── V3: 读取并检查格式头 ──
+    // ── V3: 读取 .osu 全文并检查 osu! 格式头 ──
     std::string content;
     {
-        auto readResult = platform::FileSystem::readFile(osuPath);
-        if (!readResult.ok()) {
+        auto readResult = platform::FileSystem::readFile(osuPath);  // 从解压临时目录读取
+        if (!readResult.ok()) {                                // 文件不可读
             return Result<void>(static_cast<int32_t>(ErrorCode::ERROR_FILE_NOT_FOUND),
                                 "Cannot read .osu: " + osuPath);
         }
-        content = readResult.value();
+        content = readResult.value();                          // 保存完整文本供后续解析
     }
 
     {
-        auto firstNewline = content.find('\n');
+        auto firstNewline = content.find('\n');                  // 第一行必须是格式声明
         std::string firstLine = content.substr(0, firstNewline);
-        if (!firstLine.empty() && firstLine.back() == '\r') firstLine.pop_back();
-        if (firstLine.find("osu file format v") == std::string::npos) {
+        if (!firstLine.empty() && firstLine.back() == '\r') firstLine.pop_back();  // 去 CRLF
+        if (firstLine.find("osu file format v") == std::string::npos) {  // 非 osu 标准头
             return Result<void>(static_cast<int32_t>(ErrorCode::ERROR_BEATMAP_INVALID_HEADER),
                                 "Invalid .osu header: " + firstLine);
         }
     }
 
-    // ── V4: Mode 检查（仅 standard）──
+    // ── V4: Mode 检查（仅 standard，Mode=0；其他模式如 taiko/mania 不支持）──
     {
-        auto generalPos = content.find("[General]");
+        auto generalPos = content.find("[General]");             // 定位 General 段
         if (generalPos != std::string::npos) {
-            auto nextSection = content.find('[', generalPos + 9);
+            auto nextSection = content.find('[', generalPos + 9);  // 下一段 [ 起始
             std::string generalSection = content.substr(generalPos,
                 nextSection == std::string::npos ? std::string::npos : nextSection - generalPos);
-            auto modePos = generalSection.find("Mode:");
+            auto modePos = generalSection.find("Mode:");         // 兼容 Mode: 写法
             if (modePos == std::string::npos) {
-                modePos = generalSection.find("Mode=");
+                modePos = generalSection.find("Mode=");          // 兼容 Mode= 写法
             }
-            if (modePos != std::string::npos) {
+            if (modePos != std::string::npos) {                  // 找到 Mode 字段
                 auto lineEnd = generalSection.find('\n', modePos);
                 std::string modeLine = generalSection.substr(modePos, lineEnd - modePos);
                 auto colonPos = modeLine.find(':');
                 auto equalsPos = modeLine.find('=');
                 auto sepPos = (colonPos != std::string::npos) ? colonPos : equalsPos;
                 if (sepPos != std::string::npos) {
-                    std::string modeVal = modeLine.substr(sepPos + 1);
+                    std::string modeVal = modeLine.substr(sepPos + 1);  // 取值部分
                     while (!modeVal.empty() && (modeVal.front() == ' ' || modeVal.front() == '\t'))
-                        modeVal.erase(modeVal.begin());
+                        modeVal.erase(modeVal.begin());          // 去前导空白
                     while (!modeVal.empty() && (modeVal.back() == ' ' || modeVal.back() == '\t' ||
                            modeVal.back() == '\r'))
-                        modeVal.pop_back();
-                    if (modeVal != "0") {
+                        modeVal.pop_back();                      // 去尾随空白/回车
+                    if (modeVal != "0") {                        // 非 standard
                         return Result<void>(static_cast<int32_t>(ErrorCode::ERROR_BEATMAP_NOT_STANDARD),
                                             "Only osu!standard (Mode=0) is supported, got Mode=" + modeVal);
                     }
@@ -370,41 +371,41 @@ util::Result<void> MainMenuState::importSingleOsu(const std::string& osuPath, co
         }
     }
 
-    // ── SHA256 去重 ──
+    // ── SHA256 去重：相同 .osu 内容不重复写入（跨 osz 导入也生效）──
     std::string fileHash = util::sha256(content.data(), content.size());
-    if (m_importedHashes.count(fileHash) > 0) {
+    if (m_importedHashes.count(fileHash) > 0) {                // 哈希已在集合中
         return Result<void>(static_cast<int32_t>(ErrorCode::ERROR_BEATMAP_ALREADY_IMPORTED), "");
     }
 
-    // ── V5: 解析 .osu ──
-    auto parser = beatmap::createParserForFile(osuPath);
+    // ── V5: 用 osu 解析器解析文本 → BeatmapBuilder 中间结构 ──
+    auto parser = beatmap::createParserForFile(osuPath);       // 根据扩展名选 osu 解析器
     beatmap::BeatmapBuilder builder;
-    auto parseResult = parser->parse(content, builder);
-    if (!parseResult.ok()) {
+    auto parseResult = parser->parse(content, builder);        // 解析 hitobjects/timing 等
+    if (!parseResult.ok()) {                                   // 语法/格式错误
         return Result<void>(static_cast<int32_t>(ErrorCode::ERROR_BEATMAP_PARSE),
                             "Parse error: " + parseResult.error().message);
     }
 
-    // ── V6: 有音符 ──
+    // ── V6: build 校验并生成最终 Beatmap（含 note 列表、难度、元数据）──
     auto buildResult = builder.build();
-    if (!buildResult.ok()) {
+    if (!buildResult.ok()) {                                   // 业务校验失败（如非法 note）
         return Result<void>(buildResult.error().code,
                             "Build error: " + buildResult.error().message);
     }
 
     auto& beatmap = buildResult.value();
-    if (beatmap.notes.empty()) {
+    if (beatmap.notes.empty()) {                               // 空谱面无游玩价值
         return Result<void>(static_cast<int32_t>(ErrorCode::ERROR_BEATMAP_EMPTY_NOTES),
                             "Beatmap has no notes");
     }
 
-    // ── V7: 有音频引用 ──
+    // ── V7: 必须有 AudioFilename 引用（否则无法播放 BGM）──
     if (beatmap.meta.audioFile.empty()) {
         return Result<void>(static_cast<int32_t>(ErrorCode::ERROR_BEATMAP_NO_AUDIO_REF),
                             "Beatmap has no audio file reference");
     }
 
-    // ── V8: Title 非空 ──
+    // ── V8: Title 非空（用于目录名与 UI 显示）──
     if (beatmap.meta.title.empty()) {
         return Result<void>(static_cast<int32_t>(ErrorCode::ERROR_BEATMAP_NO_TITLE),
                             "Beatmap title is empty");
@@ -412,77 +413,78 @@ util::Result<void> MainMenuState::importSingleOsu(const std::string& osuPath, co
 
     // ── V11: Version 空则默认填充 ──
     if (beatmap.meta.version.empty()) {
-        beatmap.meta.version = "Normal";
+        beatmap.meta.version = "Normal";                       // osu 有时不写 Version
     }
 
-    // ── 构建目标路径 ──
-    std::string safeTitle = sanitizeFilename(beatmap.meta.title);
+    // ── 构建目标路径：assets/beatmaps/{Title}/{Version}.mma ──
+    std::string safeTitle = sanitizeFilename(beatmap.meta.title);    // 去掉非法文件名字符
     std::string safeVersion = sanitizeFilename(beatmap.meta.version);
     std::filesystem::path targetDir = std::filesystem::path("assets/beatmaps") / safeTitle;
     std::filesystem::path targetPath = targetDir / (safeVersion + ".mma");
 
-    // ── 创建目录 ──
+    // ── 创建歌曲目录 ──
     try {
-        std::filesystem::create_directories(targetDir);
+        std::filesystem::create_directories(targetDir);        // 递归创建，已存在则忽略
     } catch (const std::exception& e) {
         return Result<void>(static_cast<int32_t>(ErrorCode::ERROR_IO),
                             std::string("Cannot create directory: ") + e.what());
     }
 
-    // ── 写入 .mma 文件 ──
+    // ── 写入 .mma 文件（内含 sourceHash 供日后去重）──
     auto writeResult = beatmap::MmaSerializer::writeToFile(beatmap, targetPath.string(), fileHash);
     if (!writeResult.ok()) {
-        return writeResult;
+        return writeResult;                                    // 磁盘写入失败
     }
 
-    // ── V9: 复制音频文件（从解压目录）──
+    // ── V9: 复制音频文件（从解压目录到目标歌曲目录）──
     {
-        // osuPath 在解压临时目录中，音频文件在同一目录或子目录
+        // osuPath 在解压临时目录中，音频文件通常与 .osu 同目录或包根目录
         std::filesystem::path osuDir = std::filesystem::path(osuPath).parent_path();
-        std::filesystem::path audioSrc = osuDir / beatmap.meta.audioFile;
-        std::filesystem::path audioDst = targetDir / beatmap.meta.audioFile;
+        std::filesystem::path audioSrc = osuDir / beatmap.meta.audioFile;  // 优先同目录
+        std::filesystem::path audioDst = targetDir / beatmap.meta.audioFile;  // 保持相对路径
 
         // 也搜索解压根目录（有些 .osz 的音频在根目录，.osu 在子目录）
         if (!std::filesystem::exists(audioSrc)) {
             std::filesystem::path rootAudioSrc = std::filesystem::path(extractRoot) / beatmap.meta.audioFile;
             if (std::filesystem::exists(rootAudioSrc)) {
-                audioSrc = rootAudioSrc;
+                audioSrc = rootAudioSrc;                       // 回退到包根目录
             }
         }
 
         if (audioDst.has_parent_path()) {
-            std::filesystem::create_directories(audioDst.parent_path());
+            std::filesystem::create_directories(audioDst.parent_path());  // 音频可能在子文件夹
         }
 
         if (std::filesystem::exists(audioSrc)) {
-            if (!std::filesystem::exists(audioDst)) {
+            if (!std::filesystem::exists(audioDst)) {          // 已存在则不覆盖（同包多难度共享音频）
                 std::filesystem::copy_file(audioSrc, audioDst,
                     std::filesystem::copy_options::overwrite_existing);
                 MM_LOG_INFO("Import", "Audio copied: %s", beatmap.meta.audioFile.c_str());
             }
         } else {
             MM_LOG_WARN("Import", "Audio not found in archive: %s", beatmap.meta.audioFile.c_str());
+            // 音频缺失仍保留 .mma，游玩时可能 fallback 到 assets
         }
     }
 
-    // ── V10: 复制背景图（从解压目录）→ 重命名为 background.扩展名 ──
+    // ── V10: 复制背景图（从 [Events] 段解析 BG 事件）→ 重命名为 background.扩展名 ──
     {
-        auto eventsPos = content.find("[Events]");
+        auto eventsPos = content.find("[Events]");               // osu 背景在 Events 段
         if (eventsPos != std::string::npos) {
             auto nextSection = content.find('[', eventsPos + 8);
             std::string eventsSection = content.substr(eventsPos,
                 nextSection == std::string::npos ? std::string::npos : nextSection - eventsPos);
 
-            std::istringstream ess(eventsSection);
+            std::istringstream ess(eventsSection);               // 逐行扫描
             std::string line;
             while (std::getline(ess, line)) {
-                if (line.empty() || line[0] == '[' || line[0] == '/' || line[0] == '_') continue;
+                if (line.empty() || line[0] == '[' || line[0] == '/' || line[0] == '_') continue;  // 跳过段头/注释
 
-                auto q1 = line.find('"');
+                auto q1 = line.find('"');                        // BG 事件格式含引号包文件名
                 if (q1 != std::string::npos) {
                     auto q2 = line.find('"', q1 + 1);
                     if (q2 != std::string::npos) {
-                        std::string bgFile = line.substr(q1 + 1, q2 - q1 - 1);
+                        std::string bgFile = line.substr(q1 + 1, q2 - q1 - 1);  // 提取背景文件名
                         if (!bgFile.empty()) {
                             // 在 .osu 同目录和解压根目录搜索
                             std::filesystem::path bgSrc = std::filesystem::path(osuPath).parent_path() / bgFile;
@@ -491,11 +493,11 @@ util::Result<void> MainMenuState::importSingleOsu(const std::string& osuPath, co
                             }
 
                             if (std::filesystem::exists(bgSrc)) {
-                                // 目标文件名固定为 background + 原始后缀
+                                // 目标文件名固定为 background + 原始后缀（与 scanBeatmaps 查找规则一致）
                                 std::string bgExt = std::filesystem::path(bgFile).extension().string();
                                 std::filesystem::path bgDst = targetDir / ("background" + bgExt);
 
-                                if (!std::filesystem::exists(bgDst)) {
+                                if (!std::filesystem::exists(bgDst)) {  // 不覆盖已有背景
                                     try {
                                         if (bgDst.has_parent_path()) {
                                             std::filesystem::create_directories(bgDst.parent_path());
@@ -511,7 +513,7 @@ util::Result<void> MainMenuState::importSingleOsu(const std::string& osuPath, co
                             } else {
                                 MM_LOG_WARN("Import", "Background not found in archive: %s", bgFile.c_str());
                             }
-                            break;
+                            break;                               // 只处理第一个 BG 事件
                         }
                     }
                 }
@@ -519,8 +521,16 @@ util::Result<void> MainMenuState::importSingleOsu(const std::string& osuPath, co
         }
     }
 
-    // ── 注册哈希 ──
+    // ── 注册哈希到内存集合（与 onEnter 扫描的 .mma 内 hash 共同构成去重集）──
     m_importedHashes.insert(fileHash);
+
+    const std::string mmaPath = std::filesystem::absolute(targetPath).string();
+    if (auto* songSelect = Kernel::instance().stateManager().getStateAs<SongSelectState>(GameState::SongSelect)) {
+        songSelect->registerImportedMma(mmaPath);
+    }
+
+    // 背景图复制完成后异步预热 TextureCache（registerImportedMma 也会 requestLoad imagePath）
+    requestLoadBeatmapBackground(targetDir);
 
     MM_LOG_INFO("Import", "Successfully imported: %s -> %s", osuPath.c_str(), targetPath.string().c_str());
     return success();
@@ -673,14 +683,14 @@ void MainMenuState::renderImGuiPanel() {
             ImVec4(Theme::CYAN_R, Theme::CYAN_G, Theme::CYAN_B, 1.0f));
         ImGui::SetWindowFontScale(1.0f);
         if (ImGui::Button("IMPORT", ImVec2(importBtnWidth, importBtnHeight))) {
-            // 打开文件对话框，选择 .osz 文件
+            // 打开系统文件对话框，筛选 .osz 谱面集
             std::string oszPath = platform::FileDialog::openFile(
-                "Select osu! Beatmap Set",
-                "osu! Beatmap Archives",
-                "osz"
+                "Select osu! Beatmap Set",                   // 对话框标题
+                "osu! Beatmap Archives",                     // 文件类型描述
+                "osz"                                        // 扩展名过滤
             );
-            if (!oszPath.empty()) {
-                importOszFile(oszPath);
+            if (!oszPath.empty()) {                          // 用户未取消选择
+                importOszFile(oszPath);                      // 进入 osz→osu→mma 导入链
             }
         }
         ImGui::PopStyleColor(4);

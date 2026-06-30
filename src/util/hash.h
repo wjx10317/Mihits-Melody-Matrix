@@ -12,12 +12,12 @@
  *   被谱面导入、资源校验等模块调用，用于比对文件内容或生成唯一标识。
  *   调用方只需 `#include "util/hash.h"` 并调用 sha256()。
  */
-#pragma once
+#pragma once  // 防止头文件重复包含
 
-#include <string>
-#include <cstdint>
+#include <string>   // 返回十六进制哈希字符串
+#include <cstdint>  // size_t 等固定宽度类型
 
-namespace melody_matrix::util {
+namespace melody_matrix::util {  // 工具层命名空间
 
 /**
  * @brief 计算 SHA-256 哈希值
@@ -25,6 +25,6 @@ namespace melody_matrix::util {
  * @param size 数据长度（字节）
  * @return 64 字符的小写十六进制哈希字符串
  */
-std::string sha256(const void* data, size_t size);
+std::string sha256(const void* data, size_t size);  // 对二进制数据计算 SHA-256
 
 } // namespace melody_matrix::util

@@ -7,10 +7,10 @@
 //  ActiveSound 池管理多路并发；SFX 每类型 3 实例轮转防截断。
 // ──────────────────────────────────────────────────────
 
-#include <string>
-#include <cstdint>
-#include <vector>
-#include <cstring>
+#include <string>    // filePath 存储
+#include <cstdint>   // int64_t
+#include <vector>    // m_activeSounds 活动声音池
+#include <cstring>   // std::memset（init 中清零 ma_engine）
 
 // 前置声明 miniaudio，避免在头文件中包含头
 struct ma_engine;
@@ -31,17 +31,17 @@ enum class SfxType : int {
     MenuHit    = 1,    ///< 菜单确认/取消/开始
     HitNormal  = 2,    ///< 击打音（扫描 res/*_normal.* 或 *-hitnormal.*）
     SliderTick = 3,    ///< 滑条 tick（预留）
-    Count      = 4
+    Count      = 4     ///< 音效类型总数（数组边界）
 };
 
 // ── ActiveSound：活动声音槽（禁止拷贝，仅移动）──
 struct ActiveSound {
-    ma_sound*  sound           = nullptr;
-    SoundType   type            = SoundType::Preview;
-    float       fadeTimer       = 0.0f;
-    float       fadeDuration    = 0.0f;
-    float       fadeStartVol    = 0.0f;
-    float       fadeTargetVol   = 0.0f;
+    ma_sound*  sound           = nullptr;  ///< miniaudio 声音对象指针
+    SoundType   type            = SoundType::Preview;  ///< 声音类型（BGM/预览/音效）
+    float       fadeTimer       = 0.0f;    ///< 淡入/淡出已过去的时间（秒）
+    float       fadeDuration    = 0.0f;    ///< 淡入/淡出总时长（秒）
+    float       fadeStartVol    = 0.0f;    ///< 淡变起始音量
+    float       fadeTargetVol   = 0.0f;    ///< 淡变目标音量
     bool        isFadingOut     = false;   ///< true = 淡出中，结束后释放
     bool        isFadingIn      = false;   ///< true = 淡入中
     int64_t     previewStartMs  = 0;     ///< 预览循环起点（毫秒）
@@ -71,7 +71,7 @@ struct ActiveSound {
 
     ActiveSound& operator=(ActiveSound&& other) noexcept {
         if (this != &other) {
-            release();
+            release();  // 先释放自身持有的 sound
             sound           = other.sound;
             type            = other.type;
             fadeTimer       = other.fadeTimer;
@@ -89,14 +89,14 @@ struct ActiveSound {
 
     void release();  ///< 停止并 uninit ma_sound（实现在 .cpp）
 
-    ~ActiveSound() { release(); }
+    ~ActiveSound() { release(); }  ///< 析构时自动释放
 };
 
 /// 音频引擎 — miniaudio 封装，支持多路、淡入淡出、预览循环、SFX 池
 class AudioEngine {
 public:
     AudioEngine() = default;
-    ~AudioEngine() { shutdown(); }
+    ~AudioEngine() { shutdown(); }  ///< 析构时确保资源释放
 
     /// 初始化 miniaudio 引擎
     bool init();
@@ -150,20 +150,19 @@ private:
 private:
     static constexpr int MAX_ACTIVE_SOUNDS = 2;  ///< 最多 2 路并发 BGM/预览
 
-    ma_engine* m_engine    = nullptr;
-    bool        m_initialized = false;
+    ma_engine* m_engine    = nullptr;  ///< miniaudio 引擎实例
+    bool        m_initialized = false;  ///< 是否已成功 init
 
-    std::vector<ActiveSound> m_activeSounds;
+    std::vector<ActiveSound> m_activeSounds;  ///< 活动 BGM/预览声音池
 
     // 音量
-    float m_volume = 1.0f;
-    float m_typeVolumes[3] = {1.0f, 1.0f, 1.0f};
+    float m_volume = 1.0f;  ///< 全局主音量 [0,1]
+    float m_typeVolumes[3] = {1.0f, 1.0f, 1.0f};  ///< Preview/BGM/Effect 分组音量
 
     static constexpr int SFX_POOL_SIZE = 3;  ///< 每类音效 3 实例轮转
-    ma_sound* m_sfxSounds[static_cast<int>(SfxType::Count)][SFX_POOL_SIZE] = {};
-    int m_sfxRoundRobin[static_cast<int>(SfxType::Count)] = {};
-    bool m_sfxLoaded = false;
+    ma_sound* m_sfxSounds[static_cast<int>(SfxType::Count)][SFX_POOL_SIZE] = {};  ///< SFX 实例池
+    int m_sfxRoundRobin[static_cast<int>(SfxType::Count)] = {};  ///< 每类下一个播放 slot
+    bool m_sfxLoaded = false;  ///< loadSfx 是否已完成
 };
 
 } // namespace melody_matrix::audio
-

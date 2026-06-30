@@ -32,17 +32,16 @@ void PausedState::onExit() {
     MM_LOG_INFO("Paused", "Unpausing");
 }
 
-/// 根据用户选择的动作决定下一状态
+/// 根据用户选择的动作决定下一状态（Resume/Retry→Playing，Quit→SongSelect）
 GameState PausedState::update(float /*dt*/) {
     switch (m_action) {
     case PausedAction::Resume:
-        return GameState::Playing;
+        return GameState::Playing;                           // 直接恢复，不 reinit
     case PausedAction::Retry:
-        // 重试前先标记 PlayingState 需要重新初始化
         {
             auto* playing = Kernel::instance().stateManager().getStateAs<PlayingState>(GameState::Playing);
             if (playing) {
-                playing->markNeedsReinit();
+                playing->markNeedsReinit();                  // 重试需 resetGameplay + initGameplay
             }
         }
         return GameState::Playing;
@@ -51,13 +50,12 @@ GameState PausedState::update(float /*dt*/) {
             auto* playing = Kernel::instance().stateManager().getStateAs<PlayingState>(GameState::Playing);
             if (playing) {
                 playing->markNeedsReinit();
-                // 直接清除渲染资源，因为 PlayingState::onExit() 不会被调用
-                playing->cleanupRenderer();
+                playing->cleanupRenderer();                    // Paused 覆盖层下 Playing::onExit 不调
             }
         }
         return GameState::SongSelect;
     default:
-        break;
+        break;                                               // None：保持暂停
     }
     return GameState::Count;
 }

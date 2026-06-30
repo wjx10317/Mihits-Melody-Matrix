@@ -27,10 +27,14 @@ struct Note {
     int64_t  holdEnd = 0;     ///< 释放时间（毫秒）
 
     /// 长按音符的持续时间（点音符为 0）
-    int64_t duration() const { return (type == NoteType::Hold) ? (holdEnd - time) : 0; }
+    int64_t duration() const {
+        return (type == NoteType::Hold) ? (holdEnd - time) : 0;  // Hold 为 end-start，Tap 为 0
+    }
 
     /// 检查此音符是否为长按音符
-    bool isHold() const { return type == NoteType::Hold; }
+    bool isHold() const {
+        return type == NoteType::Hold;  // 类型比较
+    }
 };
 
 } // namespace melody_matrix::beatmap

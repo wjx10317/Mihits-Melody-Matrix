@@ -17,10 +17,10 @@ namespace melody_matrix::beatmap {
 
 /// 去除首尾空白
 static std::string trim(const std::string& s) {
-    auto start = s.find_first_not_of(" \t\r\n");
-    if (start == std::string::npos) return "";
-    auto end = s.find_last_not_of(" \t\r\n");
-    return s.substr(start, end - start + 1);
+    auto start = s.find_first_not_of(" \t\r\n");  // 首个非空白
+    if (start == std::string::npos) return "";    // 全空白
+    auto end = s.find_last_not_of(" \t\r\n");     // 末个非空白
+    return s.substr(start, end - start + 1);      // 截取子串
 }
 
 /// 按分隔符拆分并 trim 各段
@@ -29,7 +29,7 @@ static std::vector<std::string> split(const std::string& s, char delim) {
     std::istringstream stream(s);
     std::string token;
     while (std::getline(stream, token, delim)) {
-        tokens.push_back(trim(token));
+        tokens.push_back(trim(token));  // 每段去空白
     }
     return tokens;
 }
@@ -85,13 +85,13 @@ util::Result<void> MmaParser::parse(const std::string& content, BeatmapBuilder& 
     std::string line;
 
     enum class Section { None, General, Difficulty, Meta, FormationTransformMacros, Formations, Notes };
-    Section currentSection = Section::None;
-    std::vector<std::string> sectionLines;
-    bool firstLine = true;
+    Section currentSection = Section::None;  // 当前段落
+    std::vector<std::string> sectionLines;   // 当前段落累积行
+    bool firstLine = true;                   // 是否尚未处理首行
 
     /// 将当前段落累积行交给对应子解析器
     auto flushSection = [&]() {
-        if (sectionLines.empty()) return;
+        if (sectionLines.empty()) return;  // 无数据则跳过
         util::Result<void> result(util::success());
 
         switch (currentSection) {
@@ -119,9 +119,9 @@ util::Result<void> MmaParser::parse(const std::string& content, BeatmapBuilder& 
         }
 
         if (!result.ok()) {
-            // Error already logged in the sub-parser
+            // 子解析器内已记录错误日志
         }
-        sectionLines.clear();
+        sectionLines.clear();  // 清空累积，准备下一段
     };
 
     while (std::getline(stream, line)) {
@@ -130,7 +130,7 @@ util::Result<void> MmaParser::parse(const std::string& content, BeatmapBuilder& 
         // 跳过空行与 # 注释
         if (line.empty() || line[0] == '#') continue;
 
-        // 首行必须是 MMA1 或 MMA2
+        // 首行必须是 MMA1 或 MMA2 版本头
         if (firstLine) {
             firstLine = false;
             if (line == "MMA1") {
@@ -145,7 +145,7 @@ util::Result<void> MmaParser::parse(const std::string& content, BeatmapBuilder& 
             continue;
         }
 
-        // 段落头 [SectionName]
+        // 段落头 [SectionName]：先 flush 上一段
         if (line.front() == '[' && line.back() == ']') {
             flushSection();
             std::string sectionName = line.substr(1, line.size() - 2);
@@ -169,7 +169,7 @@ util::Result<void> MmaParser::parse(const std::string& content, BeatmapBuilder& 
         }
     }
 
-    // 刷出最后一个段落
+    // 文件末尾刷出最后一个段落
     flushSection();
 
     MM_LOG_INFO("MmaParser", "Parse complete");
@@ -225,8 +225,7 @@ util::Result<void> MmaParser::parseMeta(const std::vector<std::string>& lines, B
 }
 
 util::Result<void> MmaParser::parseTransformMacros(const std::vector<std::string>& lines, BeatmapBuilder& /*builder*/) {
-    // v2 [FormationTransformMacros] 段：KEY=VALUE 形式定义宏名到整数。
-    // 收集合法宏值集合，供 parseFormations 校验 transformType。
+    // v2 [FormationTransformMacros] 段：KEY=VALUE 形式定义宏名到整数
     m_macroValues.clear();
     for (const auto& line : lines) {
         std::string key, value;
@@ -239,7 +238,7 @@ util::Result<void> MmaParser::parseTransformMacros(const std::vector<std::string
             MM_LOG_WARN("MmaParser", "Invalid macro value: " + line);
             continue;
         }
-        m_macroValues.insert(v);
+        m_macroValues.insert(v);  // 收集合法 transformType 整数值
     }
     m_hasMacros = !m_macroValues.empty();
     MM_LOG_INFO("MmaParser", "Parsed " + std::to_string(m_macroValues.size()) + " transform macros");
@@ -255,6 +254,7 @@ util::Result<void> MmaParser::parseFormations(const std::vector<std::string>& li
         }
 
         Formation f;
+        // 前 3 字段必填：time, rows, cols
         if (!parseInt64(parts[0], f.time) ||
             !parseInt32(parts[1], f.rows) ||
             !parseInt32(parts[2], f.cols)) {
@@ -295,7 +295,7 @@ util::Result<void> MmaParser::parseFormations(const std::vector<std::string>& li
         // time 单调非递减
         if (m_lastFormationTime >= 0 && f.time < m_lastFormationTime) {
             MM_LOG_WARN("MmaParser", "Formation time not monotonic: " + line);
-            f.time = m_lastFormationTime;
+            f.time = m_lastFormationTime;  // clamp 到上一条 time
         }
         m_lastFormationTime = f.time;
         // transformType 必须存在于 [FormationTransformMacros] 中（若有该段）
@@ -318,6 +318,7 @@ util::Result<void> MmaParser::parseNotes(const std::vector<std::string>& lines, 
         }
 
         Note note;
+        // 前 3 字段：time, row, col
         if (!parseInt64(parts[0], note.time) ||
             !parseInt32(parts[1], note.row) ||
             !parseInt32(parts[2], note.col)) {

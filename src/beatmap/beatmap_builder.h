@@ -62,11 +62,11 @@ private:
     bool validateFormationBuffer();      ///< 规则 8：阵型变化前 500ms 无即将判定的音符（软验证：丢弃冲突音符）
 
     // ── 构建器内部状态 ──
-    Meta                   m_meta;
-    Difficulty             m_difficulty;
-    std::vector<Formation> m_formations;
-    std::vector<Note>      m_notes;
-    std::string            m_formatVersion; ///< 由解析器设置（"MMA1"、"osu" 等）
+    Meta                   m_meta;           ///< 谱面元数据
+    Difficulty             m_difficulty;     ///< 难度参数
+    std::vector<Formation> m_formations;     ///< 阵型序列
+    std::vector<Note>      m_notes;          ///< 音符序列
+    std::string            m_formatVersion;  ///< 来源格式版本（"MMA1"/"osu" 等）
 };
 
 } // namespace melody_matrix::beatmap

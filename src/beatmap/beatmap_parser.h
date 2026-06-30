@@ -17,7 +17,7 @@ namespace melody_matrix::beatmap {
 /// 解析器仅读取并调用 builder.addXxx()，不执行最终验证。
 class BeatmapParser {
 public:
-    virtual ~BeatmapParser() = default;
+    virtual ~BeatmapParser() = default;  // 虚析构以支持多态删除
 
     /// 将给定文件内容解析到 BeatmapBuilder 中。
     /// 解析器负责：

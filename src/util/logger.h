@@ -12,23 +12,23 @@
  *   main.cpp 中 Logger::init() 启动日志；各模块通过 MM_LOG_INFO("Module", "msg %d", x) 记录。
  *   输出格式：[HH:MM:SS.mmm] [级别] [模块] 消息 (文件名:行号)
  */
-#pragma once
+#pragma once  // 防止头文件重复包含
 
-#include <string>
-#include <string_view>
-#include <cstdarg>
-#include <cstdio>
-#include <mutex>
-#include <fstream>
-#include <chrono>
-#include <iomanip>
-#include <sstream>
-#include <iostream>
+#include <string>        // 日志消息与路径
+#include <string_view>   // 文件名/模块名参数
+#include <cstdarg>       // va_list 变参
+#include <cstdio>        // vsnprintf
+#include <mutex>         // 线程安全互斥锁
+#include <fstream>       // 日志文件流
+#include <chrono>        // 时间戳
+#include <iomanip>       // put_time、setw
+#include <sstream>       // ostringstream
+#include <iostream>      // cerr（init 失败提示）
 
-namespace melody_matrix::util {
+namespace melody_matrix::util {  // 工具层命名空间
 
 /** @brief 日志严重级别，数值越大越严重 */
-enum class Level { DEBUG, INFO, WARN, ERR, FATAL };
+enum class Level { DEBUG, INFO, WARN, ERR, FATAL };  // 五级日志枚举
 
 /**
  * @brief 简单的线程安全日志器
@@ -44,7 +44,7 @@ public:
      * @param minLevel 最低记录级别，低于此级别的消息被丢弃
      */
     static void init(const std::string& logFilePath = "logs/melody_matrix.log",
-                     Level minLevel = Level::INFO);
+                     Level minLevel = Level::INFO);  // 打开日志文件并设置级别
 
     /**
      * @brief 记录已格式化的消息
@@ -55,7 +55,7 @@ public:
      * @param message 完整消息文本
      */
     static void log(Level level, std::string_view file, int line, std::string_view module,
-                    const std::string& message);
+                    const std::string& message);  // 输出单条日志
 
     /**
      * @brief 记录 printf 风格格式化的消息
@@ -67,7 +67,7 @@ public:
      * @param ... 格式参数
      */
     static void logFmt(Level level, std::string_view file, int line, std::string_view module,
-                       const char* fmt, ...);
+                       const char* fmt, ...);  // printf 风格格式化日志
 
     /**
      * @brief std::string 重载：直接透传，不做 printf 格式化
@@ -78,19 +78,19 @@ public:
      * @param message 消息字符串
      */
     static void logFmt(Level level, std::string_view file, int line, std::string_view module,
-                       const std::string& message);
+                       const std::string& message);  // string 重载
 
     /**
      * @brief 设置最小日志级别
      * @param level 新的最低级别
      */
-    static void setLevel(Level level);
+    static void setLevel(Level level);  // 运行时调整过滤级别
 
     /** @brief 刷新日志文件缓冲区 */
-    static void flush();
+    static void flush();  // 强制写入磁盘
 
     /** @brief 关闭日志器并释放文件句柄 */
-    static void shutdown();
+    static void shutdown();  // 关闭日志文件
 
 private:
     /**
@@ -98,27 +98,27 @@ private:
      * @param level 日志级别
      * @return 如 "INFO "、"ERROR"
      */
-    static std::string levelToString(Level level);
+    static std::string levelToString(Level level);  // 级别转字符串
 
     /** @brief 生成当前本地时间的 HH:MM:SS.mmm 时间戳 */
-    static std::string timestamp();
+    static std::string timestamp();  // 格式化时间戳
 
-    static inline Level s_minLevel = Level::INFO;
-    static inline std::mutex s_mutex;
-    static inline std::ofstream s_file;
-    static inline bool s_initialized = false;
+    static inline Level s_minLevel = Level::INFO;       // 当前最低记录级别
+    static inline std::mutex s_mutex;                   // 并发写入互斥锁
+    static inline std::ofstream s_file;                 // 日志文件流
+    static inline bool s_initialized = false;           // 是否已 init
 };
 
 } // namespace melody_matrix::util
 
 // ── 便捷宏（支持 printf 风格变参格式化）──
 #define MM_LOG_DEBUG(module, fmt, ...) \
-    melody_matrix::util::Logger::logFmt(melody_matrix::util::Level::DEBUG, __FILE__, __LINE__, module, fmt, ##__VA_ARGS__)
+    melody_matrix::util::Logger::logFmt(melody_matrix::util::Level::DEBUG, __FILE__, __LINE__, module, fmt, ##__VA_ARGS__)  // DEBUG 宏
 #define MM_LOG_INFO(module, fmt, ...) \
-    melody_matrix::util::Logger::logFmt(melody_matrix::util::Level::INFO, __FILE__, __LINE__, module, fmt, ##__VA_ARGS__)
+    melody_matrix::util::Logger::logFmt(melody_matrix::util::Level::INFO, __FILE__, __LINE__, module, fmt, ##__VA_ARGS__)   // INFO 宏
 #define MM_LOG_WARN(module, fmt, ...) \
-    melody_matrix::util::Logger::logFmt(melody_matrix::util::Level::WARN, __FILE__, __LINE__, module, fmt, ##__VA_ARGS__)
+    melody_matrix::util::Logger::logFmt(melody_matrix::util::Level::WARN, __FILE__, __LINE__, module, fmt, ##__VA_ARGS__)   // WARN 宏
 #define MM_LOG_ERROR(module, fmt, ...) \
-    melody_matrix::util::Logger::logFmt(melody_matrix::util::Level::ERR, __FILE__, __LINE__, module, fmt, ##__VA_ARGS__)
+    melody_matrix::util::Logger::logFmt(melody_matrix::util::Level::ERR, __FILE__, __LINE__, module, fmt, ##__VA_ARGS__)    // ERROR 宏
 #define MM_LOG_FATAL(module, fmt, ...) \
-    melody_matrix::util::Logger::logFmt(melody_matrix::util::Level::FATAL, __FILE__, __LINE__, module, fmt, ##__VA_ARGS__)
+    melody_matrix::util::Logger::logFmt(melody_matrix::util::Level::FATAL, __FILE__, __LINE__, module, fmt, ##__VA_ARGS__)  // FATAL 宏

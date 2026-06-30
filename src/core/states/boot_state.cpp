@@ -31,7 +31,9 @@ void BootState::onEnter() {
     m_animationDone = false;
     m_transitionRequested = false;
     m_loaderStarted = false;
+    m_preloadRequested = false;
     m_texturesLoaded = false;
+    m_preloadPaths.clear();
 }
 
 /// 退出启动状态，阻塞等待后台加载线程完成
@@ -43,49 +45,62 @@ void BootState::onExit() {
 
 /// 每帧更新：启动异步扫描、主线程纹理预加载、检测过渡条件
 GameState BootState::update(float dt) {
-    m_time += dt;
+    m_time += dt;                                            // 累计动画时间
 
-    // 启动异步加载（仅一次）
-    // 注意：后台线程不能调用 Texture2D::loadFromFile()，因为 OpenGL 上下文
-    // 只在主线程有效。后台线程仅执行 scanBeatmaps()（文件 I/O + 解析），
-    // 纹理上传在主线程完成。
+    // 后台线程：仅 scanBeatmaps（文件 I/O + 解析），不可调用 OpenGL
     if (!m_loaderStarted) {
         m_loaderStarted = true;
         m_loader.setTask([](AssetLoader& loader) {
             auto* songSelect = Kernel::instance().stateManager().getStateAs<SongSelectState>(GameState::SongSelect);
             if (songSelect) {
                 loader.setProgress(0.1f);
-                songSelect->scanBeatmaps();
+                songSelect->scanBeatmaps();                  // 扫描 assets/beatmaps 下 .mma/.osu
                 loader.setProgress(0.8f);
             }
         });
-        m_loader.start();
+        m_loader.start();                                    // 启动后台线程
     }
 
-    // 后台扫描完成后，在主线程加载纹理（需要 GL 上下文）
-    if (m_loader.done() && !m_texturesLoaded) {
-        m_texturesLoaded = true;
+    // 扫描完成后异步请求预加载；Kernel 每帧 processPendingUploads 在主线程上传
+    if (m_loader.done() && !m_preloadRequested) {
+        m_preloadRequested = true;
         auto* songSelect = Kernel::instance().stateManager().getStateAs<SongSelectState>(GameState::SongSelect);
         if (songSelect) {
-            auto paths = songSelect->getGroupImagePaths();
-            if (!paths.empty()) {
-                renderer::TextureCache::instance().preload(paths);
+            m_preloadPaths = songSelect->getGroupImagePaths();
+            if (!m_preloadPaths.empty()) {
+                renderer::TextureCache::instance().preload(m_preloadPaths);
+            } else {
+                m_texturesLoaded = true;
             }
+        } else {
+            m_texturesLoaded = true;
         }
     }
 
-    // 判断动画是否播完
-    if (m_time >= MINIMUM_DURATION) {
+    if (m_preloadRequested && !m_texturesLoaded) {
+        auto& cache = renderer::TextureCache::instance();
+        bool allReady = true;
+        for (const auto& path : m_preloadPaths) {
+            if (!cache.isLoaded(path) && !cache.hasFailed(path)) {
+                allReady = false;
+                break;
+            }
+        }
+        if (allReady) {
+            m_texturesLoaded = true;
+        }
+    }
+
+    if (m_time >= MINIMUM_DURATION) {                        // 品牌动画最短时长
         m_animationDone = true;
     }
 
-    // 动画播完 + 扫描完成 + 纹理加载完成 → 过渡到主菜单
     if (m_animationDone && m_loader.done() && m_texturesLoaded && !m_transitionRequested) {
-        m_transitionRequested = true;
+        m_transitionRequested = true;                        // 防止重复返回 MainMenu
         return GameState::MainMenu;
     }
 
-    return GameState::Count; // 保持当前状态
+    return GameState::Count;
 }
 
 // ══════════════════════════════════════════════════════════════════════════════

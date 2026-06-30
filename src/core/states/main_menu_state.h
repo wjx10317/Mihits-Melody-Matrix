@@ -44,12 +44,12 @@ private:
     /// 尝试从多个路径加载菜单背景纹理
     void loadBackgroundTexture();
 
-    // ── 导入功能 ──
-    /// 导入 .osz 文件入口（设置消息与计时器）
+    // ── 导入功能（osz → 临时解压 → 逐 osu → mma + 资源复制）──
+    /// 导入 .osz 入口：设置 UI 消息与计时器
     void importOszFile(const std::string& oszPath);
-    /// 校验并解压 .osz，遍历内部 .osu 逐一导入
+    /// 校验扩展名、解压 zip、遍历内部 .osu 调用 importSingleOsu
     util::Result<void> validateAndImportOsz(const std::string& oszPath);
-    /// 解析单个 .osu 并序列化为 .mma 写入 assets/beatmaps/
+    /// 单 .osu 解析校验、SHA256 去重、写 .mma、复制音频与 background.*
     util::Result<void> importSingleOsu(const std::string& osuPath, const std::string& extractRoot);
 
     GameState m_nextState = GameState::Count;

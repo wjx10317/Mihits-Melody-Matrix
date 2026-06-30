@@ -6,7 +6,7 @@
 //  StandardJudgeStrategy 采用 osu!mania 风格线性公式。
 // ──────────────────────────────────────────────────────
 
-#include <cstdint>
+#include <cstdint>  // int32_t / int64_t / uint8_t
 
 namespace melody_matrix::gameplay {
 
@@ -38,7 +38,7 @@ class StandardJudgeStrategy : public IJudgeStrategy {
 public:
     /// Perfect 窗口：OD=0 时 ±22ms，OD=10 时 ±11.5ms
     int32_t perfectWindow(float od) const override {
-        return static_cast<int32_t>(22.0f - 1.05f * od);
+        return static_cast<int32_t>(22.0f - 1.05f * od);  // OD 越高窗口越窄
     }
 
     /// Good 窗口：OD=0 时 ±65ms，OD=10 时 ±39ms
@@ -48,7 +48,7 @@ public:
 
     /// Miss 阈值：Good 窗口 + 50ms 缓冲后自动 Miss
     int64_t missThreshold(float od) const override {
-        return static_cast<int64_t>(goodWindow(od)) + 50;
+        return static_cast<int64_t>(goodWindow(od)) + 50;  // Good 窗口外再留 50ms 容错
     }
 };
 

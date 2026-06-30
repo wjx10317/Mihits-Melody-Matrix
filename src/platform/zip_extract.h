@@ -12,12 +12,12 @@
  *   谱面导入流程中调用 ZipExtract::extract() 解压 .osz，
  *   findOsuFiles() 定位谱面文件，removeDir() 清理临时目录。
  */
-#pragma once
+#pragma once  // 防止头文件重复包含
 
-#include <string>
-#include <vector>
+#include <string>   // 路径字符串
+#include <vector>   // .osu 文件路径列表
 
-namespace melody_matrix::platform {
+namespace melody_matrix::platform {  // 平台层命名空间
 
 /**
  * @brief ZIP 压缩包解压工具
@@ -33,7 +33,7 @@ public:
      * @param destDir 目标目录（不存在时会创建）
      * @return 成功 true，全部策略失败 false
      */
-    static bool extract(const std::string& zipPath, const std::string& destDir);
+    static bool extract(const std::string& zipPath, const std::string& destDir);  // 解压 ZIP
 
     /**
      * @brief 创建用于解压的临时目录
@@ -41,7 +41,7 @@ public:
      *
      * 路径格式：系统 TEMP/melody_matrix_import_<随机后缀>
      */
-    static std::string createTempDir();
+    static std::string createTempDir();  // 创建临时导入目录
 
     /**
      * @brief 递归删除指定目录
@@ -49,14 +49,14 @@ public:
      *
      * 用于导入完成后清理临时解压目录，失败仅记录警告。
      */
-    static void removeDir(const std::string& dirPath);
+    static void removeDir(const std::string& dirPath);  // 删除目录
 
     /**
      * @brief 在目录下递归查找所有 .osu 文件
      * @param dirPath 搜索根目录
      * @return 找到的 .osu 完整路径列表（按文件名排序）
      */
-    static std::vector<std::string> findOsuFiles(const std::string& dirPath);
+    static std::vector<std::string> findOsuFiles(const std::string& dirPath);  // 扫描 .osu 文件
 };
 
 } // namespace melody_matrix::platform

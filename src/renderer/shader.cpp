@@ -2,11 +2,11 @@
 // shader.cpp — 着色器编译/链接与 uniform 设置
 // ============================================================
 
-#include "shader.h"
-#include "util/logger.h"
-#include "util/error_codes.h"
+#include "shader.h"           // Shader / FallbackShader
+#include "util/logger.h"      // MM_LOG_ERROR
+#include "util/error_codes.h" // ErrorCode 枚举
 
-#include <glad.h>
+#include <glad.h>             // glCreateShader / glLinkProgram 等
 
 namespace melody_matrix::renderer {
 
@@ -14,19 +14,19 @@ namespace melody_matrix::renderer {
 
 Shader::~Shader() {
     if (m_programId != 0) {
-        glDeleteProgram(m_programId);
+        glDeleteProgram(m_programId);  // 释放链接着色器程序
         m_programId = 0;
     }
 }
 
 Shader::Shader(Shader&& other) noexcept : m_programId(other.m_programId) {
-    other.m_programId = 0;
+    other.m_programId = 0;  // 源对象置空
 }
 
 Shader& Shader::operator=(Shader&& other) noexcept {
     if (this != &other) {
         if (m_programId != 0) {
-            glDeleteProgram(m_programId);
+            glDeleteProgram(m_programId);  // 释放旧程序
         }
         m_programId = other.m_programId;
         other.m_programId = 0;
@@ -37,29 +37,29 @@ Shader& Shader::operator=(Shader&& other) noexcept {
 // ── 编译与链接 ──
 
 util::Result<uint32_t> Shader::compileShader(uint32_t type, const std::string& source) {
-    uint32_t shader = glCreateShader(type);
+    uint32_t shader = glCreateShader(type);           // 创建顶点或片段 shader 对象
     const char* src = source.c_str();
-    glShaderSource(shader, 1, &src, nullptr);
-    glCompileShader(shader);
+    glShaderSource(shader, 1, &src, nullptr);         // 设置 GLSL 源码
+    glCompileShader(shader);                          // 编译
 
     int32_t success = 0;
-    glGetShaderiv(shader, GL_COMPILE_STATUS, &success);
+    glGetShaderiv(shader, GL_COMPILE_STATUS, &success);  // 查询编译结果
     if (!success) {
         char log[512];
-        glGetShaderInfoLog(shader, sizeof(log), nullptr, log);
+        glGetShaderInfoLog(shader, sizeof(log), nullptr, log);  // 读取错误日志
         glDeleteShader(shader);
         return util::failure<uint32_t>(
             static_cast<int32_t>(util::ErrorCode::ERROR_SHADER_COMPILE),
             std::string("Shader compile error: ") + log);
     }
-    return shader;
+    return shader;  // 返回 shader 对象 ID
 }
 
 util::Result<uint32_t> Shader::linkProgram(uint32_t vertShader, uint32_t fragShader) {
-    uint32_t program = glCreateProgram();
-    glAttachShader(program, vertShader);
-    glAttachShader(program, fragShader);
-    glLinkProgram(program);
+    uint32_t program = glCreateProgram();        // 创建程序对象
+    glAttachShader(program, vertShader);         // 附加顶点 shader
+    glAttachShader(program, fragShader);         // 附加片段 shader
+    glLinkProgram(program);                      // 链接
 
     int32_t success = 0;
     glGetProgramiv(program, GL_LINK_STATUS, &success);
@@ -71,19 +71,19 @@ util::Result<uint32_t> Shader::linkProgram(uint32_t vertShader, uint32_t fragSha
             static_cast<int32_t>(util::ErrorCode::ERROR_SHADER_LINK),
             std::string("Shader link error: ") + log);
     }
-    return program;
+    return program;  // 返回已链接程序 ID
 }
 
 util::Result<Shader> Shader::compile(const std::string& vertexSource,
                                       const std::string& fragmentSource) {
     auto vertResult = compileShader(GL_VERTEX_SHADER, vertexSource);
     if (!vertResult.ok()) {
-        return util::Result<Shader>(vertResult.error());
+        return util::Result<Shader>(vertResult.error());  // 顶点编译失败
     }
 
     auto fragResult = compileShader(GL_FRAGMENT_SHADER, fragmentSource);
     if (!fragResult.ok()) {
-        glDeleteShader(vertResult.value());
+        glDeleteShader(vertResult.value());                 // 清理已编译的顶点 shader
         return util::Result<Shader>(fragResult.error());
     }
 
@@ -97,20 +97,20 @@ util::Result<Shader> Shader::compile(const std::string& vertexSource,
         return util::Result<Shader>(programResult.error());
     }
 
-    return Shader(programResult.value());
+    return Shader(programResult.value());  // 包装为 Shader RAII 对象
 }
 
 // ── 激活与 uniform 上传 ──
 
 void Shader::use() const {
     if (m_programId != 0) {
-        glUseProgram(m_programId);
+        glUseProgram(m_programId);  // 设为当前着色器程序
     }
 }
 
 void Shader::setInt(const std::string& name, int32_t value) const {
-    GLint loc = glGetUniformLocation(m_programId, name.c_str());
-    if (loc != -1) glUniform1i(loc, value);
+    GLint loc = glGetUniformLocation(m_programId, name.c_str());  // 查 uniform 位置
+    if (loc != -1) glUniform1i(loc, value);                       // 存在则上传
 }
 
 void Shader::setFloat(const std::string& name, float value) const {
@@ -135,7 +135,7 @@ void Shader::setVec4(const std::string& name, float x, float y, float z, float w
 
 void Shader::setMat4(const std::string& name, const float* value) const {
     GLint loc = glGetUniformLocation(m_programId, name.c_str());
-    if (loc != -1) glUniformMatrix4fv(loc, 1, GL_FALSE, value);
+    if (loc != -1) glUniformMatrix4fv(loc, 1, GL_FALSE, value);  // 列主序 4×4
 }
 
 // ── 后备纯色 shader（编译失败时的兜底）──
@@ -162,13 +162,12 @@ Shader FallbackShader::createFallback() {
     if (result.ok()) {
         return std::move(result.value());
     }
-    // 连后备 shader 都失败则返回空程序
     MM_LOG_ERROR("Shader", "Fallback shader compilation failed!");
-    return Shader(0);
+    return Shader(0);  // 返回无效程序
 }
 
 Shader& FallbackShader::get() {
-    static Shader s_fallback = createFallback();
+    static Shader s_fallback = createFallback();  // 首次调用时编译
     return s_fallback;
 }
 

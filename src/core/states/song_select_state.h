@@ -15,6 +15,7 @@
 #include <string>
 #include <unordered_map>
 #include <memory>
+#include <optional>
 
 namespace melody_matrix::core {
 
@@ -42,8 +43,11 @@ public:
     /// 当弹窗打开时，ESC 应由本状态消费（关闭弹窗），而非返回上级状态
     bool shouldConsumeEscape() const { return m_modPopupOpen; }
 
-    /// 标记需要重新扫描铺面（导入新铺面后调用）
+    /// 标记需要全量重新扫描（外部改动了 beatmaps 目录等少数场景）
     void markNeedsRescan() { m_scanDone = false; }
+
+    /// Import 写入 .mma 后增量合并到列表，并 requestLoad 背景图（无需 scanBeatmaps）
+    void registerImportedMma(const std::string& mmaPath);
 
     /// 扫描铺面并预加载图片到全局纹理缓存（供 BootState 调用）
     void scanAndPreload();
@@ -93,9 +97,7 @@ private:
     };
     std::vector<PendingDeleteAction> m_pendingDeletes;
 
-    /// 获取当前选中的 set 条目（可能为 nullptr）
     struct BeatmapEntry;
-    const BeatmapEntry* getSelectedSet() const;
 
     // ── 排行榜模式 ──
     enum class LeaderboardMode : int {
@@ -129,13 +131,21 @@ private:
         int64_t previewTime = 0; ///< 预览起始时间（毫秒），0=从头
     };
 
-    // ── 铺面分组（歌曲级，包含多个难度 set）──
     struct BeatmapGroup {
         std::string title;                    ///< 歌曲标题
         std::string artist;                   ///< 艺术家
         std::string imagePath;                ///< 背景图片路径（组内共享）
         std::vector<BeatmapEntry> sets;       ///< 子难度列表
     };
+
+    /// 从单个 .mma/.osu 路径解析为 BeatmapEntry（scan / import 共用）
+    std::optional<BeatmapEntry> parseBeatmapEntry(const std::string& filePath);
+
+    /// 将条目合并进 m_groups（按 title+artist 分组，组内按 difficulty 排序）
+    void mergeBeatmapEntry(BeatmapEntry entry);
+
+    /// 获取当前选中的 set 条目（可能为 nullptr）
+    const BeatmapEntry* getSelectedSet() const;
 
     // ── 铺面数据 ──
     std::vector<BeatmapGroup> m_groups;

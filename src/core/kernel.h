@@ -14,19 +14,19 @@
  */
 #pragma once
 
-#include "core/clock.h"
-#include "core/state_manager.h"
-#include "renderer/renderer.h"
-#include "ui/ui_manager.h"
-#include "util/event_manager.h"
+#include "core/clock.h"              // 音频驱动歌曲时钟
+#include "core/state_manager.h"      // 游戏状态机管理
+#include "renderer/renderer.h"       // OpenGL 谱面/背景渲染
+#include "ui/ui_manager.h"           // ImGui UI 层
+#include "util/event_manager.h"      // 应用内事件总线
 
-#include <memory>
-#include <string>
-#include <vector>
+#include <memory>   // 智能指针等（头文件预留）
+#include <string>   // init() 窗口标题参数
+#include <vector>   // supportedResolutions() 返回列表
 
-struct SDL_Window;
-typedef struct SDL_KeyboardEvent SDL_KeyboardEvent;
-typedef void* SDL_GLContext;
+struct SDL_Window;                              // SDL 窗口前向声明，避免头文件拉入 SDL.h
+typedef struct SDL_KeyboardEvent SDL_KeyboardEvent;  // 键盘事件前向声明
+typedef void* SDL_GLContext;                   // OpenGL 上下文句柄类型
 
 namespace melody_matrix::core {
 
@@ -78,7 +78,7 @@ public:
      *
      * 可从任意状态或输入处理中调用。
      */
-    void requestExit() { m_running = false; }
+    void requestExit() { m_running = false; }  // 置 false 使 run() 中 while 退出
 
     // ── 分辨率管理 ──
 
@@ -165,25 +165,25 @@ private:
     void applyWindowMode();
 
     // ── 子系统 ──
-    Clock m_clock;
-    StateManager m_stateManager;
-    util::EventManager m_eventManager;
-    renderer::Renderer m_renderer;
-    ui::UIManager m_uiManager;
+    Clock m_clock;                      ///< 权威歌曲时钟
+    StateManager m_stateManager;        ///< 游戏状态机
+    util::EventManager m_eventManager;  ///< 应用内事件分发
+    renderer::Renderer m_renderer;      ///< OpenGL 渲染器
+    ui::UIManager m_uiManager;          ///< ImGui 管理器
 
     // ── 窗口 ──
-    SDL_Window* m_window = nullptr;
-    SDL_GLContext m_glContext = nullptr;
+    SDL_Window* m_window = nullptr;       ///< SDL 主窗口
+    SDL_GLContext m_glContext = nullptr;  ///< OpenGL 3.3 Core 上下文
 
     // ── 分辨率状态 ──
     int m_displayWidth = 1920;   ///< 显示器原生物理像素宽
     int m_displayHeight = 1080;  ///< 显示器原生物理像素高
     int m_windowWidth = 1920;    ///< 用户选择的分辨率宽
     int m_windowHeight = 1080;   ///< 用户选择的分辨率高
-    bool m_fullscreen = false;
+    bool m_fullscreen = false;   ///< 是否全屏桌面模式
 
-    bool m_running = false;
-    bool m_initialized = false;
+    bool m_running = false;      ///< 主循环是否继续运行
+    bool m_initialized = false;  ///< init() 是否已成功完成
 };
 
 } // namespace melody_matrix::core

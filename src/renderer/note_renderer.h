@@ -7,23 +7,23 @@
 // 纹理层 ID 在 fragment shader 中映射到不同 sampler2D。
 // ============================================================
 
-#include "renderer/shader.h"
-#include "renderer/texture.h"
-#include "beatmap/note.h"
-#include "beatmap/beatmap.h"
-#include "renderer/grid_layout.h"
+#include "renderer/shader.h"       // 着色器编译与 uniform 设置工具
+#include "renderer/texture.h"      // 2D 纹理绑定/解绑封装
+#include "beatmap/note.h"          // Note 类型、Hold/Tap 判定字段
+#include "beatmap/beatmap.h"       // 谱面相关类型（间接依赖 note）
+#include "renderer/grid_layout.h"  // 逻辑格坐标 → 屏幕像素布局
 
-#include <array>
-#include <vector>
-#include <cstdint>
+#include <array>      // 固定长度数组（列头指针、holdpush 纹理表）
+#include <vector>     // 动态实例数据缓冲
+#include <cstdint>    // int32_t / int64_t 等定宽整数
 
 namespace melody_matrix::renderer {
 
 /// Tap 击中扩散特效：格坐标 + 当前 alpha（由 playing_state 驱动衰减）
 struct CellHitEffect {
-    int32_t col = 0;
-    int32_t row = 0;
-    float alpha = 0.0f;
+    int32_t col = 0;      // 击中格子的列索引
+    int32_t row = 0;      // 击中格子的行索引
+    float alpha = 0.0f;   // 扩散特效当前透明度 [0,1]
 };
 
 /// 音符/格子实例化渲染器。
@@ -37,10 +37,10 @@ struct CellHitEffect {
 ///   层 6..16 holdpush 0/10/..../100 → uTexHoldPush0..10 (纹理单元 4..14)
 class NoteRenderer {
 public:
-    static constexpr int kHoldPushStageCount = 11;
+    static constexpr int kHoldPushStageCount = 11;  // holdpush 阶段数：0%..100% 共 11 张
 
-    NoteRenderer() = default;
-    ~NoteRenderer() = default;
+    NoteRenderer() = default;   // 默认构造，成员按声明初值
+    ~NoteRenderer() = default;  // 默认析构（OpenGL 资源由 shutdown 释放）
 
     /// 编译 note 实例化 shader，创建 VAO/VBO（单位四边形 + 4 路实例属性）
     bool init();
@@ -54,7 +54,7 @@ public:
                 float scrollOffset = 0.0f, bool scrolling = false, float scrollProgress = 0.0f,
                 int32_t targetStartCol = 0, int32_t targetEndCol = 3);
 
-    void shutdown();
+    void shutdown();  // 释放 VAO/VBO 并重置初始化标志
 
     /// 注入各层纹理指针（可为 nullptr，对应层跳过绘制）
     void setTextures(const Texture2D* tap, const Texture2D* slider,
@@ -73,24 +73,24 @@ public:
     void setAnimParams(float rotation, float alpha,
                        int32_t prevRows, int32_t prevCols,
                        float slideProgress, bool slideRows, bool slideCols) {
-        m_animRotation = rotation;
-        m_animAlpha = alpha;
-        m_animPrevRows = prevRows;
-        m_animPrevCols = prevCols;
-        m_animSlideProgress = slideProgress;
-        m_animSlideRows = slideRows;
-        m_animSlideCols = slideCols;
+        m_animRotation = rotation;           // 整屏旋转弧度
+        m_animAlpha = alpha;                 // 过渡整体透明度
+        m_animPrevRows = prevRows;           // 滑入前旧行数（新行判定边界）
+        m_animPrevCols = prevCols;           // 滑入前旧列数（新列判定边界）
+        m_animSlideProgress = slideProgress; // 滑入动画进度 [0,1]
+        m_animSlideRows = slideRows;         // 是否启用新行从左滑入
+        m_animSlideCols = slideCols;         // 是否启用新列从上滑入
     }
 
 private:
     /// background 与 note 同步按 blockSize 缩放；格缝露出 Background Dim。
-    static constexpr float kCellTexRefPx = GridLayout::kDefaultCellW;
-    static constexpr float kLayerTap = 0.0f;
-    static constexpr float kLayerSlider = 1.0f;
-    static constexpr float kLayerOverlay = 2.0f;
-    static constexpr float kLayerHoldPushRing = 3.0f;
-    static constexpr float kLayerHoldPushBase = 6.0f;   ///< holdpush_0 对应层 6
-    static constexpr float kLayerBlock = 5.0f;
+    static constexpr float kCellTexRefPx = GridLayout::kDefaultCellW;  // 格纹理参考像素宽
+    static constexpr float kLayerTap = 0.0f;           // Tap note 纹理层 ID
+    static constexpr float kLayerSlider = 1.0f;        // Hold note 本体纹理层 ID
+    static constexpr float kLayerOverlay = 2.0f;       // 缩圈/击中 overlay 纹理层 ID
+    static constexpr float kLayerHoldPushRing = 3.0f;  // Hold 按住外环纹理层 ID
+    static constexpr float kLayerHoldPushBase = 6.0f;  ///< holdpush_0 对应层 6
+    static constexpr float kLayerBlock = 5.0f;         // 格子 background 纹理层 ID
 
     /// 构建本帧全部实例顶点数据（见 .cpp 绘制顺序说明）
     void buildNoteVertices(const std::vector<beatmap::Note>& notes, int64_t timeMs,
@@ -128,25 +128,25 @@ private:
     static constexpr float kApproachRingUvOuter = 1.35f;  ///< 缩圈起点 UV 缩放（越大环越大）
     static constexpr float kHitRingUvExpand = 1.28f;      ///< 击中扩散终点 UV 缩放
 
-    bool m_initialized = false;
-    uint32_t m_vao = 0;
+    bool m_initialized = false;   // init() 是否已成功完成
+    uint32_t m_vao = 0;           // 实例化绘制用顶点数组对象
     uint32_t m_quadVbo = 0;       ///< 共享单位四边形（2 三角，6 顶点）
     uint32_t m_instanceVbo = 0;   ///< 每实例 vec4: xy=左上角, zw=宽高
     uint32_t m_colorVbo = 0;      ///< 每实例 vec4 RGBA
     uint32_t m_layerVbo = 0;      ///< 每实例 float 纹理层 ID
     uint32_t m_arcVbo = 0;        ///< 每实例 float 缩圈/击中 UV 参数（aArcSweep）
-    Shader m_shader;
-    int32_t m_maxInstances = 1536;
+    Shader m_shader;              // 编译后的 note 实例化着色器
+    int32_t m_maxInstances = 1536; // 单帧最大实例数上限（VBO 预分配）
 
-    const Texture2D* m_texTap = nullptr;
-    const Texture2D* m_texSlider = nullptr;
-    const Texture2D* m_texOverlay = nullptr;
-    const Texture2D* m_texHoldPushRing = nullptr;
-    std::array<const Texture2D*, kHoldPushStageCount> m_texHoldPush{};
-    const Texture2D* m_texBlock = nullptr;
+    const Texture2D* m_texTap = nullptr;         // Tap note 纹理
+    const Texture2D* m_texSlider = nullptr;      // Hold note 本体纹理
+    const Texture2D* m_texOverlay = nullptr;     // 缩圈/击中 overlay 纹理
+    const Texture2D* m_texHoldPushRing = nullptr; // Hold 按住外环纹理
+    std::array<const Texture2D*, kHoldPushStageCount> m_texHoldPush{}; // holdpush 各阶段纹理
+    const Texture2D* m_texBlock = nullptr;       // 格子 background 纹理
 
-    float m_blockSize = 1.0f;
-    float m_globalAlpha = 1.0f;
+    float m_blockSize = 1.0f;    // Formation.blockSize，格内内容缩放
+    float m_globalAlpha = 1.0f; // 全局透明度乘子
 
     // ── 阵型过渡动画（formation animation）──
     float m_animRotation = 0.0f;      ///< 整屏旋转（ROTATE_* 过渡）
@@ -156,6 +156,12 @@ private:
     float m_animSlideProgress = 1.0f; ///< 滑入进度 [0,1]
     bool m_animSlideRows = false;     ///< 新行从左滑入
     bool m_animSlideCols = false;     ///< 新列从上滑入
+
+    // 每帧复用的实例 CPU 缓冲（避免 render() 内反复分配 vector）
+    std::vector<float> m_quads;
+    std::vector<float> m_colors;
+    std::vector<float> m_layers;
+    std::vector<float> m_arcSweeps;
 };
 
 } // namespace melody_matrix::renderer

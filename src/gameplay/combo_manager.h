@@ -6,7 +6,7 @@
 //  由 JudgeQueue 的 onHit/onMiss 事件驱动，不直接绑定输入。
 // ──────────────────────────────────────────────────────
 
-#include <cstdint>
+#include <cstdint>  // int32_t
 
 namespace melody_matrix::gameplay {
 
@@ -33,8 +33,8 @@ public:
     void reset();
 
 private:
-    int32_t m_combo   = 0;
-    int32_t m_maxCombo = 0;
+    int32_t m_combo   = 0;   ///< 当前连续击中数
+    int32_t m_maxCombo = 0;  ///< 本局历史最高连击
 };
 
 } // namespace melody_matrix::gameplay

@@ -52,15 +52,15 @@ namespace MatrixTransform {
         if (t == SCALE_ONLY)                     return 'S';
         if (t >= 201 && t <= 299)                return 'L';
         if (t >= 301 && t <= 399)                return 'R';
-        return 'N';
+        return 'N';  // 未知类型视为 NONE
     }
-    inline bool isSlideRow(int32_t t)    { return t >= 201 && t <= 206; }
-    inline bool isSlideCol(int32_t t)    { return t >= 221 && t <= 226; }
-    inline bool isSlideRowAdd(int32_t t) { return t >= 201 && t <= 203; }
-    inline bool isSlideRowRemove(int32_t t) { return t >= 204 && t <= 206; }
-    inline bool isSlideColAdd(int32_t t) { return t >= 221 && t <= 223; }
-    inline bool isSlideColRemove(int32_t t) { return t >= 224 && t <= 226; }
-    inline bool isRotate(int32_t t)      { return t >= 301 && t <= 399; }
+    inline bool isSlideRow(int32_t t)    { return t >= 201 && t <= 206; }  // 行滑动
+    inline bool isSlideCol(int32_t t)    { return t >= 221 && t <= 226; }  // 列滑动
+    inline bool isSlideRowAdd(int32_t t) { return t >= 201 && t <= 203; }  // 增行
+    inline bool isSlideRowRemove(int32_t t) { return t >= 204 && t <= 206; }  // 减行
+    inline bool isSlideColAdd(int32_t t) { return t >= 221 && t <= 223; }  // 增列
+    inline bool isSlideColRemove(int32_t t) { return t >= 224 && t <= 226; }  // 减列
+    inline bool isRotate(int32_t t)      { return t >= 301 && t <= 399; }  // 复合旋转
 }
 
 /// 阵型定义 — 描述特定时间点的网格布局（v2 标准6字段）
@@ -103,9 +103,9 @@ struct Beatmap {
         const Formation* result = nullptr;
         for (const auto& f : formations) {
             if (f.time <= timeMs) {
-                result = &f;
+                result = &f;  // 更新为 time 之前最后一条
             } else {
-                break;
+                break;  // formations 升序，后续更晚
             }
         }
         return result;

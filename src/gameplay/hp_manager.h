@@ -6,10 +6,10 @@
 //  HP 归一化到 0~1，降至 0 时触发失败（可被模组禁用）。
 // ──────────────────────────────────────────────────────
 
-#include "gameplay/judge_strategy.h"
+#include "gameplay/judge_strategy.h"  // JudgmentResult 枚举
 
-#include <memory>
-#include <cstdint>
+#include <memory>   // std::shared_ptr：HP 模组
+#include <cstdint>  // （预留）固定宽度整数
 
 namespace melody_matrix::gameplay {
 
@@ -55,13 +55,13 @@ public:
 private:
     float m_hp = 1.0f;          ///< 当前 HP（0.0 ~ 1.0+）
     float m_hpDrain = 5.0f;     ///< 来自难度的 HP 消耗速率
-    std::shared_ptr<IHpMod> m_mod;
+    std::shared_ptr<IHpMod> m_mod;  ///< 可选 HP 行为模组
 };
 
 /// 无失败模组 — 玩家永远不会死亡
 class NoFailMod : public IHpMod {
 public:
-    bool isDead(float) const override { return false; }
+    bool isDead(float) const override { return false; }  ///< 始终返回未死亡
 };
 
 } // namespace gameplay

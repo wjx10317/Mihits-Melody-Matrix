@@ -1,93 +1,326 @@
 // ============================================================
 // texture_cache.cpp — 全局纹理缓存实现（单例）
+// 后台线程 stbi 解码，主线程 uploadFromMemory 上传 GL。
 // ============================================================
 
 #include "texture_cache.h"
 #include "util/logger.h"
 
-#include <unordered_set>
+#include <stb_image.h>
+
+#include <algorithm>
+#include <filesystem>
 
 namespace melody_matrix::renderer {
+
+std::string TextureCache::normalizeKey(const std::string& path) {
+    if (path.empty()) {
+        return path;
+    }
+    std::error_code ec;
+    const std::filesystem::path absolute = std::filesystem::absolute(path, ec);
+    if (ec) {
+        return path;
+    }
+    const std::filesystem::path canonical = std::filesystem::weakly_canonical(absolute, ec);
+    return ec ? absolute.string() : canonical.string();
+}
+
+void TextureCache::revokePath(const std::string& key) {
+    m_revokedPaths.insert(key);
+    m_cache.erase(key);
+    m_failedPaths.erase(key);
+    m_inFlightPaths.erase(key);
+}
+
+TextureCache::TextureCache() = default;
+
+TextureCache::~TextureCache() {
+    shutdown();
+}
 
 TextureCache& TextureCache::instance() {
     static TextureCache s_instance;
     return s_instance;
 }
 
-/// 按路径加载；命中缓存直接返回指针
-Texture2D* TextureCache::load(const std::string& path, bool genMipmap) {
-    auto it = m_cache.find(path);
-    if (it != m_cache.end()) {
-        return &it->second;
+void TextureCache::ensureDecodeThread() {
+    if (m_threadStarted) {
+        return;
     }
-
-    Texture2D tex;
-    if (tex.loadFromFile(path, genMipmap)) {
-        auto result = m_cache.emplace(path, std::move(tex));
-        return &result.first->second;
-    }
-
-    MM_LOG_WARN("TextureCache", "Failed to load texture: " + path);
-    return nullptr;
+    m_stopDecode = false;
+    m_decodeThread = std::thread(&TextureCache::decodeWorkerLoop, this);
+    m_threadStarted = true;
 }
 
-void TextureCache::unload(const std::string& path) {
-    m_cache.erase(path);
-}
+void TextureCache::decodeWorkerLoop() {
+    while (true) {
+        DecodeRequest req;
+        {
+            std::unique_lock lock(m_mutex);
+            m_decodeCv.wait(lock, [this] {
+                return m_stopDecode.load() || !m_decodeQueue.empty();
+            });
+            if (m_stopDecode.load() && m_decodeQueue.empty()) {
+                break;
+            }
+            req = std::move(m_decodeQueue.front());
+            m_decodeQueue.pop_front();
+        }
 
-/// 仅查询，不触发加载
-Texture2D* TextureCache::get(const std::string& path) {
-    auto it = m_cache.find(path);
-    if (it != m_cache.end()) {
-        return &it->second;
-    }
-    return nullptr;
-}
+        {
+            std::lock_guard lock(m_mutex);
+            if (m_revokedPaths.count(req.path) != 0) {
+                m_inFlightPaths.erase(req.path);
+                continue;
+            }
+        }
 
-void TextureCache::preload(const std::vector<std::string>& paths) {
-    for (const auto& path : paths) {
-        load(path, false);
-    }
-    MM_LOG_INFO("TextureCache", "Preloaded %zu textures, cache size: %zu",
-                paths.size(), m_cache.size());
-}
+        stbi_set_flip_vertically_on_load(1);
+        int width = 0;
+        int height = 0;
+        int channels = 0;
+        unsigned char* data = stbi_load(req.path.c_str(), &width, &height, &channels, 0);
+        if (!data) {
+            MM_LOG_WARN("TextureCache", "Failed to decode: " + req.path + " — " + stbi_failure_reason());
+            std::lock_guard lock(m_mutex);
+            if (m_revokedPaths.count(req.path) == 0) {
+                m_failedPaths.insert(req.path);
+            }
+            m_inFlightPaths.erase(req.path);
+            continue;
+        }
 
-void TextureCache::preloadRange(const std::vector<std::string>& paths, int start, int end) {
-    if (start < 0) start = 0;
-    if (end > static_cast<int>(paths.size())) end = static_cast<int>(paths.size());
+        DecodedImage img;
+        img.path = req.path;
+        img.width = width;
+        img.height = height;
+        img.channels = channels;
+        img.genMipmap = req.genMipmap;
+        const size_t pixelCount =
+            static_cast<size_t>(width) * static_cast<size_t>(height) * static_cast<size_t>(channels);
+        img.pixels.assign(data, data + pixelCount);
+        stbi_image_free(data);
 
-    for (int i = start; i < end; ++i) {
-        load(paths[i], false);
-    }
-    MM_LOG_INFO("TextureCache", "Preloaded range [%d, %d), cache size: %zu",
-                start, end, m_cache.size());
-}
-
-/// 滑动窗口卸载：保留 centerIndex ± radius 范围内的路径
-void TextureCache::unloadDistant(const std::vector<std::string>& paths, int centerIndex, int radius) {
-    // 构建需要保留的路径集合
-    std::unordered_set<std::string> keepPaths;
-    int lo = std::max(0, centerIndex - radius);
-    int hi = std::min(static_cast<int>(paths.size()) - 1, centerIndex + radius);
-    for (int i = lo; i <= hi; ++i) {
-        keepPaths.insert(paths[i]);
-    }
-
-    // 卸载不在保留集合中的纹理
-    for (auto it = m_cache.begin(); it != m_cache.end(); ) {
-        if (keepPaths.count(it->first) == 0) {
-            it = m_cache.erase(it);
-        } else {
-            ++it;
+        {
+            std::lock_guard lock(m_mutex);
+            if (m_revokedPaths.count(req.path) != 0) {
+                m_inFlightPaths.erase(req.path);
+                continue;
+            }
+            m_uploadQueue.push_back(std::move(img));
         }
     }
 }
 
-void TextureCache::clear() {
+Texture2D* TextureCache::loadSync(const std::string& path, bool genMipmap) {
+    const std::string key = normalizeKey(path);
+    {
+        std::lock_guard lock(m_mutex);
+        auto it = m_cache.find(key);
+        if (it != m_cache.end()) {
+            return &it->second;
+        }
+        if (m_failedPaths.count(key) != 0) {
+            return nullptr;
+        }
+    }
+
+    Texture2D tex;
+    if (!tex.loadFromFile(key, genMipmap)) {
+        std::lock_guard lock(m_mutex);
+        if (m_revokedPaths.count(key) == 0) {
+            m_failedPaths.insert(key);
+        }
+        m_inFlightPaths.erase(key);
+        MM_LOG_WARN("TextureCache", "Failed to load texture: " + key);
+        return nullptr;
+    }
+
+    std::lock_guard lock(m_mutex);
+    if (m_revokedPaths.count(key) != 0) {
+        return nullptr;
+    }
+    m_revokedPaths.erase(key);
+    auto result = m_cache.emplace(key, std::move(tex));
+    m_inFlightPaths.erase(key);
+    return &result.first->second;
+}
+
+Texture2D* TextureCache::requestLoad(const std::string& path, bool genMipmap) {
+    const std::string key = normalizeKey(path);
+    {
+        std::lock_guard lock(m_mutex);
+        auto it = m_cache.find(key);
+        if (it != m_cache.end()) {
+            return &it->second;
+        }
+        if (m_failedPaths.count(key) != 0) {
+            return nullptr;
+        }
+        if (m_inFlightPaths.count(key) != 0) {
+            return nullptr;
+        }
+        m_revokedPaths.erase(key);
+        m_inFlightPaths.insert(key);
+        m_decodeQueue.push_back({key, genMipmap});
+    }
+
+    ensureDecodeThread();
+    m_decodeCv.notify_one();
+    return nullptr;
+}
+
+void TextureCache::processPendingUploads(int maxUploads) {
+    if (maxUploads <= 0) {
+        return;
+    }
+
+    for (int i = 0; i < maxUploads; ++i) {
+        DecodedImage img;
+        {
+            std::lock_guard lock(m_mutex);
+            if (m_uploadQueue.empty()) {
+                break;
+            }
+            img = std::move(m_uploadQueue.front());
+            m_uploadQueue.pop_front();
+        }
+
+        {
+            std::lock_guard lock(m_mutex);
+            if (m_revokedPaths.count(img.path) != 0) {
+                m_inFlightPaths.erase(img.path);
+                continue;
+            }
+        }
+
+        Texture2D tex;
+        if (img.pixels.empty() ||
+            !tex.uploadFromMemory(img.pixels.data(), img.width, img.height, img.channels,
+                                  img.genMipmap, img.path)) {
+            std::lock_guard lock(m_mutex);
+            if (m_revokedPaths.count(img.path) == 0) {
+                m_failedPaths.insert(img.path);
+            }
+            m_inFlightPaths.erase(img.path);
+            MM_LOG_WARN("TextureCache", "Failed to upload texture: " + img.path);
+            continue;
+        }
+
+        {
+            std::lock_guard lock(m_mutex);
+            if (m_revokedPaths.count(img.path) != 0) {
+                m_inFlightPaths.erase(img.path);
+                continue;
+            }
+            m_revokedPaths.erase(img.path);
+            m_cache.emplace(img.path, std::move(tex));
+            m_inFlightPaths.erase(img.path);
+        }
+    }
+}
+
+void TextureCache::unload(const std::string& path) {
+    std::lock_guard lock(m_mutex);
+    revokePath(normalizeKey(path));
+}
+
+Texture2D* TextureCache::get(const std::string& path) {
+    std::lock_guard lock(m_mutex);
+    auto it = m_cache.find(normalizeKey(path));
+    if (it != m_cache.end()) {
+        return &it->second;
+    }
+    return nullptr;
+}
+
+bool TextureCache::isLoaded(const std::string& path) const {
+    std::lock_guard lock(m_mutex);
+    auto it = m_cache.find(normalizeKey(path));
+    return it != m_cache.end() && it->second.valid();
+}
+
+bool TextureCache::hasFailed(const std::string& path) const {
+    std::lock_guard lock(m_mutex);
+    return m_failedPaths.count(normalizeKey(path)) != 0;
+}
+
+bool TextureCache::isPending(const std::string& path) const {
+    std::lock_guard lock(m_mutex);
+    return m_inFlightPaths.count(normalizeKey(path)) != 0;
+}
+
+void TextureCache::preload(const std::vector<std::string>& paths) {
+    for (const auto& path : paths) {
+        requestLoad(path, false);
+    }
+    MM_LOG_INFO("TextureCache", "Requested preload for %zu textures", paths.size());
+}
+
+void TextureCache::preloadRange(const std::vector<std::string>& paths, int start, int end) {
+    if (start < 0) {
+        start = 0;
+    }
+    if (end > static_cast<int>(paths.size())) {
+        end = static_cast<int>(paths.size());
+    }
+
+    for (int i = start; i < end; ++i) {
+        requestLoad(paths[static_cast<size_t>(i)], false);
+    }
+    MM_LOG_INFO("TextureCache", "Requested preload range [%d, %d)", start, end);
+}
+
+void TextureCache::unloadDistant(const std::vector<std::string>& paths, int centerIndex, int radius) {
+    std::unordered_set<std::string> keepPaths;
+    const int lo = std::max(0, centerIndex - radius);
+    const int hi = std::min(static_cast<int>(paths.size()) - 1, centerIndex + radius);
+    for (int i = lo; i <= hi; ++i) {
+        keepPaths.insert(normalizeKey(paths[static_cast<size_t>(i)]));
+    }
+
+    std::lock_guard lock(m_mutex);
+    std::vector<std::string> toRevoke;
+    toRevoke.reserve(m_cache.size());
+    for (const auto& entry : m_cache) {
+        if (keepPaths.count(entry.first) == 0) {
+            toRevoke.push_back(entry.first);
+        }
+    }
+    for (const auto& key : toRevoke) {
+        revokePath(key);
+    }
+}
+
+void TextureCache::shutdown() {
+    {
+        std::lock_guard lock(m_mutex);
+        m_stopDecode = true;
+        m_decodeCv.notify_all();
+    }
+
+    if (m_threadStarted && m_decodeThread.joinable()) {
+        m_decodeThread.join();
+        m_threadStarted = false;
+    }
+
+    std::lock_guard lock(m_mutex);
     m_cache.clear();
+    m_failedPaths.clear();
+    m_inFlightPaths.clear();
+    m_revokedPaths.clear();
+    m_decodeQueue.clear();
+    m_uploadQueue.clear();
+    m_stopDecode = false;
+}
+
+void TextureCache::clear() {
+    shutdown();
 }
 
 size_t TextureCache::size() const {
+    std::lock_guard lock(m_mutex);
     return m_cache.size();
 }
 

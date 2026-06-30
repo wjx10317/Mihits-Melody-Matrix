@@ -19,6 +19,7 @@
 11. [第三方库](#11-第三方库)
 12. [配置与资源路径](#12-配置与资源路径)
 13. [扩展阅读](#13-扩展阅读)
+14. [源码中文注释说明](#14-源码中文注释说明)
 
 ---
 
@@ -347,9 +348,13 @@ time, rows, cols, transformType, transformDurationMs, blockSize
 
 **编排**（`arrangeRemainingNotes`）：
 
-- 节奏窗：`kArrangeQuarterBeatMs`（默认 200 BPM 下 1/4 拍 = 75ms）
-- 同列窗内 note ≥ 阈值 → 重排到负载更低列
-- 无滚动冲突：全活跃窗均分；有冲突：仅 **稳定列**（滚后仍留在窗内的列）
+- **节奏窗**：按当前 TimingPoint 的 BPM 动态计算 `arrangeRhythmWindowMs` = `msPerBeat / 分母`
+  - BPM ≥ 140 → **1/3 拍**（分母 3）
+  - 100 ≤ BPM < 140 → **1/4 拍**（分母 4）
+  - BPM < 100 → **1/6 拍**（分母 6）
+- **密度阈值** `kArrangeColDensityThreshold = 2`：同列节奏窗内已有 1 个 note + 当前 → 触发重排
+- **列选择**：默认在整段活跃窗内按负载均分；若存在「边缘列 + 无关滚动在 latestHit 前发生」→ 仅 **稳定列**
+- **稳定列**（滚后仍留在窗内）：0–3→1–3，1–4→2–3，2–5→2–4
 
 ### 7.3 MMA 格式
 
@@ -500,6 +505,39 @@ cmake -S . -B build-vs -G "Visual Studio 17 2022" -A x64
 4. `note_renderer.cpp` + `grid_layout.h`
 5. `osu_parser.cpp`（`parse`、`generateFormationsAndFilter`、`arrangeRemainingNotes`）
 6. `scroll_simulation.h`
+
+---
+
+## 14. 源码中文注释说明
+
+`src/` 下全部业务源码已按统一规范补充中文注释（不含 `third_party/`）。
+
+### 14.1 注释层级
+
+| 层级 | 内容 | 示例位置 |
+|------|------|----------|
+| **文件头** | 职责、依赖、在项目中的用法 | `kernel.cpp`、`judge_queue.h` |
+| **类/结构体** | 用途与协作关系 | `JudgeQueue`、`GridLayout` |
+| **函数** | 参数、返回值、调用时机 | `PlayingState::checkAndTriggerScroll` |
+| **算法块** | 大函数内 `═══` 分区说明 | `osu_parser.cpp`、`playing_state.cpp` |
+| **行内** | 非显然逻辑、公式含义 | 滚动/Hold 阻塞、判定窗口 |
+
+### 14.2 模块索引（按目录）
+
+| 目录 | 主要内容 |
+|------|----------|
+| `core/` | Kernel 主循环、Clock、StateManager、各 GameState |
+| `beatmap/` | MMA/osu 解析、转换、滚动模拟、编排 |
+| `gameplay/` | JudgeQueue、分数/连击/HP、FormationController |
+| `renderer/` | OpenGL 实例化、GridLayout、NoteRenderer 层 |
+| `audio/` | miniaudio 封装、BGM/预览/SFX |
+| `platform/` | config、文件系统、zip、对话框 |
+| `ui/` | ImGui 主题与管理 |
+| `util/` | Logger、Result、EventManager、Hash |
+
+### 14.3 阅读建议
+
+大文件（`playing_state.cpp`、`song_select_state.cpp`、`osu_parser.cpp`）采用 **分区标题 + 函数文档**，未对每一行 `{`/`}` 加注，以免干扰阅读。入门时配合本文档第 5–8 节与文件头「主要算法块」列表跳转即可。
 
 ---
 

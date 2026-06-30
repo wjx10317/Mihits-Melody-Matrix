@@ -176,16 +176,16 @@ private:
         int32_t targetEndCol = 3;       ///< 目标结束列
         float scrollOffset = 0.0f;      ///< 当前滚动偏移（像素，用于动画）
 
-        /// 切换是否完成
+        /// 切换是否完成（nowMs 超过 scrollStart + duration）
         bool finished(int64_t nowMs) const {
             return scrolling && nowMs >= scrollStartMs + static_cast<int64_t>(scrollDurationMs);
         }
 
-        /// 滚动进度 [0,1]
+        /// 滚动进度 [0,1]，供 renderer 插值列偏移
         float progress(int64_t nowMs) const {
-            if (!scrolling || scrollDurationMs <= 0.0f) return 1.0f;
+            if (!scrolling || scrollDurationMs <= 0.0f) return 1.0f;  // 非滚动视为已完成
             float p = static_cast<float>(nowMs - scrollStartMs) / scrollDurationMs;
-            return std::max(0.0f, std::min(1.0f, p));
+            return std::max(0.0f, std::min(1.0f, p));                // clamp 到 [0,1]
         }
     };
     ScrollWindow m_scrollWindow;

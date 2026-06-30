@@ -14,13 +14,13 @@
  *   失败：return util::failure<T>(code, "原因")；
  *   调用方检查 if (result.ok()) 再访问 value()。
  */
-#pragma once
+#pragma once  // 防止头文件重复包含
 
-#include <string>
-#include <variant>
-#include <functional>
+#include <string>       // 错误消息字符串
+#include <variant>      // 成功值与 Error 的联合存储
+#include <functional>   // std::declval（map 中推断返回类型）
 
-namespace melody_matrix::util {
+namespace melody_matrix::util {  // 工具层命名空间
 
 /**
  * @brief Result<T> 在失败时携带的错误信息
@@ -30,10 +30,10 @@ struct Error {
     std::string message;    ///< 人类可读描述
 
     Error() = default;
-    Error(int32_t c, std::string msg) : code(c), message(std::move(msg)) {}
+    Error(int32_t c, std::string msg) : code(c), message(std::move(msg)) {}  // 用错误码与消息构造
 
     /** @brief 有错误时为 true（code != 0） */
-    explicit operator bool() const { return code != 0; }
+    explicit operator bool() const { return code != 0; }  // 非零错误码视为有错误
 };
 
 /**
@@ -46,30 +46,30 @@ template <typename T>
 class Result {
 public:
     // ── 成功构造函数 ──
-    Result(T value) : m_data(std::move(value)) {}          // NOLINT
-    Result& operator=(T value) { m_data = std::move(value); return *this; }
+    Result(T value) : m_data(std::move(value)) {}          // NOLINT  // 用成功值构造
+    Result& operator=(T value) { m_data = std::move(value); return *this; }  // 赋值为成功值
 
     // ── 错误构造函数 ──
-    Result(Error err) : m_data(std::move(err)) {}           // NOLINT
-    Result(int32_t code, std::string msg) : m_data(Error{code, std::move(msg)}) {}
+    Result(Error err) : m_data(std::move(err)) {}           // NOLINT  // 用 Error 构造失败 Result
+    Result(int32_t code, std::string msg) : m_data(Error{code, std::move(msg)}) {}  // 用错误码与消息构造
 
     /**
      * @brief 是否成功
      * @return true 表示持有 T
      */
-    bool ok() const { return std::holds_alternative<T>(m_data); }
-    explicit operator bool() const { return ok(); }
+    bool ok() const { return std::holds_alternative<T>(m_data); }  // 检查 variant 是否持有 T
+    explicit operator bool() const { return ok(); }  // 隐式转换为 bool，同 ok()
 
     // ── 访问器（失败分支时未定义行为）──
-    T& value() & { return std::get<T>(m_data); }
-    const T& value() const& { return std::get<T>(m_data); }
-    T&& value() && { return std::get<T>(std::move(m_data)); }
+    T& value() & { return std::get<T>(m_data); }  // 左值引用访问成功值
+    const T& value() const& { return std::get<T>(m_data); }  // 常量左值引用访问成功值
+    T&& value() && { return std::get<T>(std::move(m_data)); }  // 右值引用访问成功值
 
     /**
      * @brief 获取错误信息
      * @return 失败时的 Error 引用
      */
-    const Error& error() const { return std::get<Error>(m_data); }
+    const Error& error() const { return std::get<Error>(m_data); }  // 获取失败时的 Error
 
     /**
      * @brief 成功返回值，失败返回 fallback
@@ -77,7 +77,7 @@ public:
      * @return T 或 fallback
      */
     T value_or(T fallback) const {
-        return ok() ? value() : std::move(fallback);
+        return ok() ? value() : std::move(fallback);  // 成功返回值，失败返回 fallback
     }
 
     /**
@@ -88,11 +88,11 @@ public:
      */
     template <typename F>
     auto map(F&& fn) -> Result<decltype(fn(std::declval<T>()))> {
-        using U = decltype(fn(std::declval<T>()));
-        if (ok()) {
-            return Result<U>(fn(value()));
+        using U = decltype(fn(std::declval<T>()));  // 推断映射后的值类型 U
+        if (ok()) {  // 当前为成功状态
+            return Result<U>(fn(value()));  // 对成功值执行映射并包装为 Result<U>
         }
-        return Result<U>(error());
+        return Result<U>(error());  // 失败时透传原 Error
     }
 
 private:
@@ -105,16 +105,16 @@ private:
 template <>
 class Result<void> {
 public:
-    Result() : m_ok(true) {}
-    Result(Error err) : m_ok(false), m_err(std::move(err)) {}  // NOLINT
-    Result(int32_t code, std::string msg) : m_ok(false), m_err(Error{code, std::move(msg)}) {}
+    Result() : m_ok(true) {}  // 默认构造表示成功
+    Result(Error err) : m_ok(false), m_err(std::move(err)) {}  // NOLINT  // 用 Error 构造失败 Result
+    Result(int32_t code, std::string msg) : m_ok(false), m_err(Error{code, std::move(msg)}) {}  // 用错误码与消息构造
 
     /** @return 是否成功 */
-    bool ok() const { return m_ok; }
-    explicit operator bool() const { return m_ok; }
+    bool ok() const { return m_ok; }  // 返回成功标志
+    explicit operator bool() const { return m_ok; }  // 隐式转换为 bool，同 ok()
 
     /** @return 失败时的 Error */
-    const Error& error() const { return m_err; }
+    const Error& error() const { return m_err; }  // 获取失败时的 Error
 
 private:
     bool m_ok;
@@ -125,7 +125,7 @@ private:
  * @brief 创建成功的 Result<void>
  * @return 表示成功的 Result<void>
  */
-inline Result<void> success() { return Result<void>{}; }
+inline Result<void> success() { return Result<void>{}; }  // 返回表示成功的 Result<void>
 
 /**
  * @brief 创建失败的 Result
@@ -136,7 +136,7 @@ inline Result<void> success() { return Result<void>{}; }
  */
 template <typename T = void>
 Result<T> failure(int32_t code, std::string msg) {
-    return Result<T>(Error{code, std::move(msg)});
+    return Result<T>(Error{code, std::move(msg)});  // 构造携带 Error 的失败 Result
 }
 
 } // namespace melody_matrix::util

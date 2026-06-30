@@ -6,18 +6,18 @@
 //  并提供转换进度与 ease-in-out 缓动供渲染插值。
 // ──────────────────────────────────────────────────────
 
-#include "beatmap/beatmap.h"
+#include "beatmap/beatmap.h"  // beatmap::Formation 阵型结构体
 
-#include <vector>
-#include <cstdint>
-#include <functional>
+#include <vector>      // 阵型时间线存储
+#include <cstdint>     // int64_t 等固定宽度整数
+#include <functional>  // onFormationChanged 回调
 
 namespace melody_matrix::gameplay {
 
 /// 阵型变化事件
 struct FormationChangedEvent {
-    beatmap::Formation previous;
-    beatmap::Formation current;
+    beatmap::Formation previous;   ///< 切换前的阵型（行/列/时间等）
+    beatmap::Formation current;    ///< 切换后的新阵型
     int64_t transitionStartMs; ///< 转换开始时间
     int64_t transitionEndMs;   ///< 转换结束时间
 };
@@ -53,9 +53,9 @@ public:
     /// 获取下一次阵型变换时间（无后续变换返回 INT64_MAX）
     int64_t nextFormationTime() const {
         if (m_currentIndex + 1 < m_formations.size()) {
-            return m_formations[m_currentIndex + 1].time;
+            return m_formations[m_currentIndex + 1].time;  // 下一个阵型的时间戳
         }
-        return INT64_MAX;
+        return INT64_MAX;  // 无后续变换，返回最大值表示"永不"
     }
 
     /// 计算转换进度（0.0 = 刚刚开始，1.0 = 完成）
@@ -74,10 +74,10 @@ public:
     std::function<void(const FormationChangedEvent&)> onFormationChanged;
 
 private:
-    std::vector<beatmap::Formation> m_formations;
-    size_t m_currentIndex = 0;
-    int64_t m_transitionStartMs = 0;
-    int64_t m_transitionDurationMs = 300; // 默认 300ms 转换
+    std::vector<beatmap::Formation> m_formations;  ///< 按时间排序的阵型序列
+    size_t m_currentIndex = 0;                     ///< 当前生效的阵型索引
+    int64_t m_transitionStartMs = 0;               ///< 最近一次转换的起始时刻
+    int64_t m_transitionDurationMs = 300; // 默认 300ms 转换（空谱面回退用）
 
     /// 缓动函数：ease-in-out cubic
     static float easeInOutCubic(float t);

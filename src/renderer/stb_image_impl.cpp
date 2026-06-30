@@ -4,5 +4,5 @@
 // Texture2D / TextureCache 通过 #include <stb_image.h> 调用加载接口。
 // ============================================================
 
-#define STB_IMAGE_IMPLEMENTATION
-#include <stb_image.h>
+#define STB_IMAGE_IMPLEMENTATION  // 启用 stb_image 函数体定义（仅本翻译单元一次）
+#include <stb_image.h>            // 图像解码库头文件

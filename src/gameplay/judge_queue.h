@@ -6,13 +6,13 @@
 //  自动 Miss、事件回调，供 PlayingState 与渲染层查询。
 // ──────────────────────────────────────────────────────
 
-#include "gameplay/judge_strategy.h"
-#include "beatmap/note.h"
+#include "gameplay/judge_strategy.h"  // 判定策略接口与 JudgmentResult 枚举
+#include "beatmap/note.h"             // beatmap::Note 音符结构体
 
-#include <vector>
-#include <array>
-#include <memory>
-#include <functional>
+#include <vector>      // std::vector：每列音符列表
+#include <array>       // std::array：固定 MAX_COLS 列的队列数组
+#include <memory>      // std::unique_ptr：判定策略所有权
+#include <functional>  // std::function：事件回调
 
 namespace melody_matrix::gameplay {
 
@@ -20,43 +20,43 @@ namespace melody_matrix::gameplay {
 struct NoteHitEvent {
     JudgmentResult result;   ///< Perfect 或 Good
     int64_t        time;     ///< 音符的时间
-    int32_t        row;
-    int32_t        col;
+    int32_t        row;      ///< 音符行索引
+    int32_t        col;      ///< 音符列索引
     int64_t        pressTime; ///< 按键实际按下的时间
 };
 
 struct NoteMissEvent {
     int64_t time;           ///< 音符的时间
-    int32_t row;
-    int32_t col;
+    int32_t row;            ///< 音符行索引
+    int32_t col;            ///< 音符列索引
 };
 
 /// Hold 尾部释放判定结果（与 Tap 相同 ± 窗口）
 enum class HoldReleaseResult : uint8_t {
     Ignored = 0,   ///< 该列没有活跃 Hold
-    Perfect = 1,
-    Good    = 2,
-    Miss    = 3,
+    Perfect = 1,   ///< 尾部在 Perfect 窗口内松手
+    Good    = 2,   ///< 尾部在 Good 窗口内松手
+    Miss    = 3,   ///< 尾部超出 Good 窗口或超时
 };
 
 /// Hold 尾部判定事件
 struct HoldTailEvent {
-    int32_t           col = 0;
-    int32_t           row = 0;
-    HoldReleaseResult result = HoldReleaseResult::Ignored;
-    int64_t           holdEndMs = 0;
-    int64_t           releaseMs = 0;
+    int32_t           col = 0;              ///< Hold 列索引
+    int32_t           row = 0;              ///< Hold 行索引
+    HoldReleaseResult result = HoldReleaseResult::Ignored;  ///< 尾部判定结果
+    int64_t           holdEndMs = 0;        ///< 谱面 Hold 结束时间
+    int64_t           releaseMs = 0;        ///< 玩家松手时间
 };
 
 /// 单列判定队列
 struct ColumnQueue {
     std::vector<beatmap::Note> notes;  ///< 该列的音符（按时间升序）
-    size_t head = 0;                    ///< 当前头部索引
+    size_t head = 0;                    ///< 当前头部索引（下一颗待判定音符）
 
-    bool finished() const { return head >= notes.size(); }
-    const beatmap::Note& front() const { return notes[head]; }
-    void advance() { ++head; }
-    void reset() { head = 0; notes.clear(); }
+    bool finished() const { return head >= notes.size(); }  ///< 是否已全部判定完
+    const beatmap::Note& front() const { return notes[head]; }  ///< 队头音符（不越界调用）
+    void advance() { ++head; }          ///< 消费队头，head 前移
+    void reset() { head = 0; notes.clear(); }  ///< 清空队列并重置 head
 };
 
 /// 多列判定队列 — 每列独立维护判定状态。
@@ -64,7 +64,7 @@ struct ColumnQueue {
 /// 每列的头部指针独立前进，支持并行判定。
 class JudgeQueue {
 public:
-    static constexpr int MAX_COLS = 8;
+    static constexpr int MAX_COLS = 8;  ///< 最大支持列数
 
     JudgeQueue();
 
@@ -110,19 +110,19 @@ public:
     size_t totalNotes() const;
 
     // ── 事件回调 ──
-    std::function<void(const NoteHitEvent&)>  onHit;
-    std::function<void(const NoteMissEvent&)> onMiss;
+    std::function<void(const NoteHitEvent&)>  onHit;      ///< Tap/Hold 头部击中
+    std::function<void(const NoteMissEvent&)> onMiss;     ///< 音符过期 Miss
     /// Hold 尾部松手/超时判定
     std::function<void(const HoldTailEvent&)> onHoldTail;
 
 private:
-    HoldReleaseResult judgeHoldTailTiming(int64_t dt, float od) const;
-    HoldReleaseResult commitHoldTail(int32_t column, int64_t releaseTimeMs, float od);
-    void commitHit(int32_t column, JudgmentResult result, int64_t pressTimeMs);
-    void emitMiss(int32_t column);
+    HoldReleaseResult judgeHoldTailTiming(int64_t dt, float od) const;  ///< Hold 尾部窗口判定
+    HoldReleaseResult commitHoldTail(int32_t column, int64_t releaseTimeMs, float od);  ///< 提交尾部并推进
+    void commitHit(int32_t column, JudgmentResult result, int64_t pressTimeMs);  ///< Tap 击中提交
+    void emitMiss(int32_t column);  ///< 过期 Miss 提交
 
-    std::array<ColumnQueue, MAX_COLS> m_columns;
-    int32_t m_columnCount = 0;
+    std::array<ColumnQueue, MAX_COLS> m_columns;  ///< 每列独立的音符队列
+    int32_t m_columnCount = 0;  ///< 有效列数（最大 col+1）
 
     /// 每列的活跃 Hold 状态
     struct ActiveHoldState {
@@ -132,9 +132,9 @@ private:
         int32_t  row = 0;               ///< Hold 的行号
         int32_t  col = 0;               ///< Hold 的列号
     };
-    std::array<ActiveHoldState, MAX_COLS> m_activeHolds;
+    std::array<ActiveHoldState, MAX_COLS> m_activeHolds;  ///< 每列 Hold 状态
 
-    std::unique_ptr<IJudgeStrategy> m_strategy;
+    std::unique_ptr<IJudgeStrategy> m_strategy;  ///< 判定窗口策略（可替换）
 };
 
 } // namespace melody_matrix::gameplay

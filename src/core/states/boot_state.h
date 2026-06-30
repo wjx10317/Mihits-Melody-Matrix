@@ -1,13 +1,15 @@
 // ============================================================
 // boot_state.h — 启动状态
 //
-// 游戏启动时的首个状态：播放品牌加载动画，同时在后台扫描铺面并
-// 预加载纹理，全部完成后自动过渡到主菜单。
+// 首个状态：品牌动画 + 后台 scanBeatmaps + 主线程纹理预加载 → MainMenu
 // ============================================================
 #pragma once
 
 #include "core/game_state_base.h"
 #include "core/asset_loader.h"
+
+#include <string>
+#include <vector>
 
 namespace melody_matrix::core {
 
@@ -39,7 +41,9 @@ private:
     // ── 异步加载 ──
     AssetLoader m_loader;
     bool m_loaderStarted = false;
-    bool m_texturesLoaded = false;  ///< 主线程纹理加载是否完成
+    bool m_preloadRequested = false; ///< 是否已向 TextureCache 提交预加载请求
+    bool m_texturesLoaded = false;   ///< 预加载路径均已就绪（成功或失败）
+    std::vector<std::string> m_preloadPaths; ///< Boot 阶段异步预加载的背景图路径
 
     // ── 动画参数 ──
     static constexpr float M_DRAW_DURATION = 1.2f;   ///< "M" 路径绘制时长

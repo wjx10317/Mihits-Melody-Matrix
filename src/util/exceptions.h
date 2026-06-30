@@ -12,12 +12,12 @@
  *   不可恢复错误抛出 FatalException（main.cpp 捕获并退出）；
  *   谱面解析失败抛 BeatmapException；文件 I/O 失败抛 IOException。
  */
-#pragma once
+#pragma once  // 防止头文件重复包含
 
-#include <stdexcept>
-#include <string>
+#include <stdexcept>  // std::runtime_error 基类
+#include <string>     // 错误消息字符串
 
-namespace melody_matrix::util {
+namespace melody_matrix::util {  // 工具层命名空间
 
 /**
  * @brief 所有 Melody Matrix 错误的基异常
@@ -29,8 +29,8 @@ public:
     /**
      * @param msg 错误描述
      */
-    explicit MMException(const std::string& msg) : std::runtime_error(msg) {}
-    explicit MMException(const char* msg) : std::runtime_error(msg) {}
+    explicit MMException(const std::string& msg) : std::runtime_error(msg) {}  // 从 string 构造
+    explicit MMException(const char* msg) : std::runtime_error(msg) {}  // 从 C 字符串构造
 };
 
 /**
@@ -40,7 +40,7 @@ public:
  */
 class FatalException : public MMException {
 public:
-    explicit FatalException(const std::string& msg) : MMException(msg) {}
+    explicit FatalException(const std::string& msg) : MMException(msg) {}  // 构造致命异常
 };
 
 /**
@@ -50,7 +50,7 @@ public:
  */
 class SevereException : public MMException {
 public:
-    explicit SevereException(const std::string& msg) : MMException(msg) {}
+    explicit SevereException(const std::string& msg) : MMException(msg) {}  // 构造严重异常
 };
 
 /**
@@ -58,7 +58,7 @@ public:
  */
 class IOException : public MMException {
 public:
-    explicit IOException(const std::string& msg) : MMException(msg) {}
+    explicit IOException(const std::string& msg) : MMException(msg) {}  // 构造 I/O 异常
 };
 
 /**
@@ -66,7 +66,7 @@ public:
  */
 class BeatmapException : public MMException {
 public:
-    explicit BeatmapException(const std::string& msg) : MMException(msg) {}
+    explicit BeatmapException(const std::string& msg) : MMException(msg) {}  // 构造谱面异常
 };
 
 } // namespace melody_matrix::util

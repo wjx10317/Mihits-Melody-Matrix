@@ -6,10 +6,10 @@
 //  公式见设计文档 8.1：BASE_SCORE × accuracy × comboMultiplier
 // ──────────────────────────────────────────────────────
 
-#include "gameplay/judge_strategy.h"
-#include "gameplay/combo_manager.h"
+#include "gameplay/judge_strategy.h"  // JudgmentResult 枚举
+#include "gameplay/combo_manager.h"   // 连击倍率公式与 ComboManager 协同
 
-#include <cstdint>
+#include <cstdint>  // int32_t / int64_t
 
 namespace melody_matrix::gameplay {
 
@@ -42,12 +42,12 @@ public:
     void reset();
 
 private:
-    static constexpr int32_t BASE_SCORE = 300;
+    static constexpr int32_t BASE_SCORE = 300;  ///< 单音符 Perfect 基础分（combo=0 时）
 
-    int64_t m_totalScore  = 0;
+    int64_t m_totalScore  = 0;   ///< 累计总分
     int64_t m_maxPossible = 0;   ///< 所有音符在其连击时完美得分的总和
-    int32_t m_totalNotes  = 0;
-    int32_t m_hitNotes    = 0;
+    int32_t m_totalNotes  = 0;   ///< 已判定音符总数
+    int32_t m_hitNotes    = 0;   ///< 非 Miss 击中数
 };
 
 } // namespace melody_matrix::gameplay

@@ -77,7 +77,7 @@ private:
         FadingOut,  ///< 场景 → 黑屏（alpha: 0→1）
         FadingIn    ///< 黑屏 → 场景（alpha: 1→0）
     };
-    Phase m_phase = Phase::None;
+    Phase m_phase = Phase::None;  ///< 当前过渡阶段
 };
 
 } // namespace melody_matrix::core

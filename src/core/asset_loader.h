@@ -13,9 +13,9 @@
  */
 #pragma once
 
-#include <atomic>
-#include <thread>
-#include <functional>
+#include <atomic>      // 进度/完成标志跨线程无锁读写
+#include <thread>      // std::thread：后台加载线程
+#include <functional>  // std::function：可配置的加载任务回调
 
 namespace melody_matrix::core {
 
@@ -31,7 +31,7 @@ public:
     using LoadFunc = std::function<void(class AssetLoader& loader)>;
 
     AssetLoader() = default;
-    ~AssetLoader();
+    ~AssetLoader();  // join 后台线程，防止析构后仍访问 this
 
     /**
      * @brief 设置加载任务（须在 start 前调用）
@@ -64,11 +64,11 @@ public:
     bool done() const;
 
 private:
-    LoadFunc m_task;
-    std::thread m_thread;
-    std::atomic<float> m_progress{0.0f};
-    std::atomic<bool> m_done{false};
-    std::atomic<bool> m_started{false};
+    LoadFunc m_task;                    ///< 用户注册的加载任务（move 后持有）
+    std::thread m_thread;               ///< 后台加载线程句柄
+    std::atomic<float> m_progress{0.0f}; ///< 当前进度 0~1，主线程轮询
+    std::atomic<bool> m_done{false};    ///< 任务是否已全部完成
+    std::atomic<bool> m_started{false}; ///< 是否已调用 start()，防重复启动
 };
 
 } // namespace melody_matrix::core

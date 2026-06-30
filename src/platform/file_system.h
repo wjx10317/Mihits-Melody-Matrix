@@ -12,12 +12,12 @@
  *   谱面/资源加载前必须通过 FileSystem::safeResolve(base, userPath) 规范化路径；
  *   main 退出时调用 cleanupTemp() 清理临时目录。
  */
-#pragma once
+#pragma once  // 防止头文件重复包含
 
-#include "util/result.h"
-#include <string>
+#include "util/result.h"  // Result<T> 成功/失败封装
+#include <string>         // 路径字符串
 
-namespace melody_matrix::platform {
+namespace melody_matrix::platform {  // 平台层命名空间
 
 /**
  * @brief 安全文件系统工具
@@ -34,39 +34,39 @@ public:
      * @return 成功时返回规范化后的安全路径；失败返回 ERROR_PATH_TRAVERSAL
      */
     static util::Result<std::string> safeResolve(const std::string& basePath,
-                                                  const std::string& userPath);
+                                                  const std::string& userPath);  // 安全路径解析
 
     /**
      * @brief 检查文件是否存在
      * @param path 文件路径
      * @return 存在 true
      */
-    static bool fileExists(const std::string& path);
+    static bool fileExists(const std::string& path);  // 文件存在性检查
 
     /**
      * @brief 检查目录是否存在
      * @param path 目录路径
      * @return 是目录 true
      */
-    static bool dirExists(const std::string& path);
+    static bool dirExists(const std::string& path);  // 目录存在性检查
 
     /**
      * @brief 读取整个文件为字符串（二进制模式）
      * @param path 文件路径
      * @return 成功时文件内容；失败 ERROR_FILE_NOT_FOUND
      */
-    static util::Result<std::string> readFile(const std::string& path);
+    static util::Result<std::string> readFile(const std::string& path);  // 整文件读取
 
     /**
      * @brief 获取应用程序基础目录
      * @return 当前工作目录字符串（main 中已设为 exe 所在目录）
      */
-    static std::string getAppDir();
+    static std::string getAppDir();  // 获取应用根目录
 
     /**
      * @brief 退出时清理 temp 临时目录
      */
-    static void cleanupTemp();
+    static void cleanupTemp();  // 删除 temp 目录
 };
 
 } // namespace melody_matrix::platform

@@ -14,7 +14,7 @@
  */
 #pragma once
 
-#include <string>
+#include <string>  // 预留字符串相关扩展（当前文件主要使用 const char*）
 
 namespace melody_matrix::core {
 
@@ -40,13 +40,13 @@ enum class GameState {
  */
 inline const char* gameStateName(GameState state) {
     switch (state) {
-    case GameState::Boot:       return "Boot";
-    case GameState::MainMenu:   return "MainMenu";
-    case GameState::SongSelect: return "SongSelect";
-    case GameState::Playing:    return "Playing";
-    case GameState::Paused:     return "Paused";
-    case GameState::Result:     return "Result";
-    default:                    return "Unknown";
+    case GameState::Boot:       return "Boot";       // 启动加载阶段
+    case GameState::MainMenu:   return "MainMenu";   // 主菜单
+    case GameState::SongSelect: return "SongSelect"; // 选曲界面
+    case GameState::Playing:    return "Playing";    // 游玩中
+    case GameState::Paused:     return "Paused";     // 暂停 overlay
+    case GameState::Result:     return "Result";     // 结算界面
+    default:                    return "Unknown";    // 非法或未注册枚举值
     }
 }
 
