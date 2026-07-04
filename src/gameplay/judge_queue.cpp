@@ -142,9 +142,9 @@ JudgmentResult JudgeQueue::onKeyPress(int64_t pressTimeMs, int32_t column, float
     auto& col = m_columns[column];  // 目标列的判定队列
     if (col.finished()) {
         // 该列所有音符已判定完毕，空按无效
-        MM_LOG_INFO("JudgeQueue", "onKeyPress: col=" + std::to_string(column) +
-                    " finished (head=" + std::to_string(col.head) +
-                    " size=" + std::to_string(col.notes.size()) + ")");
+        MM_LOG_DEBUG("JudgeQueue", "onKeyPress: col=" + std::to_string(column) +
+                     " finished (head=" + std::to_string(col.head) +
+                     " size=" + std::to_string(col.notes.size()) + ")");
         return JudgmentResult::Ignored;
     }
 
@@ -155,11 +155,11 @@ JudgmentResult JudgeQueue::onKeyPress(int64_t pressTimeMs, int32_t column, float
 
     // ── 过早判定：按键时刻早于 Good 窗口左边界 ──
     if (dt < -static_cast<int64_t>(gw)) {
-        MM_LOG_INFO("JudgeQueue", "onKeyPress: col=" + std::to_string(column) +
-                    " too early, dt=" + std::to_string(dt) + "ms" +
-                    " gw=" + std::to_string(gw) + "ms" +
-                    " noteTime=" + std::to_string(note.time) +
-                    " pressTime=" + std::to_string(pressTimeMs));
+        MM_LOG_DEBUG("JudgeQueue", "onKeyPress: col=" + std::to_string(column) +
+                     " too early, dt=" + std::to_string(dt) + "ms" +
+                     " gw=" + std::to_string(gw) + "ms" +
+                     " noteTime=" + std::to_string(note.time) +
+                     " pressTime=" + std::to_string(pressTimeMs));
         return JudgmentResult::Ignored;  // 太早，不消耗音符，等待后续按键或自动 Miss
     }
 
@@ -174,9 +174,9 @@ JudgmentResult JudgeQueue::onKeyPress(int64_t pressTimeMs, int32_t column, float
             return JudgmentResult::Good;
         }
         // dt 在 (gw, miss) 之间：既不 Perfect/Good 也未过期，忽略本次按键
-        MM_LOG_INFO("JudgeQueue", "onKeyPress: col=" + std::to_string(column) +
-                    " between good and miss, dt=" + std::to_string(dt) + "ms" +
-                    " gw=" + std::to_string(gw) + "ms");
+        MM_LOG_DEBUG("JudgeQueue", "onKeyPress: col=" + std::to_string(column) +
+                     " between good and miss, dt=" + std::to_string(dt) + "ms" +
+                     " gw=" + std::to_string(gw) + "ms");
         return JudgmentResult::Ignored;  // 等 update() 在过期时自动 Miss
     }
 
@@ -309,9 +309,9 @@ void JudgeQueue::commitHit(int32_t column, JudgmentResult result, int64_t pressT
 void JudgeQueue::emitMiss(int32_t column) {
     const auto& note = m_columns[column].front();  // 过期未击中的队头音符
 
-    MM_LOG_INFO("JudgeQueue", "emitMiss: col=" + std::to_string(note.col) +
-                " row=" + std::to_string(note.row) +
-                " noteTime=" + std::to_string(note.time) + "ms");
+    MM_LOG_DEBUG("JudgeQueue", "emitMiss: col=" + std::to_string(note.col) +
+                 " row=" + std::to_string(note.row) +
+                 " noteTime=" + std::to_string(note.time) + "ms");
 
     if (onMiss) {
         NoteMissEvent evt;

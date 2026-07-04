@@ -100,6 +100,8 @@ public:
     static constexpr const char* KEY_EFFECTS_LEVEL = "video.effects_level";       // 特效等级
     static constexpr const char* KEY_BG_DIM        = "video.bg_dim";              // 背景暗化
     static constexpr const char* KEY_OFFSET_BAR    = "gameplay.offset_bar";       // 偏移条显示
+    /// 日志最低级别：info（默认，无判定热路径日志）| debug（含 Hit/Miss/KeyDown 等）
+    static constexpr const char* KEY_LOG_MIN_LEVEL = "logging.min_level";
 
 private:
     static inline std::unordered_map<std::string, std::string> s_data;  // 内存配置表

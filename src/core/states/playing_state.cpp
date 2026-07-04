@@ -189,12 +189,12 @@ void PlayingState::initGameplay() {
 
     // ── 连接 JudgeQueue 事件回调（Miss / Hold 尾等自动判定路径）──
     m_judgeQueue.onHit = [this](const gameplay::NoteHitEvent& evt) {
-        MM_LOG_INFO("Playing", "Hit: col=" + std::to_string(evt.col) +
-                    " result=" + std::to_string(static_cast<int>(evt.result)) +
-                    " dt=" + std::to_string(evt.pressTime - evt.time) + "ms");
+        MM_LOG_DEBUG("Playing", "Hit: col=" + std::to_string(evt.col) +
+                     " result=" + std::to_string(static_cast<int>(evt.result)) +
+                     " dt=" + std::to_string(evt.pressTime - evt.time) + "ms");
     };
     m_judgeQueue.onMiss = [this](const gameplay::NoteMissEvent& evt) {
-        MM_LOG_INFO("Playing", "Miss: col=" + std::to_string(evt.col));
+        MM_LOG_DEBUG("Playing", "Miss: col=" + std::to_string(evt.col));
         m_missCount++;                                       // 统计 Miss
         m_comboManager.onMiss();                             // 断连
         m_hpManager.onJudgment(gameplay::JudgmentResult::Miss);
@@ -816,16 +816,16 @@ void PlayingState::handleKeyEvent(int32_t key, bool pressed, int64_t eventTimeMs
             }
         }
         auto result = m_judgeQueue.onKeyPress(judgeEventTimeMs, column, od);
-        MM_LOG_INFO("Playing", "KeyDown: col=" + std::to_string(column) +
-                    " eventTimeMs=" + std::to_string(eventTimeMs) +
-                    " judgeTimeMs=" + std::to_string(judgeEventTimeMs) +
-                    " result=" + std::to_string(static_cast<int>(result)));
+        MM_LOG_DEBUG("Playing", "KeyDown: col=" + std::to_string(column) +
+                     " eventTimeMs=" + std::to_string(eventTimeMs) +
+                     " judgeTimeMs=" + std::to_string(judgeEventTimeMs) +
+                     " result=" + std::to_string(static_cast<int>(result)));
         handlePressResult(result, column, noteRow, judgeEventTimeMs, noteTime, isTapNote);
     } else {                                                 // 按键释放 → Hold 尾判定
         m_judgeQueue.onKeyRelease(judgeEventTimeMs, column, od);
-        MM_LOG_INFO("Playing", "KeyUp: col=" + std::to_string(column) +
-                    " eventTimeMs=" + std::to_string(eventTimeMs) +
-                    " judgeTimeMs=" + std::to_string(judgeEventTimeMs));
+        MM_LOG_DEBUG("Playing", "KeyUp: col=" + std::to_string(column) +
+                     " eventTimeMs=" + std::to_string(eventTimeMs) +
+                     " judgeTimeMs=" + std::to_string(judgeEventTimeMs));
     }
 }
 

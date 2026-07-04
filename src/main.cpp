@@ -28,6 +28,7 @@
 #include <filesystem>     // 路径解析与工作目录切换
 #include <iostream>       // std::cerr 异常信息输出
 #include <exception>      // std::exception 捕获
+#include <cctype>         // tolower
 
 /**
  * @brief 程序入口
@@ -48,9 +49,19 @@ int main(int /*argc*/, char* argv[]) {  // 程序入口；argc 未使用
         }
     }
 
-    // ── 初始化日志器 ──
-    util::Logger::init("logs/melody_matrix.log", util::Level::DEBUG);  // 创建日志文件，最低级别 DEBUG
-    MM_LOG_INFO("Main", "Melody Matrix starting...");                  // 记录启动信息
+    // ── 初始化日志器（默认 INFO；config.ini logging.min_level=debug 可打开判定 trace）──
+    util::Logger::init("logs/melody_matrix.log", util::Level::INFO);
+    platform::Config::load();
+    {
+        std::string level = platform::Config::getString(platform::Config::KEY_LOG_MIN_LEVEL, "info");
+        for (auto& c : level) {
+            c = static_cast<char>(tolower(c));
+        }
+        if (level == "debug") {
+            util::Logger::setLevel(util::Level::DEBUG);
+        }
+    }
+    MM_LOG_INFO("Main", "Melody Matrix starting...");
 
     try {
         auto& kernel = core::Kernel::instance();  // 获取 Kernel 单例引用
