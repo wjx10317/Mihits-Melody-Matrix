@@ -111,7 +111,7 @@ void Kernel::dispatchGameplayKeyEvent(const SDL_KeyboardEvent& keyEvent, bool pr
     auto* playing = m_stateManager.getStateAs<PlayingState>(GameState::Playing);  // 获取 PlayingState 实例
     if (!playing) return;  // 未注册则忽略
 
-    // 在 poll 阶段立即判定，避免等到 240Hz update 造成一帧延迟
+    // 在 poll 阶段立即判定，避免等到同 tick 内更晚的 240Hz update 才处理按键
     const uint64_t eventTickMs = expandSdlEventTimestamp(keyEvent.timestamp);  // 事件时刻 SDL tick
     const int64_t eventSongTimeMs = m_clock.songTimeAtTickMs(eventTickMs);     // 换算为歌曲时间
     playing->handleKeyEvent(static_cast<int32_t>(keyEvent.keysym.sym), pressed, eventSongTimeMs);  // 分派给判定逻辑
@@ -341,7 +341,7 @@ bool Kernel::init(const std::string& title, int /*width*/, int /*height*/) {
 /**
  * @brief 固定步长更新 + 可变步长渲染主循环
  *
- * 每帧：同步时钟 → 处理输入 → 累积 fixed update → 清屏 → 带 visual lead 渲染谱面
+ * 每帧：同步时钟 → 累积 fixed update（每步先 poll 输入再 update）→ 清屏 → 带 visual lead 渲染谱面
  * → ImGui → SwapBuffers。
  */
 void Kernel::run() {
@@ -353,8 +353,11 @@ void Kernel::run() {
 
     m_running = true;
     constexpr double FIXED_DT = 1.0 / 240.0;  // 固定逻辑步长 1/240 秒
+    constexpr double kFixedDtMs = FIXED_DT * 1000.0;
     double accumulator = 0.0;                   // 累积未消费的帧时间
     auto lastTime = std::chrono::steady_clock::now();  // 上一帧时刻
+    auto lastFixedStepEnd = lastTime;           // 上一次 fixed update 结束时刻（跨帧）
+    bool haveLastFixedStepEnd = false;
 
     MM_LOG_INFO("Kernel", "Main loop started");
 
@@ -365,14 +368,50 @@ void Kernel::run() {
         frameTime = std::min(frameTime, 0.25); // 防 spiral of death：单帧最多计 250ms
         accumulator += frameTime;  // 累加到固定步长 accumulator
 
-        // 先同步音频时钟再处理输入，按键 timestamp 才用到最新 anchor
+        // 先同步音频时钟；每步 fixed update 前 poll 输入，避免「本帧只 poll 一次、
+        // 后续 240Hz tick 已 auto-miss」的竞态
         syncPlayingClock();
-        pumpInputEvents();  // 处理 SDL 事件（含 ESC、游玩按键）
 
-        // 固定 240Hz 逻辑更新：可能多次 update 以消化 accumulator
+        int fixedSteps = 0;
+        double maxStepWallMs = 0.0;    // 单步 poll+update 墙钟耗时上限
+        double maxUpdateGapMs = 0.0;   // 相邻两次 update 开始间隔上限
         while (accumulator >= FIXED_DT) {
+            const auto stepBegin = std::chrono::steady_clock::now();
+            if (haveLastFixedStepEnd) {
+                const double gapMs = std::chrono::duration<double, std::milli>(
+                    stepBegin - lastFixedStepEnd).count();
+                maxUpdateGapMs = std::max(maxUpdateGapMs, gapMs);
+            }
+
+            pumpInputEvents();
             m_stateManager.update(static_cast<float>(FIXED_DT));
             accumulator -= FIXED_DT;
+            ++fixedSteps;
+
+            const auto stepEnd = std::chrono::steady_clock::now();
+            const double stepMs = std::chrono::duration<double, std::milli>(
+                stepEnd - stepBegin).count();
+            maxStepWallMs = std::max(maxStepWallMs, stepMs);
+            lastFixedStepEnd = stepEnd;
+            haveLastFixedStepEnd = true;
+        }
+        if (fixedSteps > 0) {
+            const double frameMs = frameTime * 1000.0;
+            MM_LOG_DEBUG("Kernel",
+                "Update timing: frame=" + std::to_string(frameMs) + "ms"
+                + " steps=" + std::to_string(fixedSteps)
+                + " stepWallMax=" + std::to_string(maxStepWallMs) + "ms"
+                + " updateGapMax=" + std::to_string(maxUpdateGapMs) + "ms"
+                + " expectStep=" + std::to_string(kFixedDtMs) + "ms");
+            if (maxStepWallMs > kFixedDtMs * 1.5) {
+                MM_LOG_WARN("Kernel",
+                    "Fixed update slower than realtime: stepWallMax="
+                    + std::to_string(maxStepWallMs) + "ms expect<="
+                    + std::to_string(kFixedDtMs) + "ms");
+            }
+        }
+        if (fixedSteps == 0) {
+            pumpInputEvents();  // 本帧不足一拍时仍处理退出/ImGui/菜单输入
         }
 
         // 视口使用 framebuffer 物理像素尺寸
