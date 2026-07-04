@@ -49,7 +49,7 @@ public:
     /// Import 写入 .mma 后增量合并到列表，并 requestLoad 背景图（无需 scanBeatmaps）
     void registerImportedMma(const std::string& mmaPath);
 
-    /// 扫描铺面并预加载图片到全局纹理缓存（供 BootState 调用）
+    /// 扫描铺面（背景图在 scanBeatmaps 内按组 requestLoad）
     void scanAndPreload();
 
     /// 扫描铺面目录，构建分组列表（仅文件 I/O + 解析，无需 GL 上下文，可安全在后台线程调用）

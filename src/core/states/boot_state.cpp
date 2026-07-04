@@ -4,7 +4,7 @@
 // 职责：
 //   - 播放 "Mi hits" 品牌加载动画
 //   - 后台线程扫描铺面（无 GL 上下文）
-//   - 主线程预加载分组背景纹理
+//   - 扫描期间按组异步解码背景纹理，主线程上传 GL
 //   - 动画 + 加载均完成后过渡到 MainMenu
 // ============================================================
 #include "boot_state.h"
@@ -61,15 +61,13 @@ GameState BootState::update(float dt) {
         m_loader.start();                                    // 启动后台线程
     }
 
-    // 扫描完成后异步请求预加载；Kernel 每帧 processPendingUploads 在主线程上传
+    // 扫描期间 scanBeatmaps 已按组 requestLoad；此处仅收集路径并轮询就绪
     if (m_loader.done() && !m_preloadRequested) {
         m_preloadRequested = true;
         auto* songSelect = Kernel::instance().stateManager().getStateAs<SongSelectState>(GameState::SongSelect);
         if (songSelect) {
             m_preloadPaths = songSelect->getGroupImagePaths();
-            if (!m_preloadPaths.empty()) {
-                renderer::TextureCache::instance().preload(m_preloadPaths);
-            } else {
+            if (m_preloadPaths.empty()) {
                 m_texturesLoaded = true;
             }
         } else {

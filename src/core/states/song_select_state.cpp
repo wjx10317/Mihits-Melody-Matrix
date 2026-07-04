@@ -74,8 +74,7 @@ void SongSelectState::onEnter() {
     m_bgImageGroup = -1;
 
     if (!m_scanDone) {                                         // 首次进入或 markNeedsRescan
-        scanBeatmaps();                                        // 递归扫描 .mma/.osu
-        scanAndPreload();                                      // 预加载分组背景到 TextureCache
+        scanBeatmaps();                                        // 扫描并按组 requestLoad 背景图
     }
 
     loadAvatarTexture();
@@ -424,6 +423,7 @@ void SongSelectState::scanBeatmaps() {
         });
 
     // ── 按 title+artist 合并为 BeatmapGroup（一组多难度 set）──
+    // 新组创建时 requestLoad 一次背景图，decode 可与后续扫描并行（TextureCache 去重）
     for (auto& e : entries) {
         if (!m_groups.empty() && m_groups.back().title == e.title && m_groups.back().artist == e.artist) {
             m_groups.back().sets.push_back(std::move(e));    // 追加到当前组
@@ -433,6 +433,9 @@ void SongSelectState::scanBeatmaps() {
             g.artist = e.artist;
             g.imagePath = e.imagePath;
             g.sets.push_back(std::move(e));
+            if (!g.imagePath.empty()) {
+                renderer::TextureCache::instance().requestLoad(g.imagePath, false);
+            }
             m_groups.push_back(std::move(g));                // 新组
         }
     }
@@ -1612,19 +1615,14 @@ void SongSelectState::tryPlayPreview() {
 //  预加载与路径查询
 // ══════════════════════════════════════════════════════════════════════════════
 
-/// 扫描铺面并预加载全部分组背景图到 TextureCache
+/// 扫描铺面（背景图在 scanBeatmaps 按组 requestLoad；保留 API 供外部显式重扫）
 void SongSelectState::scanAndPreload() {
     if (!m_scanDone) {
         scanBeatmaps();
     }
 
-    auto paths = getGroupImagePaths();
-    if (!paths.empty()) {
-        renderer::TextureCache::instance().preload(paths);
-    }
-
-    MM_LOG_INFO("SongSelect", "scanAndPreload complete: %zu groups, %zu unique image paths",
-                m_groups.size(), paths.size());
+    MM_LOG_INFO("SongSelect", "scanAndPreload complete: %zu groups, %zu image paths",
+                m_groups.size(), getGroupImagePaths().size());
 }
 
 /// 获取所有分组的背景图路径列表（供 BootState 预加载）

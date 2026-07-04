@@ -1,7 +1,7 @@
 // ============================================================
 // boot_state.h — 启动状态
 //
-// 首个状态：品牌动画 + 后台 scanBeatmaps + 主线程纹理预加载 → MainMenu
+// 首个状态：品牌动画 + 后台 scanBeatmaps（含按组纹理解码）→ MainMenu
 // ============================================================
 #pragma once
 
@@ -41,9 +41,9 @@ private:
     // ── 异步加载 ──
     AssetLoader m_loader;
     bool m_loaderStarted = false;
-    bool m_preloadRequested = false; ///< 是否已向 TextureCache 提交预加载请求
-    bool m_texturesLoaded = false;   ///< 预加载路径均已就绪（成功或失败）
-    std::vector<std::string> m_preloadPaths; ///< Boot 阶段异步预加载的背景图路径
+    bool m_preloadRequested = false; ///< 扫描完成后是否已收集待就绪的背景图路径
+    bool m_texturesLoaded = false;   ///< 背景图路径均已就绪（成功或失败）
+    std::vector<std::string> m_preloadPaths; ///< Boot 阶段需等待就绪的分组背景图路径
 
     // ── 动画参数 ──
     static constexpr float M_DRAW_DURATION = 1.2f;   ///< "M" 路径绘制时长
