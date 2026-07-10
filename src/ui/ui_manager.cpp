@@ -54,6 +54,8 @@ bool UIManager::init(SDL_Window* window, SDL_GLContext glContext) {
     // ── 应用主题 ──
     Theme::apply();  // 设置深霓虹配色与圆角间距
 
+    m_frameStatsOverlay.init(window);
+
     m_initialized = true;  // 标记初始化完成
 
     // ── 诊断信息 ──
@@ -115,6 +117,15 @@ bool UIManager::wantsMouseCapture() const {
 bool UIManager::wantsKeyboardCapture() const {
     if (!m_initialized) return false;              // 未初始化时不捕获
     return ImGui::GetIO().WantCaptureKeyboard;     // 查询 ImGui IO 标志
+}
+
+void UIManager::setRenderFrameTimeMs(float frameTimeMs) {
+    m_frameStatsOverlay.setFrameTimeMs(frameTimeMs);
+}
+
+void UIManager::renderFrameStatsOverlay() const {
+    if (!m_initialized) return;
+    m_frameStatsOverlay.render();
 }
 
 } // namespace melody_matrix::ui

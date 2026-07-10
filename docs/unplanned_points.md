@@ -1,6 +1,6 @@
 # Melody-Matrix 尚未计划的要点文档
 
-> 文档版本: v1.0 | 最后更新: 2026-06-16
+> 文档版本: v1.1 | 最后更新: 2026-07-10
 > 本文档记录当前未纳入开发计划的功能点、优化建议与未来迭代方向。
 > 各要点按领域分类，标注潜在价值与实现复杂度。
 
@@ -408,6 +408,70 @@
 **实现复杂度**: 低
 
 **说明**: 当前判定事件通过直接函数调用处理。如果未来需要多个系统响应判定事件（HUD更新、特效、音效、统计等），应切换到事件总线模式。
+
+---
+
+### 6.6 TextureCache / 选歌背景图：加载策略与显存管理
+
+**状态**: 已实现但策略不一致，谱面库变大后风险升高  
+**潜在价值**: 高 — 启动耗时、VRAM 占用、选歌流畅度  
+**实现复杂度**: 中
+
+#### 现状（三处叠加，均为「只增不减」）
+
+| 环节 | 行为 | 文件 |
+|------|------|------|
+| **Boot 扫描** | 后台 `scanBeatmaps()` 对每个新组 `requestLoad(imagePath)` | `song_select_state.cpp` |
+| **Boot 门禁** | 扫描完成后收集 `getGroupImagePaths()`，**轮询直到全部 `isLoaded` 或 `hasFailed`** 才切 MainMenu | `boot_state.cpp` |
+| **SongSelect 列表** | 每帧对所有组 `tryLoadGroupImage(g)`（已在 Cache 则跳过，**不会卸载**） | `song_select_state.cpp` |
+| **退出选歌** | `onExit` **故意不清** TextureCache（注释：下次进入无需重载） | `song_select_state.cpp` |
+| **淘汰** | `unloadDistant(paths, selectedGroup, 5)` **仅在删谱后** `unloadUnusedImages()` 调用 | `texture_cache.cpp` |
+
+`TextureCache` 本身无 LRU、无上限；`requestLoad` 命中缓存即返回，不会主动释放 GPU 纹理。
+
+#### 问题
+
+1. **一直不删谱 → VRAM 单调增长到「所有不重复 group.imagePath」数量**，`unloadDistant` 日常路径几乎不起作用。
+2. **Boot 全量等待**：谱面组越多，启动屏停留越久（decode + upload 总量线性增长）；与「滑动窗口省显存」的 API 设计意图矛盾。
+3. **API 与接线不一致**：已有 `unloadDistant` / `preloadRange`，但 Boot 用全量路径、淘汰只绑删谱，**像半成品策略**——小库 demo 体验好，大库未考虑扩展。
+4. **Boot 门禁不区分优先级**：首屏/MainMenu 不需要全部缩略图，却阻塞在「全部就绪」。
+
+#### 设计意图 vs 实际（面试可表述）
+
+- **当时合理**：个人项目、谱面少；Boot 动画掩盖加载；进选歌即全缩略图可用；退出保留 Cache 减少重复 decode。
+- **欠缺之处**：未把「窗口预加载 + 定期淘汰」接到主路径；Boot 与 SongSelect 都按全库 eager load 写，淘汰留成删谱副作用。
+
+#### 建议方案（按改动量递增）
+
+**A. 最小改动 — 接上已有 `unloadDistant`**
+
+- 在 `m_selectedGroup` 变化时（或每 N 帧）调用 `unloadUnusedImages()`。
+- Boot **不再等待全部纹理**：只等 `scanBeatmaps` 完成 + 动画最短时长；或仅 preload 前 K 组 / 默认选中组 ±5（用现有 `preloadRange`）。
+
+**B. 按需加载 — 与列表滚动一致**
+
+- `tryLoadGroupImage` 仅对「可见 index ± margin」调用；离开窗口的 path 调用 `cache.unload(path)` 或 `unloadDistant`。
+- 组头/缩略图未加载时继续灰块占位（已有逻辑）。
+
+**C. Cache 层治理**
+
+- `TextureCache` 增加 `maxEntries` 或 LRU；`processPendingUploads` 上限与优先级队列（可见 > 选中 > 远处）。
+- `onExit` 改为可选：`clear()` 或只保留最近 N 张（与 A/B 配合）。
+
+**D. Boot 进度条语义**
+
+- 进度 = 扫描进度 + 可选「首批纹理」进度，而非全库 100%。
+- 避免谱面上百张时 Boot 假死感。
+
+#### 验收标准
+
+- 50+ 组背景图：Boot 进 MainMenu ≤ 固定上限（如动画最短时间 + 2s），不随总数线性恶化。
+- 长时间浏览选歌、从不删谱：VRAM 稳定在窗口大小量级（如选中 ±5），非全库。
+- 删谱后：被删 path 释放 + 窗口外条目清理（保持现有 `releaseDeletedBeatmapAssets` 行为）。
+
+#### 相关文档修正
+
+- `docs/tech-interview-guide.md` §6.2 写「滑动窗口卸载 TextureCache」——**当前仅删谱路径生效**，实施本项前表述应改为「已预留 API，待接入主路径」。
 
 ---
 

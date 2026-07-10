@@ -494,7 +494,8 @@ cmake -S . -B build-vs -G "Visual Studio 17 2022" -A x64
 
 | 文档 | 内容 |
 |------|------|
-| `docs/fixed_cell_grid_design.md` | 固定 256px 逻辑格设计 |
+| `docs/Malody-Martix.md` | 技术选型与模块 Q&A 速查 |
+| `docs/音频时钟-cursor台阶优化.md` | BGM 时钟 anchor 精度优化方案（待实施） |
 | 源码内中文注释 | 各 `.cpp/.h` 文件头与函数说明 |
 
 **建议阅读顺序**（入门）：

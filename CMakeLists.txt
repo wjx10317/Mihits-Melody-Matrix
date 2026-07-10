@@ -28,7 +28,7 @@ endif()
 include("${CMAKE_SOURCE_DIR}/cmake/Dependencies.cmake")
 
 # ────────────────────── Main executable ──────────────────────────
-file(GLOB_RECURSE SOURCES "src/*.cpp" "src/*.h")
+file(GLOB_RECURSE SOURCES CONFIGURE_DEPENDS "src/*.cpp" "src/*.h")
 list(FILTER SOURCES EXCLUDE REGEX "src/version\\.h\\.in$")
 
 add_executable(${PROJECT_NAME} WIN32 ${SOURCES})

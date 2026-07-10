@@ -431,8 +431,11 @@ void Kernel::run() {
 
         m_renderer.renderFrame(visualTimeMs);  // OpenGL 谱面/背景渲染
 
+        m_uiManager.setRenderFrameTimeMs(static_cast<float>(frameTime * 1000.0));
+
         m_uiManager.newFrame();       // ImGui 新帧开始
         m_stateManager.render();      // 当前状态 ImGui UI
+        m_uiManager.renderFrameStatsOverlay();  // 右下角帧统计（全状态）
         m_uiManager.renderFrame();    // 提交 ImGui 绘制
 
         SDL_GL_SwapWindow(m_window);  // 交换前后缓冲，VSync 等待

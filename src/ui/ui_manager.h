@@ -6,6 +6,8 @@
 // ============================================================
 #pragma once  // 防止头文件重复包含
 
+#include "ui/frame_stats_overlay.h"
+
 #include <string>  // std::string（日志诊断信息）
 
 struct SDL_Window;           // SDL 窗口前向声明
@@ -42,8 +44,18 @@ public:
     /// 是否已完成初始化
     bool isInitialized() const { return m_initialized; }  // 返回初始化标志
 
+    /// 记录本显示帧与上一显示帧的 wall-clock 间隔（毫秒）
+    void setRenderFrameTimeMs(float frameTimeMs);
+
+    /// 绘制右下角帧统计 overlay（全状态共用；须在 newFrame 之后调用）
+    void renderFrameStatsOverlay() const;
+
+    /// 帧统计 overlay（只读访问）
+    const FrameStatsOverlay& frameStatsOverlay() const { return m_frameStatsOverlay; }
+
 private:
     bool m_initialized = false;  // 是否已完成 init()
+    FrameStatsOverlay m_frameStatsOverlay;
 };
 
 } // namespace melody_matrix::ui
