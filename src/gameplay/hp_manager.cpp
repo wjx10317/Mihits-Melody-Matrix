@@ -15,14 +15,17 @@ void HPManager::onJudgment(JudgmentResult result) {
     float change = 0.0f;  // 本次 HP 变化量（正=回血，负=扣血）
 
     switch (result) {
-    case JudgmentResult::Perfect:
-        change = 0.02f;   ///< Perfect 小幅回血
+    case JudgmentResult::Hit300:
+        change = 0.02f;    ///< 300 小幅回血
         break;
-    case JudgmentResult::Good:
-        change = 0.005f;  ///< Good 微量回血
+    case JudgmentResult::Hit100:
+        change = 0.008f;   ///< 100 微量回血
+        break;
+    case JudgmentResult::Hit50:
+        change = 0.002f;   ///< 50 几乎不回血
         break;
     case JudgmentResult::Miss:
-        change = -0.10f;  ///< Miss 显著扣血
+        change = -0.10f;   ///< Miss 显著扣血
         break;
     default:
         return; ///< Ignored 不改变 HP

@@ -155,82 +155,137 @@ GameState SongSelectState::update(float dt) {
 /// 渲染选歌 UI、Mod 弹窗、顶部遮罩与延迟删除
 void SongSelectState::render() {
     renderImGuiPanel();
+
+    if (!m_modPopupOpen) {
+        ImDrawList* fgDl = ImGui::GetForegroundDrawList();
+        drawTopArcMask(fgDl);
+        renderTopBeatmapInfo();
+    }
+
     if (m_modPopupOpen) {
         renderModPopup();
     }
+
     applyPendingDelete();
+}
 
-    // ── 右侧面板顶部遮罩（遮挡滚入的列表项）──
-    // 底部轮廓：1/4屏宽直线(全高) → 1/5屏宽内弧(余弦过渡) → 剩余直线(薄条至屏幕右侧)
-    // 边缘：白色描边 + 内侧蓝色描边
-    if (!m_modPopupOpen) {
-        ImDrawList* fgDl = ImGui::GetForegroundDrawList();
-        float maskL = m_ly.leftWidth;
-        float maskR = m_ly.W;
-        float topInfoH = m_ly.topInfoH;
-        float thinH = topInfoH * 0.20f;
-        float W = m_ly.W;
+void SongSelectState::drawTopArcMask(ImDrawList* dl) const {
+    const float W = m_ly.W;
+    const float topInfoH = m_ly.topInfoH;
+    const float thinH = topInfoH * 0.20f;
 
-        float seg1End   = W * 0.25f;           // 第一段直线末端
-        float arcWidth  = W * 0.20f;            // 弧段宽度(1/5屏宽)
-        float seg3Start = seg1End + arcWidth;   // 第三段直线起点
+    const float seg1End   = W * 0.25f;
+    const float arcWidth  = W * 0.20f;
+    const float seg3Start = seg1End + arcWidth;
 
-        const int ARC_N = 32;
-        const float PI = 3.14159265f;
+    constexpr int ARC_N = 32;
+    constexpr float PI = 3.14159265f;
 
-        // 余弦插值弧线：t∈[0,1], t=0→y=topInfoH, t=1→y=thinH，两端水平切线
-        auto arcY = [&](float t) -> float {
-            return thinH + (topInfoH - thinH) * (1.0f + cosf(PI * t)) / 2.0f;
-        };
+    const auto arcY = [&](float t) -> float {
+        return thinH + (topInfoH - thinH) * (1.0f + cosf(PI * t)) / 2.0f;
+    };
 
-        // fgDl 起始位置在弧线区域内（leftWidth ≈ W*0.38, 在 seg1End~seg3Start 之间）
-        float tL = std::max(0.0f, std::min(1.0f, (maskL - seg1End) / arcWidth));
-        float yL = arcY(tL);
-
-        // ── 填充多边形 ──
-        ImVec2 pts[6 + ARC_N];
-        int n = 0;
-        pts[n++] = ImVec2(maskL, 0);
-        pts[n++] = ImVec2(maskR, 0);
-        pts[n++] = ImVec2(maskR, thinH);
-        pts[n++] = ImVec2(seg3Start, thinH);
-        // 弧线从右(t=1)到左(t=tL)，跳过t=1(已添加为seg3Start)
-        for (int i = ARC_N - 1; i >= 0; --i) {
-            float t = static_cast<float>(i) / ARC_N;
-            float x = seg1End + arcWidth * t;
-            if (x < maskL) break;
-            pts[n++] = ImVec2(x, arcY(t));
-        }
-        pts[n++] = ImVec2(maskL, yL);
-        fgDl->AddConvexPolyFilled(pts, n, IM_COL32(13, 13, 23, 255));
-
-        // ── 底部轮廓白色描边（左→右）──
-        ImVec2 edgePts[3 + ARC_N];
-        int en = 0;
-        edgePts[en++] = ImVec2(maskL, yL);
-        // 弧线从左(t=tL)到右(t=1)
-        int iStart = static_cast<int>(ceilf(tL * ARC_N));
-        for (int i = iStart; i <= ARC_N; ++i) {
-            float t = static_cast<float>(i) / ARC_N;
-            edgePts[en++] = ImVec2(seg1End + arcWidth * t, arcY(t));
-        }
-        edgePts[en++] = ImVec2(seg3Start, thinH);
-        edgePts[en++] = ImVec2(maskR, thinH);
-        fgDl->AddPolyline(edgePts, en, IM_COL32(255, 255, 255, 200), false, m_ly.scale * 2.0f);
-
-        // ── 蓝色内侧描边（向上偏移bOff）──
-        float bOff = m_ly.scale * 5.0f;
-        ImVec2 bluePts[3 + ARC_N];
-        int bn = 0;
-        bluePts[bn++] = ImVec2(maskL, yL - bOff);
-        for (int i = iStart; i <= ARC_N; ++i) {
-            float t = static_cast<float>(i) / ARC_N;
-            bluePts[bn++] = ImVec2(seg1End + arcWidth * t, arcY(t) - bOff);
-        }
-        bluePts[bn++] = ImVec2(seg3Start, thinH - bOff);
-        bluePts[bn++] = ImVec2(maskR, thinH - bOff);
-        fgDl->AddPolyline(bluePts, bn, IM_COL32(0, 150, 255, 180), false, m_ly.scale * 1.5f);
+    ImVec2 pts[4 + ARC_N + 2];
+    int n = 0;
+    pts[n++] = ImVec2(0, 0);
+    pts[n++] = ImVec2(W, 0);
+    pts[n++] = ImVec2(W, thinH);
+    pts[n++] = ImVec2(seg3Start, thinH);
+    for (int i = ARC_N - 1; i >= 0; --i) {
+        const float t = static_cast<float>(i) / ARC_N;
+        pts[n++] = ImVec2(seg1End + arcWidth * t, arcY(t));
     }
+    pts[n++] = ImVec2(0, topInfoH);
+    dl->AddConvexPolyFilled(pts, n, IM_COL32(13, 13, 23, 255));
+
+    ImVec2 edgePts[2 + ARC_N + 2];
+    int en = 0;
+    edgePts[en++] = ImVec2(0, topInfoH);
+    edgePts[en++] = ImVec2(seg1End, topInfoH);
+    for (int i = 1; i <= ARC_N; ++i) {
+        const float t = static_cast<float>(i) / ARC_N;
+        edgePts[en++] = ImVec2(seg1End + arcWidth * t, arcY(t));
+    }
+    edgePts[en++] = ImVec2(W, thinH);
+    dl->AddPolyline(edgePts, en, IM_COL32(255, 255, 255, 200), false, m_ly.scale * 2.0f);
+
+    const float bOff = m_ly.scale * 5.0f;
+    ImVec2 bluePts[2 + ARC_N + 2];
+    int bn = 0;
+    bluePts[bn++] = ImVec2(0, topInfoH - bOff);
+    bluePts[bn++] = ImVec2(seg1End, topInfoH - bOff);
+    for (int i = 1; i <= ARC_N; ++i) {
+        const float t = static_cast<float>(i) / ARC_N;
+        bluePts[bn++] = ImVec2(seg1End + arcWidth * t, arcY(t) - bOff);
+    }
+    bluePts[bn++] = ImVec2(W, thinH - bOff);
+    dl->AddPolyline(bluePts, bn, IM_COL32(0, 150, 255, 180), false, m_ly.scale * 1.5f);
+}
+
+void SongSelectState::renderTopBeatmapInfo() const {
+    ImDrawList* dl = ImGui::GetForegroundDrawList();
+    ImFont* font = ImGui::GetFont();
+    if (!font) {
+        return;
+    }
+
+    const float padX = m_ly.leftWidth * 0.05f;
+    const float maxW = m_ly.leftWidth - padX * 2.0f;
+    float x = padX;
+    float y = m_ly.topInfoH * 0.08f;
+
+    const float titleSize = 28.0f * m_ly.scale;
+    const float bodySize = 16.0f * m_ly.scale;
+    const float dimSize = 14.0f * m_ly.scale;
+    const float lineGap = 5.0f * m_ly.scale;
+
+    const auto drawWrapped = [&](const char* text, float size, ImU32 col) {
+        const ImVec2 sz = font->CalcTextSizeA(size, maxW, 0.0f, text);
+        dl->AddText(font, size, ImVec2(x, y), col, text, nullptr, maxW);
+        y += sz.y + lineGap;
+    };
+
+    const BeatmapEntry* sel = getSelectedSet();
+    if (!sel) {
+        drawWrapped("Select a beatmap", titleSize * 0.75f, IM_COL32(102, 102, 128, 153));
+        return;
+    }
+
+    const ImU32 cyan = IM_COL32(
+        static_cast<int>(ui::Theme::CYAN_R * 255),
+        static_cast<int>(ui::Theme::CYAN_G * 255),
+        static_cast<int>(ui::Theme::CYAN_B * 255), 255);
+    const ImU32 pink = IM_COL32(
+        static_cast<int>(ui::Theme::PINK_R * 255),
+        static_cast<int>(ui::Theme::PINK_G * 255),
+        static_cast<int>(ui::Theme::PINK_B * 255), 230);
+    const ImU32 bodyCol = IM_COL32(191, 191, 209, 255);
+    const ImU32 dimCol = IM_COL32(153, 153, 179, 255);
+    const ImU32 whiteCol = IM_COL32(242, 242, 250, 255);
+    const ImU32 goldCol = IM_COL32(255, 200, 50, 255);
+
+    drawWrapped(sel->title.c_str(), titleSize, cyan);
+
+    char line[256];
+    std::snprintf(line, sizeof(line), "Artist: %s", sel->artist.c_str());
+    drawWrapped(line, bodySize, bodyCol);
+    std::snprintf(line, sizeof(line), "Creator: %s", sel->creator.c_str());
+    drawWrapped(line, bodySize, bodyCol);
+
+    const int mins = static_cast<int>(sel->duration) / 60;
+    const int secs = static_cast<int>(sel->duration) % 60;
+    std::snprintf(line, sizeof(line), "Length: %d:%02d   Notes: %d", mins, secs, sel->noteCount);
+    drawWrapped(line, dimSize, dimCol);
+
+    std::snprintf(line, sizeof(line), "AR %.1f   OD %.1f   HP %.1f", sel->ar, sel->od, sel->hp);
+    dl->AddText(font, bodySize, ImVec2(x, y), whiteCol, line);
+    y += bodySize + lineGap;
+
+    std::snprintf(line, sizeof(line), "[%s]", sel->version.c_str());
+    dl->AddText(font, bodySize, ImVec2(x, y), pink, line);
+    const ImVec2 verSize = font->CalcTextSizeA(bodySize, maxW, 0.0f, line);
+    std::snprintf(line, sizeof(line), "%.1f", sel->difficulty);
+    dl->AddText(font, bodySize, ImVec2(x + verSize.x + 10.0f * m_ly.scale, y), goldCol, line);
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -755,67 +810,14 @@ void SongSelectState::renderImGuiPanel() {
                              ImGuiWindowFlags_NoCollapse |
                              ImGuiWindowFlags_NoScrollbar;
 
+    if (m_modPopupOpen) {
+        flags |= ImGuiWindowFlags_NoInputs;
+    }
+
     ImGui::Begin("##SongSelect", nullptr, flags);
 
     // ── 全屏背景图已由 Renderer::renderBackground() 绘制，此处不再重复渲染 ──
-
-    // ── 顶部实心遮罩（左面板区域 + 弧形过渡区）──
-    {
-        ImDrawList* bgDl = ImGui::GetWindowDrawList();
-        float maskR = W;
-        float topInfoH = m_ly.topInfoH;
-        float thinH = topInfoH * 0.20f;
-
-        float seg1End   = W * 0.25f;
-        float arcWidth  = W * 0.20f;
-        float seg3Start = seg1End + arcWidth;
-
-        const int ARC_N = 32;
-        const float PI = 3.14159265f;
-
-        auto arcY = [&](float t) -> float {
-            return thinH + (topInfoH - thinH) * (1.0f + cosf(PI * t)) / 2.0f;
-        };
-
-        // ── 填充多边形 ──
-        ImVec2 pts[4 + ARC_N + 2];
-        int n = 0;
-        pts[n++] = ImVec2(0, 0);
-        pts[n++] = ImVec2(maskR, 0);
-        pts[n++] = ImVec2(maskR, thinH);
-        pts[n++] = ImVec2(seg3Start, thinH);
-        for (int i = ARC_N - 1; i >= 0; --i) {
-            float t = static_cast<float>(i) / ARC_N;
-            pts[n++] = ImVec2(seg1End + arcWidth * t, arcY(t));
-        }
-        pts[n++] = ImVec2(0, topInfoH);
-        bgDl->AddConvexPolyFilled(pts, n, IM_COL32(13, 13, 23, 255));
-
-        // ── 底部轮廓白色描边（左→右）──
-        ImVec2 edgePts[2 + ARC_N + 2];
-        int en = 0;
-        edgePts[en++] = ImVec2(0, topInfoH);
-        edgePts[en++] = ImVec2(seg1End, topInfoH);
-        for (int i = 1; i <= ARC_N; ++i) {
-            float t = static_cast<float>(i) / ARC_N;
-            edgePts[en++] = ImVec2(seg1End + arcWidth * t, arcY(t));
-        }
-        edgePts[en++] = ImVec2(maskR, thinH);
-        bgDl->AddPolyline(edgePts, en, IM_COL32(255, 255, 255, 200), false, m_ly.scale * 2.0f);
-
-        // ── 蓝色内侧描边（向上偏移bOff）──
-        float bOff = m_ly.scale * 5.0f;
-        ImVec2 bluePts[2 + ARC_N + 2];
-        int bn = 0;
-        bluePts[bn++] = ImVec2(0, topInfoH - bOff);
-        bluePts[bn++] = ImVec2(seg1End, topInfoH - bOff);
-        for (int i = 1; i <= ARC_N; ++i) {
-            float t = static_cast<float>(i) / ARC_N;
-            bluePts[bn++] = ImVec2(seg1End + arcWidth * t, arcY(t) - bOff);
-        }
-        bluePts[bn++] = ImVec2(maskR, thinH - bOff);
-        bgDl->AddPolyline(bluePts, bn, IM_COL32(0, 150, 255, 180), false, m_ly.scale * 1.5f);
-    }
+    // 顶部弧形遮罩与铺面详情在 render() 中于 ForegroundDrawList 统一绘制
 
     renderLeftPanel(m_ly.leftWidth, H);
     renderRightPanel(m_ly.leftWidth, m_ly.rightWidth, H);
@@ -840,6 +842,9 @@ void SongSelectState::renderLeftPanel(float panelWidth, float panelHeight) {
                                   ImGuiWindowFlags_NoScrollbar |
                                   ImGuiWindowFlags_NoScrollWithMouse |
                                   ImGuiWindowFlags_NoBringToFrontOnFocus;
+    if (m_modPopupOpen) {
+        childFlags |= ImGuiWindowFlags_NoInputs;
+    }
 
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(m_ly.leftWidth * 0.05f, m_ly.H * 0.015f));
     ImGui::PushStyleColor(ImGuiCol_ChildBg,
@@ -847,88 +852,10 @@ void SongSelectState::renderLeftPanel(float panelWidth, float panelHeight) {
 
     ImGui::BeginChild("##LeftPanel", ImVec2(panelWidth, panelHeight), false, childFlags);
 
-    // ── 顶部区域 — 铺面详细信息（TOP_INFO_HEIGHT）──
-    {
-        float infoY = m_ly.topInfoH * 0.1f;
-        ImGui::SetCursorPosY(infoY);
-
-        const BeatmapEntry* sel = getSelectedSet();
-        if (sel) {
-            // 歌名
-            ImGui::PushStyleColor(ImGuiCol_Text,
-                ImVec4(ui::Theme::CYAN_R, ui::Theme::CYAN_G, ui::Theme::CYAN_B, 1.0f));
-            ImGui::SetWindowFontScale(1.8f * m_ly.scale);
-            ImGui::Text("%s", sel->title.c_str());
-            ImGui::PopStyleColor();
-            ImGui::SetWindowFontScale(1.0f);
-
-            ImGui::Spacing();
-
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.75f, 0.75f, 0.82f, 1.0f));
-            ImGui::Text("Artist: %s", sel->artist.c_str());
-            ImGui::Text("Creator: %s", sel->creator.c_str());
-            ImGui::PopStyleColor();
-
-            ImGui::Spacing();
-
-            int mins = static_cast<int>(sel->duration) / 60;
-            int secs = static_cast<int>(sel->duration) % 60;
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.6f, 0.6f, 0.7f, 1.0f));
-            ImGui::Text("Length: %d:%02d   Notes: %d", mins, secs, sel->noteCount);
-            ImGui::PopStyleColor();
-
-            ImGui::Spacing();
-
-            // AR / OD / HP
-            ImGui::PushStyleColor(ImGuiCol_Text,
-                ImVec4(ui::Theme::PURP_R, ui::Theme::PURP_G, ui::Theme::PURP_B, 0.9f));
-            ImGui::Text("AR"); ImGui::SameLine();
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.95f, 0.98f, 1.0f));
-            ImGui::Text("%.1f", sel->ar);
-            ImGui::PopStyleColor();
-            ImGui::SameLine(0, 16);
-
-            ImGui::PushStyleColor(ImGuiCol_Text,
-                ImVec4(ui::Theme::PINK_R, ui::Theme::PINK_G, ui::Theme::PINK_B, 0.9f));
-            ImGui::Text("OD"); ImGui::SameLine();
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.95f, 0.98f, 1.0f));
-            ImGui::Text("%.1f", sel->od);
-            ImGui::PopStyleColor();
-            ImGui::SameLine(0, 16);
-
-            ImGui::PushStyleColor(ImGuiCol_Text,
-                ImVec4(ui::Theme::CYAN_R, ui::Theme::CYAN_G, ui::Theme::CYAN_B, 0.9f));
-            ImGui::Text("HP"); ImGui::SameLine();
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.95f, 0.98f, 1.0f));
-            ImGui::Text("%.1f", sel->hp);
-            ImGui::PopStyleColor();
-            ImGui::PopStyleColor();
-            ImGui::PopStyleColor();
-            ImGui::PopStyleColor();
-
-            ImGui::Spacing();
-
-            // 难度名称 + 星级
-            ImGui::PushStyleColor(ImGuiCol_Text,
-                ImVec4(ui::Theme::PINK_R, ui::Theme::PINK_G, ui::Theme::PINK_B, 0.9f));
-            ImGui::Text("[%s]", sel->version.c_str());
-            ImGui::SameLine(0, 10);
-            ImGui::PopStyleColor();
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(255, 200, 50, 255));
-            ImGui::Text("%.1f", sel->difficulty);
-            ImGui::PopStyleColor();
-        } else {
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.4f, 0.4f, 0.5f, 0.6f));
-            ImGui::SetWindowFontScale(1.2f * m_ly.scale);
-            ImGui::Text("Select a beatmap");
-            ImGui::SetWindowFontScale(1.0f);
-            ImGui::PopStyleColor();
-        }
-    }
+    // 顶部留给 ForegroundDrawList 铺面详情 + 弧形遮罩
+    ImGui::Dummy(ImVec2(0, m_ly.topInfoH));
 
     // ── 排行榜区域 ──
-    ImGui::SetCursorPosY(m_ly.topInfoH);
-
     {
         const char* modeLabels[] = {"Local Ranking", "Friend Ranking"};
         int currentMode = static_cast<int>(m_leaderboardMode);
@@ -957,7 +884,11 @@ void SongSelectState::renderLeftPanel(float panelWidth, float panelHeight) {
         float lbHeight = panelHeight - m_ly.topInfoH - m_ly.bottomBarH - m_ly.H * 0.074f;
         ImGui::PushStyleColor(ImGuiCol_ChildBg,
             ImVec4(ui::Theme::BG_R, ui::Theme::BG_G, ui::Theme::BG_B, 0.0f));
-        ImGui::BeginChild("##Leaderboard", ImVec2(panelWidth - panelWidth * 0.08f, lbHeight), false);
+        ImGuiWindowFlags lbFlags = ImGuiWindowFlags_None;
+        if (m_modPopupOpen) {
+            lbFlags |= ImGuiWindowFlags_NoInputs;
+        }
+        ImGui::BeginChild("##Leaderboard", ImVec2(panelWidth - panelWidth * 0.08f, lbHeight), false, lbFlags);
 
         if (m_leaderboardMode == LeaderboardMode::Local) {
             ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.55f, 0.55f, 0.65f, 1.0f));
@@ -1079,6 +1010,9 @@ void SongSelectState::renderRightPanel(float panelX, float panelWidth, float pan
                                   ImGuiWindowFlags_NoMove |
                                   ImGuiWindowFlags_NoCollapse |
                                   ImGuiWindowFlags_NoBringToFrontOnFocus;
+    if (m_modPopupOpen) {
+        childFlags |= ImGuiWindowFlags_NoInputs;
+    }
 
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(m_ly.rightPadding, 0));
     ImGui::PushStyleColor(ImGuiCol_ChildBg,
@@ -1090,8 +1024,11 @@ void SongSelectState::renderRightPanel(float panelX, float panelWidth, float pan
     float listWidth = m_ly.rightWidth - m_ly.listIndent - m_ly.rightPadding;
     float listHeight = panelHeight - m_ly.bottomBarH;
     ImGui::SetCursorPosX(ImGui::GetCursorPosX() + m_ly.listIndent);
-    ImGui::BeginChild("##BeatmapList", ImVec2(listWidth, listHeight), false,
-                      ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoBringToFrontOnFocus);
+    ImGuiWindowFlags listFlags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoBringToFrontOnFocus;
+    if (m_modPopupOpen) {
+        listFlags |= ImGuiWindowFlags_NoInputs;
+    }
+    ImGui::BeginChild("##BeatmapList", ImVec2(listWidth, listHeight), false, listFlags);
 
     // 顶部占位：让首项紧贴遮罩底边（薄条高度）
     float thinH = m_ly.topInfoH * 0.20f;
@@ -1450,26 +1387,33 @@ void SongSelectState::renderModPopup() {
 
     ImVec2 displaySize = ImGui::GetIO().DisplaySize;
 
-    // 半透明遮罩
+    // 全屏 modal 遮罩：接收输入（不用 NoInputs），点击弹窗外区域关闭
     {
         ImGui::SetNextWindowPos(ImVec2(0, 0), ImGuiCond_Always);
         ImGui::SetNextWindowSize(displaySize, ImGuiCond_Always);
 
-        ImGuiWindowFlags overlayFlags = ImGuiWindowFlags_NoTitleBar |
-                                        ImGuiWindowFlags_NoResize |
-                                        ImGuiWindowFlags_NoMove |
-                                        ImGuiWindowFlags_NoNavFocus |
-                                        ImGuiWindowFlags_NoBringToFrontOnFocus |
-                                        ImGuiWindowFlags_NoInputs |
-                                        ImGuiWindowFlags_NoScrollbar;
+        ImGuiWindowFlags backdropFlags = ImGuiWindowFlags_NoTitleBar |
+                                         ImGuiWindowFlags_NoResize |
+                                         ImGuiWindowFlags_NoMove |
+                                         ImGuiWindowFlags_NoNavFocus |
+                                         ImGuiWindowFlags_NoScrollbar |
+                                         ImGuiWindowFlags_NoCollapse;
 
         ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0, 0, 0, 0.5f));
-        ImGui::Begin("##ModOverlay", nullptr, overlayFlags);
+        ImGui::Begin("##ModBackdrop", nullptr, backdropFlags);
+
+        ImGui::SetCursorPos(ImVec2(0, 0));
+        ImGui::InvisibleButton("##modBackdropBtn", displaySize);
+        if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) {
+            m_modPopupOpen = false;
+            m_audio.playSfx(audio::SfxType::MenuHit);
+        }
+
         ImGui::End();
         ImGui::PopStyleColor();
     }
 
-    // 弹窗
+    // 弹窗（绘制在 backdrop 之上，内部控件正常可点）
     float popupWidth = m_ly.scale * 400;
     float popupHeight = m_ly.scale * 500;
     float popupX = (displaySize.x - popupWidth) * 0.5f;
@@ -1495,7 +1439,7 @@ void SongSelectState::renderModPopup() {
 
     ImGui::PushStyleColor(ImGuiCol_Text,
         ImVec4(ui::Theme::CYAN_R, ui::Theme::CYAN_G, ui::Theme::CYAN_B, 1.0f));
-    ImGui::SetWindowFontScale(2.0f * m_ly.scale);
+    ImGui::SetWindowFontScale(1.6f * m_ly.scale);
     ImGui::Text("MODS");
     ImGui::PopStyleColor();
     ImGui::SetWindowFontScale(1.0f);
@@ -1580,15 +1524,6 @@ void SongSelectState::renderModPopup() {
 
     ImGui::PopStyleColor(2);
     ImGui::PopStyleVar(3);
-
-    // 点击遮罩关闭
-    if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-        ImVec2 mouse = ImGui::GetIO().MousePos;
-        if (mouse.x < popupX || mouse.x > popupX + popupWidth ||
-            mouse.y < popupY || mouse.y > popupY + popupHeight) {
-            m_modPopupOpen = false;
-        }
-    }
 }
 
 // ══════════════════════════════════════════════════════════════════════════════

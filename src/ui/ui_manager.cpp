@@ -41,6 +41,12 @@ bool UIManager::init(SDL_Window* window, SDL_GLContext glContext) {
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;   // 启用手柄导航
     io.IniFilename = nullptr; // 禁用 .ini 状态文件，避免窗口尺寸/位置被缓存
 
+    int winW = 0;
+    int winH = 0;
+    SDL_GetWindowSize(window, &winW, &winH);
+    const float fontScale = winH > 0 ? static_cast<float>(winH) / 1080.0f : 1.0f;
+    Theme::loadFonts(fontScale);
+
     // ── SDL2 + OpenGL3 后端 ──
     if (!ImGui_ImplSDL2_InitForOpenGL(window, glContext)) {  // 初始化 SDL2 后端
         MM_LOG_ERROR("UIManager", "ImGui_ImplSDL2_InitForOpenGL failed");  // 记录错误

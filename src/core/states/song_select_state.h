@@ -17,6 +17,8 @@
 #include <memory>
 #include <optional>
 
+struct ImDrawList;
+
 namespace melody_matrix::core {
 
 /// 歌曲选择状态：左右分割布局，左侧为排行榜+操作区，右侧为铺面列表。
@@ -70,6 +72,10 @@ private:
     void renderRightPanel(float panelX, float panelWidth, float panelHeight);
     /// 渲染 Mod 选择弹窗
     void renderModPopup();
+    /// 全屏顶部弧形遮罩（ForegroundDrawList，须在面板之后绘制）
+    void drawTopArcMask(ImDrawList* dl) const;
+    /// 左侧铺面详情（ForegroundDrawList，须在遮罩之后绘制）
+    void renderTopBeatmapInfo() const;
     /// 加载用户头像纹理
     void loadAvatarTexture();
     /// 按需加载指定分组的背景图到全局纹理缓存

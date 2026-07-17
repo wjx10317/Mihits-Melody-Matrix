@@ -2,20 +2,22 @@
 
 // ──────────────────────────────────────────────────────
 //  judge_strategy.h — 判定策略
-//  根据 OD 计算 Perfect/Good 窗口与 Miss 阈值。
-//  StandardJudgeStrategy 采用 osu!mania 风格线性公式。
+//  根据 OD 计算 Stable 规格 300/100/50 窗口与 Miss 阈值。
+//  StableJudgeStrategy 采用 osu!stable (std) 线性公式。
 // ──────────────────────────────────────────────────────
 
-#include <cstdint>  // int32_t / int64_t / uint8_t
+#include <algorithm>  // std::max
+#include <cstdint>    // int32_t / int64_t / uint8_t
 
 namespace melody_matrix::gameplay {
 
-/// 判定结果类型
+/// 判定结果类型（osu!stable：300 / 100 / 50 / Miss）
 enum class JudgmentResult : uint8_t {
-    Ignored  = 0,   ///< 在任何窗口外按键 — 不消耗
-    Perfect  = 1,   ///< 在完美窗口内
-    Good     = 2,   ///< 在良好窗口内
-    Miss     = 3,   ///< 音符过期未被击中
+    Ignored = 0,   ///< 在任何窗口外按键 — 不消耗
+    Hit300  = 1,   ///< 300 窗口内（Great）
+    Hit100  = 2,   ///< 100 窗口内（OK）
+    Hit50   = 3,   ///< 50 窗口内（Meh）
+    Miss    = 4,   ///< 音符过期未被击中 / 超出 50 窗
 };
 
 /// 判定策略接口 — 根据 OD 确定时间窗口。
@@ -23,33 +25,48 @@ class IJudgeStrategy {
 public:
     virtual ~IJudgeStrategy() = default;
 
-    /// 完美窗口（±毫秒）在给定 OD 值下
-    virtual int32_t perfectWindow(float od) const = 0;
+    /// 300 窗口半宽（±毫秒）
+    virtual int32_t hit300Window(float od) const = 0;
 
-    /// 良好窗口（±毫秒）在给定 OD 值下
-    virtual int32_t goodWindow(float od) const = 0;
+    /// 100 窗口半宽（±毫秒）
+    virtual int32_t hit100Window(float od) const = 0;
+
+    /// 50 窗口半宽（±毫秒）— 最外层可判定窗
+    virtual int32_t hit50Window(float od) const = 0;
 
     /// Miss 阈值（毫秒）— 音符时间超过此值后自动 Miss
     virtual int64_t missThreshold(float od) const = 0;
 };
 
-/// 标准判定策略（osu!mania 风格线性 OD 公式）
-class StandardJudgeStrategy : public IJudgeStrategy {
+/// Stable 判定策略（osu!stable / std 线性 OD 公式）
+///
+///   HitWindow300 = 80 - 6×OD
+///   HitWindow100 = 140 - 8×OD
+///   HitWindow50  = 200 - 10×OD
+///
+/// OD=0 → ±80 / ±140 / ±200 ms；OD=10 → ±20 / ±60 / ±100 ms。
+/// 窗口明显大于 mania，便于暴露音画/输入不同步。
+class StableJudgeStrategy : public IJudgeStrategy {
 public:
-    /// Perfect 窗口：OD=0 时 ±22ms，OD=10 时 ±11.5ms
-    int32_t perfectWindow(float od) const override {
-        return static_cast<int32_t>(22.0f - 1.05f * od);  // OD 越高窗口越窄
+    int32_t hit300Window(float od) const override {
+        return static_cast<int32_t>(std::max(0.0f, 80.0f - 6.0f * od));
     }
 
-    /// Good 窗口：OD=0 时 ±65ms，OD=10 时 ±39ms
-    int32_t goodWindow(float od) const override {
-        return static_cast<int32_t>(65.0f - 2.6f * od);
+    int32_t hit100Window(float od) const override {
+        return static_cast<int32_t>(std::max(0.0f, 140.0f - 8.0f * od));
     }
 
-    /// Miss 阈值：Good 窗口 + 50ms 缓冲后自动 Miss
+    int32_t hit50Window(float od) const override {
+        return static_cast<int32_t>(std::max(0.0f, 200.0f - 10.0f * od));
+    }
+
+    /// 超出 50 窗即 Miss（不再额外 +50ms mania 缓冲）
     int64_t missThreshold(float od) const override {
-        return static_cast<int64_t>(goodWindow(od)) + 50;  // Good 窗口外再留 50ms 容错
+        return static_cast<int64_t>(hit50Window(od));
     }
 };
+
+/// 兼容旧名：现实现为 Stable 规格
+using StandardJudgeStrategy = StableJudgeStrategy;
 
 } // namespace melody_matrix::gameplay

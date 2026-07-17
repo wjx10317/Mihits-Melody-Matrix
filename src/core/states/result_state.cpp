@@ -127,9 +127,10 @@ void ResultState::renderImGuiPanel() {
 
     ImGui::Spacing();
 
-    // ── 准确度 ──
+    // ── 准确度（Stable：300/100/50 加权）──
     float accuracy = totalNotes > 0 ?
-        (perfectCount * 100.0f + goodCount * 60.0f) / (totalNotes * 100.0f) * 100.0f : 0.0f;
+        (hit300Count * 300.0f + hit100Count * 100.0f + hit50Count * 50.0f) /
+            (totalNotes * 300.0f) * 100.0f : 0.0f;
     ImGui::SetCursorPosX(startX);
     ImGui::Text("Accuracy: %.2f%%", accuracy);
     ImGui::SetCursorPosX(startX);
@@ -141,28 +142,39 @@ void ResultState::renderImGuiPanel() {
 
     // ── 判定统计 ──
     ImGui::SetCursorPosX(startX);
-    ImGui::Columns(3, "##judgeCols", false);
-    ImGui::SetColumnWidth(0, 200);
-    ImGui::SetColumnWidth(1, 200);
-    ImGui::SetColumnWidth(2, 200);
+    ImGui::Columns(4, "##judgeCols", false);
+    ImGui::SetColumnWidth(0, 150);
+    ImGui::SetColumnWidth(1, 150);
+    ImGui::SetColumnWidth(2, 150);
+    ImGui::SetColumnWidth(3, 150);
 
-    // Perfect
+    // 300
     ImGui::PushStyleColor(ImGuiCol_Text,
         ImVec4(Theme::CYAN_R, Theme::CYAN_G, Theme::CYAN_B, 1.0f));
     ImGui::SetWindowFontScale(1.5f);
-    ImGui::Text("%d", perfectCount);
+    ImGui::Text("%d", hit300Count);
     ImGui::SetWindowFontScale(1.0f);
-    ImGui::Text("PERFECT");
+    ImGui::Text("300");
     ImGui::PopStyleColor();
 
     ImGui::NextColumn();
 
-    // Good
+    // 100
     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.702f, 1.0f, 0.0f, 1.0f));
     ImGui::SetWindowFontScale(1.5f);
-    ImGui::Text("%d", goodCount);
+    ImGui::Text("%d", hit100Count);
     ImGui::SetWindowFontScale(1.0f);
-    ImGui::Text("GOOD");
+    ImGui::Text("100");
+    ImGui::PopStyleColor();
+
+    ImGui::NextColumn();
+
+    // 50
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.85f, 0.25f, 1.0f));
+    ImGui::SetWindowFontScale(1.5f);
+    ImGui::Text("%d", hit50Count);
+    ImGui::SetWindowFontScale(1.0f);
+    ImGui::Text("50");
     ImGui::PopStyleColor();
 
     ImGui::NextColumn();

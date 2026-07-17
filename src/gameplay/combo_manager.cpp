@@ -9,7 +9,7 @@
 
 namespace melody_matrix::gameplay {
 
-/// 击中（Perfect/Good）时递增连击，并刷新最大连击记录
+/// 击中（300/100/50）时递增连击，并刷新最大连击记录
 void ComboManager::onHit() {
     ++m_combo;  // 当前连击 +1
     if (m_combo > m_maxCombo) {

@@ -108,8 +108,9 @@ void PlayingState::resetGameplay() {
     m_playerDied = false;
     m_totalNotes = 0;
     m_hitNotes = 0;
-    m_perfectCount = 0;
-    m_goodCount = 0;
+    m_hit300Count = 0;
+    m_hit100Count = 0;
+    m_hit50Count = 0;
     m_missCount = 0;
     m_needsReinit = false;
     m_leadInActive = false;
@@ -184,7 +185,7 @@ void PlayingState::initGameplay() {
     m_beatmap = std::move(buildResult.value());              // 保存到成员，供全状态使用
 
     // ── 初始化判定队列 ──
-    m_judgeQueue.setStrategy(std::make_unique<gameplay::StandardJudgeStrategy>());  // 标准 Perfect/Good/Miss 窗口
+    m_judgeQueue.setStrategy(std::make_unique<gameplay::StableJudgeStrategy>());  // Stable 300/100/50/Miss
     m_judgeQueue.loadNotes(m_beatmap.notes);                 // 按列建立 note 队列
 
     // ── 连接 JudgeQueue 事件回调（Miss / Hold 尾等自动判定路径）──
@@ -201,11 +202,11 @@ void PlayingState::initGameplay() {
         m_scoreManager.addScore(gameplay::JudgmentResult::Miss, 0);
         m_popups.push_back({evt.col, gameplay::JudgmentResult::Miss, JudgePopup::DURATION});
 
-        // 偏移条：记录 auto-miss（timing 取 goodW 边界值，超出 good 窗口）
+        // 偏移条：记录 auto-miss（timing 取 hit50 边界值，超出 50 窗口）
         if (m_offsetBarEnabled) {
             float od = m_beatmap.difficulty.od;
-            int32_t goodW = static_cast<int32_t>(65.0f - 2.6f * od);
-            int64_t missTiming = static_cast<int64_t>(goodW) + 50;
+            int32_t hit50W = static_cast<int32_t>(std::max(0.0f, 200.0f - 10.0f * od));
+            int64_t missTiming = static_cast<int64_t>(hit50W);
             m_offsetBarMarks.push_back({evt.time + missTiming, evt.time,
                                         missTiming,
                                         OffsetBarMark::DURATION,
@@ -523,8 +524,9 @@ GameState PlayingState::update(float dt) {
         if (result) {                                        // 写入结算数据
             result->score = static_cast<int>(m_scoreManager.totalScore());
             result->maxCombo = m_comboManager.max();
-            result->perfectCount = m_perfectCount;
-            result->goodCount = m_goodCount;
+            result->hit300Count = m_hit300Count;
+            result->hit100Count = m_hit100Count;
+            result->hit50Count = m_hit50Count;
             result->missCount = m_missCount;
             result->totalNotes = m_totalNotes;
             result->playerDied = m_playerDied;
@@ -833,20 +835,28 @@ void PlayingState::handleKeyEvent(int32_t key, bool pressed, int64_t eventTimeMs
 void PlayingState::handlePressResult(gameplay::JudgmentResult result, int32_t column, int32_t row,
                                      int64_t pressTime, int64_t noteTime, bool isTapNote) {
     switch (result) {
-    case gameplay::JudgmentResult::Perfect:
-        m_perfectCount++;
+    case gameplay::JudgmentResult::Hit300:
+        m_hit300Count++;
         m_hitNotes++;
         m_comboManager.onHit();
-        m_scoreManager.addScore(gameplay::JudgmentResult::Perfect, m_comboManager.current());
-        m_hpManager.onJudgment(gameplay::JudgmentResult::Perfect);
+        m_scoreManager.addScore(gameplay::JudgmentResult::Hit300, m_comboManager.current());
+        m_hpManager.onJudgment(gameplay::JudgmentResult::Hit300);
         m_audio.playSfx(audio::SfxType::HitNormal);
         break;
-    case gameplay::JudgmentResult::Good:
-        m_goodCount++;
+    case gameplay::JudgmentResult::Hit100:
+        m_hit100Count++;
         m_hitNotes++;
         m_comboManager.onHit();
-        m_scoreManager.addScore(gameplay::JudgmentResult::Good, m_comboManager.current());
-        m_hpManager.onJudgment(gameplay::JudgmentResult::Good);
+        m_scoreManager.addScore(gameplay::JudgmentResult::Hit100, m_comboManager.current());
+        m_hpManager.onJudgment(gameplay::JudgmentResult::Hit100);
+        m_audio.playSfx(audio::SfxType::HitNormal);
+        break;
+    case gameplay::JudgmentResult::Hit50:
+        m_hit50Count++;
+        m_hitNotes++;
+        m_comboManager.onHit();
+        m_scoreManager.addScore(gameplay::JudgmentResult::Hit50, m_comboManager.current());
+        m_hpManager.onJudgment(gameplay::JudgmentResult::Hit50);
         m_audio.playSfx(audio::SfxType::HitNormal);
         break;
     case gameplay::JudgmentResult::Miss:
@@ -865,8 +875,9 @@ void PlayingState::handlePressResult(gameplay::JudgmentResult result, int32_t co
     m_lastHitDebug.result = result;
 
     if (isTapNote &&                                          // Hold 头不播 cell 闪光（Hold 持续按住）
-        (result == gameplay::JudgmentResult::Perfect ||
-         result == gameplay::JudgmentResult::Good)) {
+        (result == gameplay::JudgmentResult::Hit300 ||
+         result == gameplay::JudgmentResult::Hit100 ||
+         result == gameplay::JudgmentResult::Hit50)) {
         m_hitEffects.push_back({ column, row, 1.0f });
     }
 
@@ -880,28 +891,36 @@ void PlayingState::handlePressResult(gameplay::JudgmentResult result, int32_t co
         m_offsetBarMarks.push_back(mark);
     }
 
-    m_popups.push_back({column, result, JudgePopup::DURATION});  // PERFECT/GOOD/MISS 浮字
+    m_popups.push_back({column, result, JudgePopup::DURATION});  // 300/100/50/MISS 浮字
 }
 
 /// 处理 Hold 尾部释放判定结果
 void PlayingState::handleHoldTailEvent(const gameplay::HoldTailEvent& evt) {
     const int32_t column = evt.col;
     switch (evt.result) {
-    case gameplay::HoldReleaseResult::Perfect:
-        m_perfectCount++;
+    case gameplay::HoldReleaseResult::Hit300:
+        m_hit300Count++;
         m_hitNotes++;
         m_comboManager.onHit();
-        m_scoreManager.addScore(gameplay::JudgmentResult::Perfect, m_comboManager.current());
-        m_hpManager.onJudgment(gameplay::JudgmentResult::Perfect);
-        m_popups.push_back({column, gameplay::JudgmentResult::Perfect, JudgePopup::DURATION});
+        m_scoreManager.addScore(gameplay::JudgmentResult::Hit300, m_comboManager.current());
+        m_hpManager.onJudgment(gameplay::JudgmentResult::Hit300);
+        m_popups.push_back({column, gameplay::JudgmentResult::Hit300, JudgePopup::DURATION});
         break;
-    case gameplay::HoldReleaseResult::Good:
-        m_goodCount++;
+    case gameplay::HoldReleaseResult::Hit100:
+        m_hit100Count++;
         m_hitNotes++;
         m_comboManager.onHit();
-        m_scoreManager.addScore(gameplay::JudgmentResult::Good, m_comboManager.current());
-        m_hpManager.onJudgment(gameplay::JudgmentResult::Good);
-        m_popups.push_back({column, gameplay::JudgmentResult::Good, JudgePopup::DURATION});
+        m_scoreManager.addScore(gameplay::JudgmentResult::Hit100, m_comboManager.current());
+        m_hpManager.onJudgment(gameplay::JudgmentResult::Hit100);
+        m_popups.push_back({column, gameplay::JudgmentResult::Hit100, JudgePopup::DURATION});
+        break;
+    case gameplay::HoldReleaseResult::Hit50:
+        m_hit50Count++;
+        m_hitNotes++;
+        m_comboManager.onHit();
+        m_scoreManager.addScore(gameplay::JudgmentResult::Hit50, m_comboManager.current());
+        m_hpManager.onJudgment(gameplay::JudgmentResult::Hit50);
+        m_popups.push_back({column, gameplay::JudgmentResult::Hit50, JudgePopup::DURATION});
         break;
     case gameplay::HoldReleaseResult::Miss:
         m_missCount++;
@@ -921,10 +940,12 @@ void PlayingState::handleHoldTailEvent(const gameplay::HoldTailEvent& evt) {
         mark.noteTime = evt.holdEndMs;
         mark.timing = evt.releaseMs - evt.holdEndMs;
         mark.timer = OffsetBarMark::DURATION;
-        mark.result = evt.result == gameplay::HoldReleaseResult::Perfect
-                          ? gameplay::JudgmentResult::Perfect
-                      : evt.result == gameplay::HoldReleaseResult::Good
-                          ? gameplay::JudgmentResult::Good
+        mark.result = evt.result == gameplay::HoldReleaseResult::Hit300
+                          ? gameplay::JudgmentResult::Hit300
+                      : evt.result == gameplay::HoldReleaseResult::Hit100
+                          ? gameplay::JudgmentResult::Hit100
+                      : evt.result == gameplay::HoldReleaseResult::Hit50
+                          ? gameplay::JudgmentResult::Hit50
                           : gameplay::JudgmentResult::Miss;
         m_offsetBarMarks.push_back(mark);
     }
@@ -1019,9 +1040,10 @@ void PlayingState::renderImGuiOverlay() {
 
         const char* resultLabel = "?";
         switch (m_lastHitDebug.result) {
-        case gameplay::JudgmentResult::Perfect: resultLabel = "Perfect"; break;
-        case gameplay::JudgmentResult::Good:    resultLabel = "Good"; break;
-        case gameplay::JudgmentResult::Miss:     resultLabel = "Miss"; break;
+        case gameplay::JudgmentResult::Hit300: resultLabel = "300"; break;
+        case gameplay::JudgmentResult::Hit100: resultLabel = "100"; break;
+        case gameplay::JudgmentResult::Hit50:  resultLabel = "50"; break;
+        case gameplay::JudgmentResult::Miss:   resultLabel = "Miss"; break;
         default: break;
         }
 
@@ -1068,19 +1090,22 @@ void PlayingState::renderImGuiOverlay() {
 
     // ── Top-right: Judgment counts ──
     ImGui::SetNextWindowPos(ImVec2(ImGui::GetIO().DisplaySize.x - 200, 20));
-    ImGui::SetNextWindowSize(ImVec2(180, 80));
+    ImGui::SetNextWindowSize(ImVec2(180, 110));
 
     ImGui::Begin("##JudgeHUD", nullptr, flags);
     ImGui::PushStyleColor(ImGuiCol_Text,
         ImVec4(Theme::CYAN_R, Theme::CYAN_G, Theme::CYAN_B, 1.0f));
-    ImGui::Text("Perfect: %d", m_perfectCount);
+    ImGui::Text("300:  %d", m_hit300Count);
     ImGui::PopStyleColor();
     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.702f, 1.0f, 0.0f, 1.0f));
-    ImGui::Text("Good:    %d", m_goodCount);
+    ImGui::Text("100:  %d", m_hit100Count);
+    ImGui::PopStyleColor();
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.85f, 0.25f, 1.0f));
+    ImGui::Text("50:   %d", m_hit50Count);
     ImGui::PopStyleColor();
     ImGui::PushStyleColor(ImGuiCol_Text,
         ImVec4(Theme::PINK_R, Theme::PINK_G, Theme::PINK_B, 1.0f));
-    ImGui::Text("Miss:    %d", m_missCount);
+    ImGui::Text("Miss: %d", m_missCount);
     ImGui::PopStyleColor();
     ImGui::End();
 
@@ -1102,12 +1127,14 @@ void PlayingState::renderImGuiOverlay() {
 
     // ── Offset Bar（偏移条）──
     if (m_offsetBarEnabled) {
-        // 判定窗口公式与 StandardJudgeStrategy 保持一致（策略为 private，无法直接获取）
+        // Stable 窗口：300 / 100 / 50（与 StableJudgeStrategy 一致）
         float od = m_beatmap.difficulty.od;
-        int32_t perfectW = static_cast<int32_t>(22.0f - 1.05f * od);
-        int32_t goodW = static_cast<int32_t>(65.0f - 2.6f * od);
-        if (perfectW < 1) perfectW = 1;
-        if (goodW <= perfectW) goodW = perfectW + 1;
+        int32_t hit300W = static_cast<int32_t>(std::max(0.0f, 80.0f - 6.0f * od));
+        int32_t hit100W = static_cast<int32_t>(std::max(0.0f, 140.0f - 8.0f * od));
+        int32_t hit50W  = static_cast<int32_t>(std::max(0.0f, 200.0f - 10.0f * od));
+        if (hit300W < 1) hit300W = 1;
+        if (hit100W <= hit300W) hit100W = hit300W + 1;
+        if (hit50W <= hit100W) hit50W = hit100W + 1;
 
         const float obW = 400.0f;
         const float obH = 20.0f;
@@ -1120,24 +1147,33 @@ void PlayingState::renderImGuiOverlay() {
                                         ImGui::GetIO().DisplaySize.y - 58.0f - 44.0f);
         float obY = keyHintY - obH - 10.0f;
         float centerX = obX + obW * 0.5f;
-        float perfectHalfW = (static_cast<float>(perfectW) / static_cast<float>(goodW)) * (obW * 0.5f);
+        float half50 = obW * 0.5f;
+        float half100 = (static_cast<float>(hit100W) / static_cast<float>(hit50W)) * half50;
+        float half300 = (static_cast<float>(hit300W) / static_cast<float>(hit50W)) * half50;
 
         ImDrawList* dl = ImGui::GetForegroundDrawList();
 
-        // 背景灰色（最外侧，超出 good 窗口）
+        // 背景灰色（最外侧，超出 50 窗口）
         dl->AddRectFilled(ImVec2(obX, obY), ImVec2(obX + obW, obY + obH),
                           IM_COL32(60, 60, 70, 200));
 
-        // Good 区域（绿色）
-        ImU32 goodColor = IM_COL32(100, 200, 50, 200);
+        // 50 区域（黄）
+        ImU32 hit50Color = IM_COL32(255, 200, 40, 200);
         dl->AddRectFilled(ImVec2(obX, obY),
-                          ImVec2(centerX - perfectHalfW, obY + obH), goodColor);
-        dl->AddRectFilled(ImVec2(centerX + perfectHalfW, obY),
-                          ImVec2(obX + obW, obY + obH), goodColor);
+                          ImVec2(centerX - half100, obY + obH), hit50Color);
+        dl->AddRectFilled(ImVec2(centerX + half100, obY),
+                          ImVec2(obX + obW, obY + obH), hit50Color);
 
-        // Perfect 区域（青色）
-        dl->AddRectFilled(ImVec2(centerX - perfectHalfW, obY),
-                          ImVec2(centerX + perfectHalfW, obY + obH),
+        // 100 区域（绿）
+        ImU32 hit100Color = IM_COL32(100, 200, 50, 200);
+        dl->AddRectFilled(ImVec2(centerX - half100, obY),
+                          ImVec2(centerX - half300, obY + obH), hit100Color);
+        dl->AddRectFilled(ImVec2(centerX + half300, obY),
+                          ImVec2(centerX + half100, obY + obH), hit100Color);
+
+        // 300 区域（青）
+        dl->AddRectFilled(ImVec2(centerX - half300, obY),
+                          ImVec2(centerX + half300, obY + obH),
                           IM_COL32(0, 255, 245, 200));
 
         // 中心线（0ms 位置）白色
@@ -1151,21 +1187,24 @@ void PlayingState::renderImGuiOverlay() {
 
         // 标记点（每次击中 note 时记录的 timing）
         for (const auto& mark : m_offsetBarMarks) {
-            // 将 timing 限制在 ±goodW 范围内用于显示
+            // 将 timing 限制在 ±hit50W 范围内用于显示
             int64_t clamped = mark.timing;
-            if (clamped < -static_cast<int64_t>(goodW)) clamped = -goodW;
-            if (clamped >  static_cast<int64_t>(goodW)) clamped =  goodW;
-            float markX = centerX + (static_cast<float>(clamped) / static_cast<float>(goodW)) * (obW * 0.5f);
+            if (clamped < -static_cast<int64_t>(hit50W)) clamped = -hit50W;
+            if (clamped >  static_cast<int64_t>(hit50W)) clamped =  hit50W;
+            float markX = centerX + (static_cast<float>(clamped) / static_cast<float>(hit50W)) * half50;
             float alpha = std::min(1.0f, mark.timer / OffsetBarMark::DURATION);
 
             ImU32 markColor;
             int alphaByte = static_cast<int>(255.0f * alpha);
             switch (mark.result) {
-            case gameplay::JudgmentResult::Perfect:
+            case gameplay::JudgmentResult::Hit300:
                 markColor = IM_COL32(0, 255, 245, alphaByte);
                 break;
-            case gameplay::JudgmentResult::Good:
+            case gameplay::JudgmentResult::Hit100:
                 markColor = IM_COL32(100, 200, 50, alphaByte);
+                break;
+            case gameplay::JudgmentResult::Hit50:
+                markColor = IM_COL32(255, 200, 40, alphaByte);
                 break;
             case gameplay::JudgmentResult::Miss:
                 markColor = IM_COL32(255, 0, 110, alphaByte);
@@ -1210,13 +1249,17 @@ void PlayingState::renderImGuiOverlay() {
         const char* text = "";
         ImVec4 color(1, 1, 1, alpha);
         switch (popup.result) {
-        case gameplay::JudgmentResult::Perfect:
-            text = "PERFECT";
+        case gameplay::JudgmentResult::Hit300:
+            text = "300";
             color = ImVec4(Theme::CYAN_R, Theme::CYAN_G, Theme::CYAN_B, alpha);
             break;
-        case gameplay::JudgmentResult::Good:
-            text = "GOOD";
+        case gameplay::JudgmentResult::Hit100:
+            text = "100";
             color = ImVec4(0.702f, 1.0f, 0.0f, alpha);
+            break;
+        case gameplay::JudgmentResult::Hit50:
+            text = "50";
+            color = ImVec4(1.0f, 0.85f, 0.25f, alpha);
             break;
         case gameplay::JudgmentResult::Miss:
             text = "MISS";

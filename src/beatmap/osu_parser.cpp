@@ -228,14 +228,13 @@ double OsuParser::getSliderVelocityAt(int64_t time) const {
 
 /// 构造 note 显示/判定窗口：displayStart、earliestHit、latestHit
 OsuParser::NoteWindow OsuParser::makeWindow(int64_t time) const {
-    // 计算 note 的显示/判定时间窗口（对齐参考转换器 makeWindow）
+    // 计算 note 的显示/判定时间窗口（Stable：50 窗 = 200-10×OD，超出即 Miss）
     double approachMs = std::max(0.0, 1800.0 - m_ar * 120.0);
-    double goodW = std::max(0.0, 65.0 - 2.6 * m_od);
-    double missW = goodW + 50.0;
+    double hit50W = std::max(0.0, 200.0 - 10.0 * m_od);
     NoteWindow w;
     w.displayStart = time - static_cast<int64_t>(approachMs);
-    w.earliestHit = time - static_cast<int64_t>(missW);
-    w.latestHit = time + static_cast<int64_t>(missW);
+    w.earliestHit = time - static_cast<int64_t>(hit50W);
+    w.latestHit = time + static_cast<int64_t>(hit50W);
     return w;
 }
 

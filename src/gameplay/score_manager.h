@@ -14,9 +14,8 @@
 namespace melody_matrix::gameplay {
 
 /// 分数管理器 — 根据判定结果和连击累积分数。
-/// 分数公式（来自设计文档 8.1）：
-///   scoreForHit = BASE_SCORE * accuracy * comboMultiplier
-///   其中 accuracy: Perfect=1.0, Good=0.6667, Miss=0.3333
+/// 分数公式：
+///   scoreForHit = BASE_SCORE * (300|100|50|0)/300 * comboMultiplier
 ///   comboMultiplier = 1.0 + log2(combo+1) * 0.2
 class ScoreManager {
 public:
@@ -42,7 +41,7 @@ public:
     void reset();
 
 private:
-    static constexpr int32_t BASE_SCORE = 300;  ///< 单音符 Perfect 基础分（combo=0 时）
+    static constexpr int32_t BASE_SCORE = 300;  ///< 单音符 Hit300 基础分（combo=0 时）
 
     int64_t m_totalScore  = 0;   ///< 累计总分
     int64_t m_maxPossible = 0;   ///< 所有音符在其连击时完美得分的总和

@@ -152,8 +152,9 @@ private:
     bool m_playerDied = false;
     int m_totalNotes = 0;
     int m_hitNotes = 0;
-    int m_perfectCount = 0;
-    int m_goodCount = 0;
+    int m_hit300Count = 0;
+    int m_hit100Count = 0;
+    int m_hit50Count = 0;
     int m_missCount = 0;
 
     // ── 输入 ──

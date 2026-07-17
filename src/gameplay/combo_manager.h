@@ -14,7 +14,7 @@ namespace melody_matrix::gameplay {
 /// 通过 JudgeQueue 的事件更新（非直接调用）。
 class ComboManager {
 public:
-    /// 击中时调用（Perfect 或 Good）— 增加连击
+    /// 击中时调用（300 / 100 / 50）— 增加连击
     void onHit();
 
     /// Miss 时调用 — 重置连击为 0

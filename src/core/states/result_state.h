@@ -27,8 +27,9 @@ public:
     // ── 分数数据（进入此状态前由 PlayingState 设置）──
     int score = 0;           ///< 总分
     int maxCombo = 0;        ///< 最大连击
-    int perfectCount = 0;    ///< Perfect 数量
-    int goodCount = 0;       ///< Good 数量
+    int hit300Count = 0;     ///< 300 数量
+    int hit100Count = 0;     ///< 100 数量
+    int hit50Count = 0;      ///< 50 数量
     int missCount = 0;       ///< Miss 数量
     int totalNotes = 0;      ///< 音符总数
     bool playerDied = false; ///< 是否因 HP 归零失败

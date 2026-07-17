@@ -37,19 +37,23 @@ inline int64_t approachMs(float ar) {
     return std::max<int64_t>(300, static_cast<int64_t>(1800.0f - ar * 120.0f));
 }
 
-/// Good 判定半窗（毫秒）：65 - 2.6×OD
+/// Stable 最外层可判定半窗（50 窗，毫秒）：200 - 10×OD
+inline int32_t hit50WindowMs(float od) {
+    return static_cast<int32_t>(std::max(0.0, 200.0 - 10.0 * od));
+}
+
+/// 兼容旧名：滚动时序按最外层可判定窗留白
 inline int32_t goodWindowMs(float od) {
-    // OD 越高判定窗越窄，结果不得为负
-    return static_cast<int32_t>(std::max(0.0, 65.0 - 2.6 * od));
+    return hit50WindowMs(od);
 }
 
 /// 自适应滚动动画时长（毫秒）
-/// 在 [scrollStart, earliestHit) 内留 minRemaining = goodWindow+10，
+/// 在 [scrollStart, earliestHit) 内留 minRemaining = hit50+10，
 /// 取可用时间的 80%，再 clamp 到 [100, 200]。
 /// 与 PlayingState::checkAndTriggerScroll 一致。
 inline int64_t scrollDurationMs(int64_t targetNoteTimeMs, int64_t scrollStartMs, float od) {
-    // 滚动结束后至少保留 good 窗 + 10ms 缓冲，供玩家击打
-    const int64_t minRemainingMs = static_cast<int64_t>(goodWindowMs(od)) + 10;
+    // 滚动结束后至少保留 50 窗 + 10ms 缓冲，供玩家击打
+    const int64_t minRemainingMs = static_cast<int64_t>(hit50WindowMs(od)) + 10;
     // 从 scrollStart 到 target 时刻之间可用于动画的净时长
     int64_t availableTime = targetNoteTimeMs - scrollStartMs - minRemainingMs;
     // 取可用时间的 80% 作为动画时长（留余量避免卡边）
@@ -67,11 +71,9 @@ inline int64_t scrollTriggerMs(int64_t targetNoteTimeMs, int64_t lastTransitionE
     return std::max(lastTransitionEndMs, targetNoteTimeMs - approachMs(ar));
 }
 
-/// Hold 尾部最晚判定时刻 = holdEnd + goodWindow + 50（Miss 缓冲）
-/// 与 parser makeWindow(endTime).latestHit 一致
+/// Hold 尾部最晚判定时刻 = holdEnd + hit50Window（Stable：超出 50 即 Miss）
 inline int64_t holdReleaseLatestHitMs(int64_t holdEndMs, float od) {
-    // holdEnd 之后仍允许 good+miss 判定，+50 对应 makeWindow 中的 miss 扩展
-    return holdEndMs + goodWindowMs(od) + 50;
+    return holdEndMs + hit50WindowMs(od);
 }
 
 // ── Hold 阻塞 scrollStart ──

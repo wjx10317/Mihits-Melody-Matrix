@@ -4,13 +4,157 @@
 // 职责：
 //   - 设置圆角、间距等 ImGuiStyle 参数
 //   - 将深海军蓝 + 青/紫/粉配色应用到全部 ImGuiCol 条目
+//   - 加载 UI 字体（Inter + Noto SC，失败时逐级降级）
 // ============================================================
 #include "ui/theme.h"     // Theme 类声明
 #include "util/logger.h"  // MM_LOG_* 日志宏
 
 #include "imgui.h"  // ImGuiStyle、ImGuiCol 枚举
 
+#include <algorithm>
+#include <cstdint>
+#include <filesystem>
+#include <fstream>
+#include <string>
+#include <vector>
+
 namespace melody_matrix::ui {  // UI 子命名空间
+
+namespace {
+
+std::string resolveAssetPath(const char* relativePath) {
+    const std::vector<std::string> prefixes = {
+        "",
+        "../",
+        "../../",
+    };
+    for (const auto& prefix : prefixes) {
+        const std::string path = prefix + relativePath;
+        std::error_code ec;
+        if (std::filesystem::exists(path, ec) && !ec) {
+            return path;
+        }
+    }
+    return {};
+}
+
+bool readFileBytes(const std::string& path, std::vector<unsigned char>& out) {
+    std::ifstream file(path, std::ios::binary | std::ios::ate);
+    if (!file) {
+        return false;
+    }
+    const std::streamsize size = file.tellg();
+    if (size < 100) {
+        return false;
+    }
+    file.seekg(0, std::ios::beg);
+    out.resize(static_cast<size_t>(size));
+    if (!file.read(reinterpret_cast<char*>(out.data()), size)) {
+        out.clear();
+        return false;
+    }
+    return true;
+}
+
+/// 魔数校验：过滤 HTML/损坏文件，避免 ImGui Build 时断言
+bool validateFontFile(const std::string& path) {
+    std::vector<unsigned char> data;
+    if (!readFileBytes(path, data)) {
+        return false;
+    }
+
+    if (data.size() >= 4) {
+        // TrueType
+        if (data[0] == 0x00 && data[1] == 0x01 && data[2] == 0x00 && data[3] == 0x00) {
+            return true;
+        }
+        // OpenType (CFF)
+        if (data[0] == 'O' && data[1] == 'T' && data[2] == 'T' && data[3] == 'O') {
+            return true;
+        }
+        // TrueType Collection
+        if (data[0] == 't' && data[1] == 't' && data[2] == 'c' && data[3] == 'f') {
+            return true;
+        }
+        // 常见误下载（GitHub HTML / JSON）
+        if (data[0] == '<' || data[0] == '{' || data[0] == '[') {
+            return false;
+        }
+    }
+
+    return false;
+}
+
+ImFont* addFontFromValidatedFile(ImFontAtlas* atlas, const std::string& path, float fontSize,
+                                 const ImWchar* glyphRanges, ImFontConfig* cfg = nullptr) {
+    if (!validateFontFile(path)) {
+        return nullptr;
+    }
+    return atlas->AddFontFromFileTTF(path.c_str(), fontSize, cfg, glyphRanges);
+}
+
+void loadDefaultFont(ImFontAtlas* atlas, float fontSize) {
+    ImFontConfig cfg;
+    cfg.SizePixels = fontSize;
+    atlas->AddFontDefault(&cfg);
+}
+
+} // namespace
+
+bool Theme::loadFonts(float displayScale) {
+    ImGuiIO& io = ImGui::GetIO();
+    ImFontAtlas* atlas = io.Fonts;
+    atlas->Clear();
+
+    const float fontSize = std::max(16.0f, FONT_SIZE * std::max(0.75f, displayScale));
+
+    const std::string interPath = resolveAssetPath(FONT_INTER);
+    const std::string cjkPath = resolveAssetPath(FONT_CJK);
+
+    const bool interOk = !interPath.empty() && validateFontFile(interPath);
+    const bool cjkOk = !cjkPath.empty() && validateFontFile(cjkPath);
+
+    ImFont* mainFont = nullptr;
+
+    if (interOk) {
+        mainFont = addFontFromValidatedFile(
+            atlas, interPath, fontSize, atlas->GetGlyphRangesDefault());
+        if (!mainFont) {
+            MM_LOG_WARN("Theme", "Inter present but AddFont failed: %s", interPath.c_str());
+        }
+    } else if (!interPath.empty()) {
+        MM_LOG_WARN("Theme", "Inter invalid or corrupt, skipping: %s", interPath.c_str());
+    }
+
+    if (!mainFont && cjkOk) {
+        MM_LOG_WARN("Theme", "Falling back to Noto Sans SC as primary UI font");
+        mainFont = addFontFromValidatedFile(
+            atlas, cjkPath, fontSize, atlas->GetGlyphRangesChineseSimplifiedCommon());
+    }
+
+    if (!mainFont) {
+        MM_LOG_WARN("Theme", "No custom font available, using ImGui default");
+        loadDefaultFont(atlas, fontSize);
+        return false;
+    }
+
+    // CJK merge 仅当 Inter 为主字体且 Noto 校验通过
+    if (interOk && mainFont && cjkOk) {
+        ImFontConfig mergeCfg;
+        mergeCfg.MergeMode = true;
+        mergeCfg.DstFont = mainFont;
+        if (!addFontFromValidatedFile(
+                atlas, cjkPath, fontSize,
+                atlas->GetGlyphRangesChineseSimplifiedCommon(), &mergeCfg)) {
+            MM_LOG_WARN("Theme", "CJK merge failed, Latin-only UI: %s", cjkPath.c_str());
+        }
+    } else if (!cjkOk && !cjkPath.empty()) {
+        MM_LOG_WARN("Theme", "CJK font invalid or corrupt, Latin-only UI: %s", cjkPath.c_str());
+    }
+
+    MM_LOG_INFO("Theme", "UI fonts ready at %.1fpx (scale %.2f)", fontSize, displayScale);
+    return true;
+}
 
 /// 应用深霓虹主题：圆角/间距 + 完整配色表
 void Theme::apply() {

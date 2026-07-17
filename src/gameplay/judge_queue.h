@@ -18,7 +18,7 @@ namespace melody_matrix::gameplay {
 
 /// 判定结果的事件类型
 struct NoteHitEvent {
-    JudgmentResult result;   ///< Perfect 或 Good
+    JudgmentResult result;   ///< Hit300 / Hit100 / Hit50
     int64_t        time;     ///< 音符的时间
     int32_t        row;      ///< 音符行索引
     int32_t        col;      ///< 音符列索引
@@ -31,12 +31,13 @@ struct NoteMissEvent {
     int32_t col;            ///< 音符列索引
 };
 
-/// Hold 尾部释放判定结果（与 Tap 相同 ± 窗口）
+/// Hold 尾部释放判定结果（与 Tap 共用 Stable 300/100/50 窗口）
 enum class HoldReleaseResult : uint8_t {
     Ignored = 0,   ///< 该列没有活跃 Hold
-    Perfect = 1,   ///< 尾部在 Perfect 窗口内松手
-    Good    = 2,   ///< 尾部在 Good 窗口内松手
-    Miss    = 3,   ///< 尾部超出 Good 窗口或超时
+    Hit300  = 1,   ///< 尾部在 300 窗口内松手
+    Hit100  = 2,   ///< 尾部在 100 窗口内松手
+    Hit50   = 3,   ///< 尾部在 50 窗口内松手
+    Miss    = 4,   ///< 尾部超出 50 窗口或超时
 };
 
 /// Hold 尾部判定事件
