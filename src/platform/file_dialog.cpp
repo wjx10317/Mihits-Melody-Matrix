@@ -26,54 +26,8 @@ namespace melody_matrix::platform {  // 平台层命名空间
 std::string FileDialog::openFile(const std::string& title,
                                   const std::string& filterDesc,
                                   const std::string& filterExt) {
-#ifdef _WIN32
-    // 构建 OPENFILENAMEW 结构
-    OPENFILENAMEW ofn = {};              // 文件对话框参数结构
-    wchar_t filePath[MAX_PATH] = {};     // 选中文件路径缓冲区
-
-    std::wstring wTitle(title.begin(), title.end());  // 标题转宽字符
-
-    // 过滤器格式："描述\0*.ext\0\0"
-    std::wstring wFilterDesc(filterDesc.begin(), filterDesc.end());  // 过滤器描述转宽字符
-    std::wstring wFilterExt = L"*." + std::wstring(filterExt.begin(), filterExt.end());  // 扩展名模式
-    std::vector<wchar_t> filterBuf;  // 双空终止的过滤器缓冲区
-    filterBuf.insert(filterBuf.end(), wFilterDesc.begin(), wFilterDesc.end());  // 写入描述
-    filterBuf.push_back(L'\0');  // 描述终止符
-    filterBuf.insert(filterBuf.end(), wFilterExt.begin(), wFilterExt.end());  // 写入模式
-    filterBuf.push_back(L'\0');  // 模式终止符
-    filterBuf.push_back(L'\0');  // 过滤器列表终止符
-
-    ofn.lStructSize = sizeof(ofn);           // 结构体大小
-    ofn.hwndOwner = nullptr; // 无父窗口（可后续从 SDL 获取）
-    ofn.lpstrFilter = filterBuf.data();      // 过滤器字符串
-    ofn.lpstrFile = filePath;                // 输出路径缓冲区
-    ofn.nMaxFile = MAX_PATH;                 // 缓冲区最大字符数
-    ofn.lpstrTitle = wTitle.c_str();         // 对话框标题
-    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;  // 文件必须存在、不改变 CWD
-
-    if (GetOpenFileNameW(&ofn)) {  // 弹出对话框，用户确认选择
-        // 宽字符串转 UTF-8
-        std::string result;  // UTF-8 结果路径
-        int len = WideCharToMultiByte(CP_UTF8, 0, filePath, -1, nullptr, 0, nullptr, nullptr);  // 计算所需字节数
-        if (len > 0) {
-            result.resize(static_cast<size_t>(len - 1)); // 去除末尾 \0
-            WideCharToMultiByte(CP_UTF8, 0, filePath, -1, result.data(), len, nullptr, nullptr);  // 执行转换
-        }
-        MM_LOG_INFO("FileDialog", "Selected file: %s", result.c_str());  // 记录选中路径
-        return result;  // 返回 UTF-8 路径
-    }
-
-    // 用户取消或对话框失败
-    DWORD err = CommDlgExtendedError();  // 获取扩展错误码
-    if (err != 0) {
-        MM_LOG_WARN("FileDialog", "GetOpenFileName failed with error: %lu", err);  // 记录失败原因
-    }
-    return "";  // 取消或失败返回空串
-#else
-    // TODO: Linux/macOS — 需集成 tinyfiledialogs 或 zenity
-    MM_LOG_WARN("FileDialog", "File dialog not implemented for this platform");  // 非 Windows 未实现
-    return "";  // 返回空串
-#endif
+    auto files = openFiles(title, filterDesc, filterExt);
+    return files.empty() ? std::string() : files.front();
 }
 
 std::vector<std::string> FileDialog::openFiles(const std::string& title,

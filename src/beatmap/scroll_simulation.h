@@ -44,11 +44,6 @@ inline int32_t hit50WindowMs(float od) {
     return static_cast<int32_t>(std::max(0.0, 200.0 - 10.0 * static_cast<double>(od)));
 }
 
-/// 兼容旧名
-inline int32_t goodWindowMs(float od) {
-    return hit50WindowMs(od);
-}
-
 /// 该 note 占用判定/列的截止时刻（变阵与滚动开滚前必须等过此点）
 /// Tap：time + hit50；Hold：holdEnd（与运行时按住到 holdEnd 自动 300 对齐）
 inline int64_t noteBlocksUntilMs(int64_t timeMs, bool isHold, int64_t holdEndMs, float od) {
@@ -79,11 +74,6 @@ inline int64_t scrollTriggerMs(int64_t targetNoteTimeMs, int64_t lastTransitionE
     return std::max(lastTransitionEndMs, targetNoteTimeMs - approachMs(ar));
 }
 
-/// Hold 尾部最晚判定（谱面窗口语义，仍为 holdEnd+hit50；开滚阻塞请用 noteBlocksUntilMs）
-inline int64_t holdReleaseLatestHitMs(int64_t holdEndMs, float od) {
-    return holdEndMs + hit50WindowMs(od);
-}
-
 // ── 前向 note 阻塞 scrollStart（Tap + Hold）──
 
 /// 在 [windowStart, windowEnd] 内、早于目标 note 的 Tap/Hold
@@ -106,32 +96,6 @@ inline int64_t scrollStartMsFromWindowNotes(int32_t windowStart, int32_t windowE
         }
     }
     return startMs;
-}
-
-/// 兼容旧名
-inline int64_t scrollStartMsFromWindowHolds(int32_t windowStart, int32_t windowEnd,
-                                            int64_t targetNoteTimeMs, int64_t scrollTriggerMs,
-                                            float od,
-                                            const std::vector<Note>& notes) {
-    return scrollStartMsFromWindowNotes(windowStart, windowEnd, targetNoteTimeMs,
-                                        scrollTriggerMs, od, notes);
-}
-
-// ── 滚动可达性判定 ──
-
-/// 滚动能否在 earliestHit 前完成
-inline bool scrollCanReachNote(int64_t targetNoteTimeMs, int64_t earliestHitMs,
-                               int64_t lastTransitionEndMs, float ar, float od,
-                               int32_t windowStart, int32_t windowEnd,
-                               const std::vector<Note>& notes) {
-    const int64_t triggerMs = scrollTriggerMs(targetNoteTimeMs, lastTransitionEndMs, ar);
-    const int64_t startMs = scrollStartMsFromWindowNotes(
-        windowStart, windowEnd, targetNoteTimeMs, triggerMs, od, notes);
-    if (startMs > earliestHitMs) {
-        return false;
-    }
-    const int64_t endMs = startMs + scrollDurationMs(targetNoteTimeMs, startMs, od);
-    return endMs <= earliestHitMs;
 }
 
 // ── 候选窗口起止 ──

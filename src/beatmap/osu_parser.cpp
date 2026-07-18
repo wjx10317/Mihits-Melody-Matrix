@@ -447,33 +447,30 @@ bool OsuParser::isDenseRhythmAround(const std::vector<ConvertedNote>& notes, siz
 int64_t OsuParser::scrollStartMsForNote(const std::vector<ConvertedNote>& notes, size_t noteIndex,
                                         const MatrixShape& holdShape, int holdWindowStart,
                                         int64_t lastTransitionEnd) const {
-    // 滚动最早开始 = max(approach 触发, 变阵结束, 窗内前向 Tap/Hold 的 noteBlocksUntil)
+    // 与 Playing / resimulate 共用 scrollStartMsFromWindowNotes（本 pass 列按 holdShape）
     const int holdWindowEnd = holdWindowStart + kActiveCols - 1;
     const int64_t targetTime = notes[noteIndex].time;
     const int64_t triggerMs = scrollTriggerMs(targetTime, lastTransitionEnd, m_ar);
 
-    int64_t readyMs = triggerMs;
+    std::vector<Note> windowNotes;
+    windowNotes.reserve(noteIndex);
     for (size_t j = 0; j < noteIndex; ++j) {
-        if (notes[j].dropped) {
+        if (notes[j].dropped || notes[j].time >= targetTime) {
             continue;
         }
-        if (notes[j].time >= targetTime) {
-            continue;
+        Note n;
+        n.time = notes[j].time;
+        n.col = noteColForShape(notes[j], holdShape.cols);
+        if (notes[j].type == 'H') {
+            n.type = NoteType::Hold;
+            n.holdEnd = notes[j].endTime;
+        } else {
+            n.type = NoteType::Tap;
         }
-
-        const int col = noteColForShape(notes[j], holdShape.cols);
-        if (col < holdWindowStart || col > holdWindowEnd) {
-            continue;
-        }
-
-        const int64_t blockUntil = noteBlocksUntilMs(
-            notes[j].time, notes[j].type == 'H', notes[j].endTime, m_od);
-        if (blockUntil > triggerMs) {
-            readyMs = std::max(readyMs, blockUntil);
-        }
+        windowNotes.push_back(n);
     }
-
-    return readyMs;
+    return scrollStartMsFromWindowNotes(holdWindowStart, holdWindowEnd, targetTime,
+                                        triggerMs, m_od, windowNotes);
 }
 
 // ══════════════════════════════════════════════════════
@@ -875,7 +872,7 @@ bool OsuParser::isScrollEdgeCol(int col, int winStart, int winEnd,
     return col >= winStart && col <= winEnd && !isStableArrangeCol(col, stableStart, stableEnd);
 }
 
-int OsuParser::arrangeColDanger(int col, int winStart, int winEnd, int /*totalCols*/,
+int OsuParser::arrangeColDanger(int col, int winStart, int winEnd,
                                 int stableStart, int stableEnd) {
     if (col < winStart || col > winEnd) {
         return 99;
@@ -1112,7 +1109,7 @@ void OsuParser::arrangeRemainingNotes(std::vector<ConvertedNote>& notes,
                 int32_t bestCol = activeCol;
                 int bestClose = closeCountInCol(entries, b, entry.time, activeCol);
                 int bestLoad = streamLoadOnCol(entries, b, chainOrig, activeCol);
-                int bestDanger = arrangeColDanger(activeCol, winStart, winEnd, shape.cols,
+                int bestDanger = arrangeColDanger(activeCol, winStart, winEnd,
                                                   stableStart, stableEnd);
                 int bestDist = std::abs(activeCol - chainOrig);
 
@@ -1131,7 +1128,7 @@ void OsuParser::arrangeRemainingNotes(std::vector<ConvertedNote>& notes,
                     }
                     const int close = closeCountInCol(entries, b, entry.time, static_cast<int32_t>(c));
                     const int load = streamLoadOnCol(entries, b, chainOrig, static_cast<int32_t>(c));
-                    int danger = arrangeColDanger(c, winStart, winEnd, shape.cols,
+                    int danger = arrangeColDanger(c, winStart, winEnd,
                                                   stableStart, stableEnd);
                     if (shape.cols > kActiveCols &&
                         moveAffectsScroll(c, winStart, winEnd, stableStart, stableEnd,
@@ -1179,7 +1176,7 @@ void OsuParser::arrangeRemainingNotes(std::vector<ConvertedNote>& notes,
                                           nextWinStart, nextScrollStartMs, entry.latestHit)) {
                         continue;
                     }
-                    const int danger = arrangeColDanger(c, winStart, winEnd, shape.cols,
+                    const int danger = arrangeColDanger(c, winStart, winEnd,
                                                         stableStart, stableEnd);
                     if (!found || danger < bestDanger) {
                         found = true;
@@ -1456,12 +1453,12 @@ void OsuParser::resimulateScrollAfterArrange(std::vector<ConvertedNote>& notes,
 
         int bestCol = activeStart;
         int bestClose = closeOnCol(activeStart);
-        int bestDanger = arrangeColDanger(activeStart, activeStart, winEnd, current.cols,
+        int bestDanger = arrangeColDanger(activeStart, activeStart, winEnd,
                                           stableStart, stableEnd);
         int bestDist = std::abs(activeStart - col);
         for (int c = activeStart; c <= winEnd; ++c) {
             const int close = closeOnCol(c);
-            const int danger = arrangeColDanger(c, activeStart, winEnd, current.cols,
+            const int danger = arrangeColDanger(c, activeStart, winEnd,
                                                 stableStart, stableEnd);
             const int dist = std::abs(c - col);
             if (close < bestClose ||
@@ -1523,7 +1520,7 @@ void OsuParser::resimulateScrollAfterArrange(std::vector<ConvertedNote>& notes,
 
         int bestCol = curCol;
         int bestClose = curClose;
-        int bestDanger = arrangeColDanger(curCol, winStart, winEnd, shape.cols,
+        int bestDanger = arrangeColDanger(curCol, winStart, winEnd,
                                           stableStart, stableEnd);
         for (int c = winStart; c <= winEnd; ++c) {
             // 避开未结束的前向 Hold 占列
@@ -1541,7 +1538,7 @@ void OsuParser::resimulateScrollAfterArrange(std::vector<ConvertedNote>& notes,
                 continue;
             }
             const int close = closeOnCol(c);
-            const int danger = arrangeColDanger(c, winStart, winEnd, shape.cols,
+            const int danger = arrangeColDanger(c, winStart, winEnd,
                                                 stableStart, stableEnd);
             if (close < bestClose || (close == bestClose && danger < bestDanger)) {
                 bestClose = close;
@@ -1689,28 +1686,8 @@ util::Result<void> OsuParser::parse(const std::string& content, BeatmapBuilder& 
     arrangeRemainingNotes(convertedNotes, formations);
     resimulateScrollAfterArrange(convertedNotes, formations);
 
-    // ── 将 ConvertedNote 转换为 Note（跳过 dropped）──
-    for (const auto& cn : convertedNotes) {
-        if (cn.dropped) continue;
-        MatrixShape shape = shapeAtTime(formations, cn.time);
-        int32_t row = 0;
-        int32_t col = 0;
-        if (cn.gridRow >= 0 && cn.gridCol >= 0) {
-            row = cn.gridRow;
-            col = cn.gridCol;
-        } else {
-            pixelToGrid(cn.x, cn.y, shape.rows, shape.cols, row, col);
-        }
-        Note note;
-        note.time = cn.time;
-        note.row = row;
-        note.col = col;
-        if (cn.type == 'H') {
-            note.type = NoteType::Hold;
-            note.holdEnd = cn.endTime;
-        } else {
-            note.type = NoteType::Tap;
-        }
+    // ── 将 ConvertedNote 转为 Note（与 Playing 同列语义：buildRuntimeNotes）──
+    for (const auto& note : buildRuntimeNotes(convertedNotes, formations)) {
         builder.addNote(note);
     }
 

@@ -45,8 +45,6 @@ private:
     static constexpr int kHighDensityCols = 6;                  ///< 高密度目标列数
     static constexpr double kDefaultBlockSize = 1.0; ///< 非初始 formation 默认格内 item 缩放
     /// 编排节奏：换列间距 = 1/4 拍（基拍）；换行在列定稿后按同列时间重叠处理。
-    static constexpr int kArrangeCellConflictWeight = 10000; ///< 同格冲突（保留）
-    static constexpr int kArrangeHoldColConflictWeight = 5000; ///< Hold 占列冲突（保留）
 
     // ── 内部数据结构 ──
 
@@ -193,7 +191,7 @@ private:
                                 int stableStart, int stableEnd);
 
     /// 编排选列危险度：0=安全（含靠里软边缘），2=靠外硬边缘。
-    static int arrangeColDanger(int col, int winStart, int winEnd, int totalCols,
+    static int arrangeColDanger(int col, int winStart, int winEnd,
                                 int stableStart, int stableEnd);
 
     /// 边缘列 + 无关滚动在 latestHit 前发生且滚后出窗 → 滚动冲突，回退稳定列。

@@ -20,10 +20,10 @@
 #include "beatmap/beatmap_parser.h"
 #include "beatmap/beatmap_builder.h"
 #include "beatmap/mma_serializer.h"
-#include "beatmap/note.h"
 
 #include "imgui.h"
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
@@ -114,7 +114,6 @@ void MainMenuState::onEnter() {
     m_pendingResolutionW = 0;
     m_pendingResolutionH = 0;
     m_hasPendingFullscreen = false;
-    m_importInProgress = false;
     m_importMessage.clear();
     m_importMessageTimer = 0.0f;
 
@@ -140,11 +139,19 @@ void MainMenuState::onEnter() {
             std::filesystem::path beatmapDir("assets/beatmaps");
             if (std::filesystem::exists(beatmapDir)) {
                 for (const auto& entry : std::filesystem::recursive_directory_iterator(beatmapDir)) {
-                    if (entry.is_regular_file() && entry.path().extension() == ".mma") {
-                        std::string hash = beatmap::MmaSerializer::readSourceHash(entry.path().string());
-                        if (!hash.empty()) {
-                            m_importedHashes.insert(hash);
-                        }
+                    if (!entry.is_regular_file()) {
+                        continue;
+                    }
+                    std::string ext = entry.path().extension().string();
+                    for (auto& c : ext) {
+                        c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+                    }
+                    if (ext != ".mma") {
+                        continue;
+                    }
+                    std::string hash = beatmap::MmaSerializer::readSourceHash(entry.path().string());
+                    if (!hash.empty()) {
+                        m_importedHashes.insert(hash);
                     }
                 }
             }
@@ -201,14 +208,6 @@ GameState MainMenuState::update(float dt) {
 //  导入功能
 // ──────────────────────────────────────────────────────
 
-/// 导入单个 .osz（委托批量入口）
-void MainMenuState::importOszFile(const std::string& oszPath) {
-    if (oszPath.empty()) {
-        return;
-    }
-    importOszFiles({oszPath});
-}
-
 /// 批量导入多个 .osz，汇总 UI 消息
 void MainMenuState::importOszFiles(const std::vector<std::string>& oszPaths) {
     using namespace util;
@@ -216,7 +215,7 @@ void MainMenuState::importOszFiles(const std::vector<std::string>& oszPaths) {
         return;
     }
 
-    // 确保铺面根目录存在（删光时若误删 assets/beatmaps，create 会失败表现为「导入失败」）
+    // 确保铺面根目录存在
     try {
         std::filesystem::create_directories("assets/beatmaps");
     } catch (const std::exception& e) {
@@ -587,12 +586,17 @@ util::Result<void> MainMenuState::importSingleOsu(const std::string& osuPath, co
         }
     }
 
-    // ── 注册哈希到内存集合（与 onEnter 扫描的 .mma 内 hash 共同构成去重集）──
-    m_importedHashes.insert(fileHash);
-
+    // ── 注册：先入选歌列表成功再记哈希，避免解析失败后无法重导 ──
     const std::string mmaPath = std::filesystem::absolute(targetPath).string();
-    if (auto* songSelect = Kernel::instance().stateManager().getStateAs<SongSelectState>(GameState::SongSelect)) {
-        songSelect->registerImportedMma(mmaPath);
+    if (auto* songSelect =
+            Kernel::instance().stateManager().getStateAs<SongSelectState>(GameState::SongSelect)) {
+        if (!songSelect->registerImportedMma(mmaPath)) {
+            return Result<void>(static_cast<int32_t>(ErrorCode::ERROR_BEATMAP_PARSE),
+                                "Imported file written but failed to register: " + mmaPath);
+        }
+        m_importedHashes.insert(fileHash);
+    } else {
+        m_importedHashes.insert(fileHash);
     }
 
     // 背景图复制完成后异步预热 TextureCache（registerImportedMma 也会 requestLoad imagePath）

@@ -46,8 +46,6 @@ private:
     void loadBackgroundTexture();
 
     // ── 导入功能（osz → 临时解压 → 逐 osu → mma + 资源复制）──
-    /// 导入单个 .osz（内部走批量入口）
-    void importOszFile(const std::string& oszPath);
     /// 批量导入多个 .osz，汇总成功/跳过/失败消息
     void importOszFiles(const std::vector<std::string>& oszPaths);
     /// 校验扩展名、解压 zip、遍历内部 .osu 调用 importSingleOsu；不写 UI 文案
@@ -77,7 +75,6 @@ private:
 
     // ── 导入状态 ──
     std::unordered_set<std::string> m_importedHashes; ///< 已导入 .osu 的 SHA256 哈希集合
-    bool m_importInProgress = false;                   ///< 是否正在导入
     std::string m_importMessage;                       ///< 导入结果消息（成功/失败）
     float m_importMessageTimer = 0.0f;                 ///< 消息显示倒计时
     bool m_importSuccess = false;                       ///< 上次导入是否成功

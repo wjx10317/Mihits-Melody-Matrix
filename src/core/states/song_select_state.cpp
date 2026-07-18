@@ -73,7 +73,7 @@ void SongSelectState::onEnter() {
     m_modPopupOpen = false;
     m_bgImageGroup = -1;
 
-    if (!m_scanDone) {                                         // 首次进入或 markNeedsRescan
+    if (!m_scanDone) {                                         // 首次进入或需重扫
         scanBeatmaps();                                        // 扫描并按组 requestLoad 背景图
     }
 
@@ -402,11 +402,11 @@ void SongSelectState::mergeBeatmapEntry(BeatmapEntry entry) {
     m_groups.insert(insertIt, std::move(group));
 }
 
-void SongSelectState::registerImportedMma(const std::string& mmaPath) {
+bool SongSelectState::registerImportedMma(const std::string& mmaPath) {
     auto entry = parseBeatmapEntry(mmaPath);
     if (!entry) {
         MM_LOG_WARN("SongSelect", "registerImportedMma: failed to parse %s", mmaPath.c_str());
-        return;
+        return false;
     }
 
     const std::string imagePath = entry->imagePath;
@@ -419,6 +419,7 @@ void SongSelectState::registerImportedMma(const std::string& mmaPath) {
 
     MM_LOG_INFO("SongSelect", "Registered imported beatmap: %s (%zu groups)",
                 mmaPath.c_str(), m_groups.size());
+    return true;
 }
 
 /// 扫描铺面目录，解析 .mma/.osu 并构建分组列表（含导入的 osu 谱面，可后台线程调用）

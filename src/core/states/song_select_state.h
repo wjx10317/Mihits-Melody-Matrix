@@ -45,11 +45,9 @@ public:
     /// 当弹窗打开时，ESC 应由本状态消费（关闭弹窗），而非返回上级状态
     bool shouldConsumeEscape() const { return m_modPopupOpen; }
 
-    /// 标记需要全量重新扫描（外部改动了 beatmaps 目录等少数场景）
-    void markNeedsRescan() { m_scanDone = false; }
-
     /// Import 写入 .mma 后增量合并到列表，并 requestLoad 背景图（无需 scanBeatmaps）
-    void registerImportedMma(const std::string& mmaPath);
+    /// @return 解析并合并成功为 true
+    bool registerImportedMma(const std::string& mmaPath);
 
     /// 扫描铺面（背景图在 scanBeatmaps 内按组 requestLoad）
     void scanAndPreload();
