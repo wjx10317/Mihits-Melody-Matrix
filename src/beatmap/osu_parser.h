@@ -3,11 +3,9 @@
 // ──────────────────────────────────────────────────────
 //  osu_parser.h — osu! .osu 谱面适配解析器（Mode=0）
 //
-//  流水线：解析 TimingPoints/HitObjects → makeConvertedNotes
-//  → generateFormationsAndFilter（动态阵型+滚动）
-//  → arrangeRemainingNotes（行列编排）→ BeatmapBuilder。
-//
-//  对齐参考转换器 to_do/osz_to_mma.cpp。
+//  流水线：parse → makeConvertedNotes → generateFormationsAndFilter
+//       → arrangeRemainingNotes → resimulateScrollAfterArrange → Builder
+//  列权威：编排后 gridCol；滚动重模拟与 PlayingState 共用 scroll_simulation。
 // ──────────────────────────────────────────────────────
 
 #include "beatmap/beatmap_parser.h"
@@ -46,13 +44,9 @@ private:
     static constexpr int kMinStableTargetNotes = 3;             ///< 稳定目标最少 note 数
     static constexpr int kHighDensityCols = 6;                  ///< 高密度目标列数
     static constexpr double kDefaultBlockSize = 1.0; ///< 非初始 formation 默认格内 item 缩放
-    /// 编排节奏细分：窗宽 = msPerBeat / subdivDenominator(bpm)。
-    /// ≥140 BPM → 1/3 拍；100–140 → 1/4 拍；<100 → 1/6 拍。
-    static constexpr double kArrangeSubdivBpmMid  = 100.0;
-    static constexpr double kArrangeSubdivBpmHigh = 140.0;
-    static constexpr int kArrangeColDensityThreshold = 2; ///< 同列节奏窗内 note 数（含当前）
-    static constexpr int kArrangeCellConflictWeight = 10000; ///< 同格冲突
-    static constexpr int kArrangeHoldColConflictWeight = 5000; ///< Hold 占列冲突
+    /// 编排节奏：换列间距 = 1/4 拍（基拍）；换行在列定稿后按同列时间重叠处理。
+    static constexpr int kArrangeCellConflictWeight = 10000; ///< 同格冲突（保留）
+    static constexpr int kArrangeHoldColConflictWeight = 5000; ///< Hold 占列冲突（保留）
 
     // ── 内部数据结构 ──
 
@@ -90,9 +84,9 @@ private:
         NoteWindow window;
         NoteWindow releaseWindow;  ///< Hold 释放时间窗口
         bool dropped = false;
-        int scrollWindowStart = 0; ///< 滚动模拟结束时的 activeStart（仅编排用，不参与滚动判定）
+        int scrollWindowStart = 0; ///< 滚动窗起点（编排后由 resimulate 按最终列回写）
         int32_t gridRow = -1;      ///< 编排后行（>=0 有效）
-        int32_t gridCol = -1;      ///< 编排后列（>=0 有效）
+        int32_t gridCol = -1;      ///< 编排后列（>=0 有效；滚动/运行时列权威）
     };
 
     struct MatrixShape {
@@ -112,9 +106,8 @@ private:
     // ── TimingPoint 辅助 ──
     const TimingPoint* getBaseTimingPoint(int64_t time) const;
     double getMsPerBeatAt(int64_t time) const;
-    /// 编排用同列节奏窗（ms）= msPerBeat / arrangeRhythmSubdivDenominator(bpm)。
-    double arrangeRhythmSubdivDenominator(double bpm) const;
-    int64_t arrangeRhythmWindowMs(int64_t timeMs) const;
+    /// 编排用 1/4 拍时长（ms，基拍 BPM，不含 SV）：同列间距 ≤ 此值则换列。
+    int64_t arrangeQuarterBeatMs(int64_t timeMs) const;
     double getSliderVelocityAt(int64_t time) const;  ///< 获取继承型 SV 倍率
 
     // ── 转换方法（对齐参考转换器）──
@@ -141,6 +134,11 @@ private:
     static int nextKeptIndex(const std::vector<ConvertedNote>& notes, size_t after);
     static int64_t blockingLatestHit(const ConvertedNote& note);
     static int mappedColForShape(int x, int cols);
+    /// 列权威：已编排用 gridCol，否则 osu x→col（与 runtime Note.col 闭环）。
+    static int noteColForShape(const ConvertedNote& note, int cols);
+    /// 从 ConvertedNote 生成与 PlayingState 相同列语义的 Note 列表（跳过 dropped）。
+    static std::vector<Note> buildRuntimeNotes(const std::vector<ConvertedNote>& notes,
+                                               const std::vector<Formation>& formations);
     static bool downgradeHoldToTapIfSafe(ConvertedNote& note, int64_t cutoffMs);
     static int blockingConflictIndexBefore(const std::vector<ConvertedNote>& notes,
                                            size_t before, int64_t cutoffMs);
@@ -177,9 +175,14 @@ private:
     /// 生成 formations 并过滤冲突 note（对齐参考转换器 generateFormationsAndFilter）
     std::vector<Formation> generateFormationsAndFilter(std::vector<ConvertedNote>& notes);
 
-    /// 滚动/变阵丢弃完成后编排剩余 note 的行列（不改 dropped / formations / 滚动模拟）
+    /// 滚动/变阵丢弃完成后编排剩余 note 的行列（不改 dropped / formations）。
     void arrangeRemainingNotes(std::vector<ConvertedNote>& notes,
                                  const std::vector<Formation>& formations) const;
+
+    /// 编排后按最终 gridCol 重模拟滚动（与 PlayingState 同公式），回写 scrollWindowStart；
+    /// 不可达则丢前向阻塞或把目标夹入当前窗，保证与运行时闭环。
+    void resimulateScrollAfterArrange(std::vector<ConvertedNote>& notes,
+                                      const std::vector<Formation>& formations) const;
 
     /// 滚动窗口内稳定列（滚后仍留在窗内）：0-3→1-3，1-4→2-3，2-5→2-4
     static void stableArrangeColRange(int totalCols, int winStart, int winEnd,
@@ -187,6 +190,10 @@ private:
 
     static bool isStableArrangeCol(int col, int stableStart, int stableEnd);
     static bool isScrollEdgeCol(int col, int winStart, int winEnd,
+                                int stableStart, int stableEnd);
+
+    /// 编排选列危险度：0=安全（含靠里软边缘），2=靠外硬边缘。
+    static int arrangeColDanger(int col, int winStart, int winEnd, int totalCols,
                                 int stableStart, int stableEnd);
 
     /// 边缘列 + 无关滚动在 latestHit 前发生且滚后出窗 → 滚动冲突，回退稳定列。

@@ -44,6 +44,7 @@ public:
 
     void preload(const std::vector<std::string>& paths);
     void preloadRange(const std::vector<std::string>& paths, int start, int end);
+    /// 仅卸载 paths 中落在 [center±radius] 之外的纹理；不影响 cache 内其它条目（如 note 皮肤）。
     void unloadDistant(const std::vector<std::string>& paths, int centerIndex, int radius);
 
     /// 已在缓存且 valid

@@ -12,6 +12,7 @@
 
 #include <string>
 #include <unordered_set>
+#include <vector>
 
 namespace melody_matrix::core {
 
@@ -45,10 +46,15 @@ private:
     void loadBackgroundTexture();
 
     // ── 导入功能（osz → 临时解压 → 逐 osu → mma + 资源复制）──
-    /// 导入 .osz 入口：设置 UI 消息与计时器
+    /// 导入单个 .osz（内部走批量入口）
     void importOszFile(const std::string& oszPath);
-    /// 校验扩展名、解压 zip、遍历内部 .osu 调用 importSingleOsu
-    util::Result<void> validateAndImportOsz(const std::string& oszPath);
+    /// 批量导入多个 .osz，汇总成功/跳过/失败消息
+    void importOszFiles(const std::vector<std::string>& oszPaths);
+    /// 校验扩展名、解压 zip、遍历内部 .osu 调用 importSingleOsu；不写 UI 文案
+    /// outImported/outSkipped 可选，写入本包新导入/已存在跳过数量
+    util::Result<void> validateAndImportOsz(const std::string& oszPath,
+                                            int* outImported = nullptr,
+                                            int* outSkipped = nullptr);
     /// 单 .osu 解析校验、SHA256 去重、写 .mma、复制音频与 background.*
     util::Result<void> importSingleOsu(const std::string& osuPath, const std::string& extractRoot);
 

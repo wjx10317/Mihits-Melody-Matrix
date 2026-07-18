@@ -134,16 +134,16 @@ void MainMenuState::onEnter() {
         }
     }
 
-    // 构建已导入哈希集合：扫描 assets/beatmaps/ 下所有 .mma 内嵌的 sourceHash（与 import 去重联动）
+    // 构建已导入哈希集合：仅在空表时从磁盘扫描一次（与 import 去重联动；不在删谱后全量重扫）
     if (m_importedHashes.empty()) {
         try {
             std::filesystem::path beatmapDir("assets/beatmaps");
             if (std::filesystem::exists(beatmapDir)) {
                 for (const auto& entry : std::filesystem::recursive_directory_iterator(beatmapDir)) {
-                    if (entry.is_regular_file() && entry.path().extension() == ".mma") {  // 仅 .mma
+                    if (entry.is_regular_file() && entry.path().extension() == ".mma") {
                         std::string hash = beatmap::MmaSerializer::readSourceHash(entry.path().string());
                         if (!hash.empty()) {
-                            m_importedHashes.insert(hash);   // 加入去重集合
+                            m_importedHashes.insert(hash);
                         }
                     }
                 }
@@ -201,28 +201,96 @@ GameState MainMenuState::update(float dt) {
 //  导入功能
 // ──────────────────────────────────────────────────────
 
-/// 导入 .osz 文件并设置成功/失败消息（UI 层入口，由 IMPORT 按钮触发）
+/// 导入单个 .osz（委托批量入口）
 void MainMenuState::importOszFile(const std::string& oszPath) {
-    auto result = validateAndImportOsz(oszPath);              // 执行完整校验→解压→逐 .osu 导入流程
-    if (result.ok()) {                                       // 至少成功导入一个难度
-        m_importSuccess = true;                              // 标记成功，UI 用青色显示
-        m_importMessageTimer = 3.0f;                         // 成功消息显示 3 秒后淡出
-        // result 不携带数据，消息由 validateAndImportOsz 内部设置
-    } else {                                                 // 导入失败或全部跳过
-        // ALREADY_IMPORTED 是静默跳过（用户重复导入同一谱面集时不弹错误）
-        if (result.error().code == static_cast<int32_t>(util::ErrorCode::ERROR_BEATMAP_ALREADY_IMPORTED)) {
-            m_importMessage.clear();                         // 不显示任何提示
-            return;                                          // 直接返回，保持界面干净
+    if (oszPath.empty()) {
+        return;
+    }
+    importOszFiles({oszPath});
+}
+
+/// 批量导入多个 .osz，汇总 UI 消息
+void MainMenuState::importOszFiles(const std::vector<std::string>& oszPaths) {
+    using namespace util;
+    if (oszPaths.empty()) {
+        return;
+    }
+
+    // 确保铺面根目录存在（删光时若误删 assets/beatmaps，create 会失败表现为「导入失败」）
+    try {
+        std::filesystem::create_directories("assets/beatmaps");
+    } catch (const std::exception& e) {
+        m_importSuccess = false;
+        m_importMessageTimer = 5.0f;
+        m_importMessage = std::string("Import failed: cannot create beatmaps dir: ") + e.what();
+        return;
+    }
+
+    int totalImported = 0;
+    int totalSkipped = 0;
+    int failedArchives = 0;
+    std::string lastError;
+
+    for (const auto& oszPath : oszPaths) {
+        int imported = 0;
+        int skipped = 0;
+        auto result = validateAndImportOsz(oszPath, &imported, &skipped);
+        totalImported += imported;
+        totalSkipped += skipped;
+        if (!result.ok()) {
+            if (result.error().code ==
+                static_cast<int32_t>(ErrorCode::ERROR_BEATMAP_ALREADY_IMPORTED)) {
+                continue;
+            }
+            ++failedArchives;
+            lastError = result.error().message;
+            MM_LOG_WARN("Import", "Archive failed: %s (%s)",
+                        oszPath.c_str(), lastError.c_str());
         }
-        m_importSuccess = false;                             // 标记失败，UI 用粉色显示
-        m_importMessage = "Import failed: " + result.error().message;  // 拼接具体错误原因
-        m_importMessageTimer = 5.0f;                         // 失败消息显示 5 秒（比成功更长便于阅读）
+    }
+
+    if (totalImported > 0) {
+        m_importSuccess = true;
+        m_importMessageTimer = 3.0f;
+        m_importMessage = "Imported " + std::to_string(totalImported) + " beatmap(s)";
+        if (oszPaths.size() > 1) {
+            m_importMessage += " from " + std::to_string(oszPaths.size()) + " archive(s)";
+        }
+        if (totalSkipped > 0) {
+            m_importMessage += " (" + std::to_string(totalSkipped) + " already exists)";
+        }
+        if (failedArchives > 0) {
+            m_importMessage += " [" + std::to_string(failedArchives) + " archive(s) failed]";
+        }
+        return;
+    }
+
+    if (totalSkipped > 0 && failedArchives == 0) {
+        m_importMessage.clear();
+        return;
+    }
+
+    m_importSuccess = false;
+    m_importMessageTimer = 5.0f;
+    if (failedArchives > 0) {
+        m_importMessage = "Import failed: " +
+            (lastError.empty() ? (std::to_string(failedArchives) + " archive(s) failed")
+                               : lastError);
+    } else {
+        m_importMessage = "Import failed: no beatmaps imported";
     }
 }
 
 /// 校验 .osz 扩展名、解压到临时目录并逐个导入 .osu（osu! 谱面集 → 本地 .mma）
-util::Result<void> MainMenuState::validateAndImportOsz(const std::string& oszPath) {
+util::Result<void> MainMenuState::validateAndImportOsz(const std::string& oszPath,
+                                                       int* outImported, int* outSkipped) {
     using namespace util;
+    if (outImported) {
+        *outImported = 0;
+    }
+    if (outSkipped) {
+        *outSkipped = 0;
+    }
 
     // ── V1: 文件扩展名必须为 .osz（osu! 谱面集 zip 包）──
     std::string ext;
@@ -276,7 +344,6 @@ util::Result<void> MainMenuState::validateAndImportOsz(const std::string& oszPat
     // ── 逐个处理 .osu 文件（每个 .osu → 一个 .mma 难度）──
     int importedCount = 0;                                   // 本次新导入数量
     int skippedCount = 0;                                  // SHA256 重复跳过数量
-    std::string firstTitle;                                  // 预留：首个成功标题（当前未用）
     std::string lastError;                                   // 记录最后一个失败原因
 
     for (const auto& osuPath : osuFiles) {                   // 遍历每个 .osu 路径
@@ -294,22 +361,21 @@ util::Result<void> MainMenuState::validateAndImportOsz(const std::string& oszPat
         }
     }
 
-    // ── 汇总结果消息 ──
-    if (importedCount > 0) {
-        m_importMessage = "Imported " + std::to_string(importedCount) + " beatmap(s)";
-        if (skippedCount > 0) {
-            m_importMessage += " (" + std::to_string(skippedCount) + " already exists)";
-        }
-    } else if (skippedCount > 0) {
-        // 全部已导入 = 静默跳过（与 importOszFile 配合不弹窗）
-        return Result<void>(static_cast<int32_t>(ErrorCode::ERROR_BEATMAP_ALREADY_IMPORTED), "");
-    } else {                                                 // importedCount==0 且无跳过 → 全部解析失败
-        // 全部失败
-        return Result<void>(static_cast<int32_t>(ErrorCode::ERROR_BEATMAP_PARSE),
-                            lastError.empty() ? "All .osu files failed to import" : lastError);
+    if (outImported) {
+        *outImported = importedCount;
+    }
+    if (outSkipped) {
+        *outSkipped = skippedCount;
     }
 
-    return success();                                        // 至少一个成功则整体成功
+    if (importedCount > 0) {
+        return success();
+    }
+    if (skippedCount > 0) {
+        return Result<void>(static_cast<int32_t>(ErrorCode::ERROR_BEATMAP_ALREADY_IMPORTED), "");
+    }
+    return Result<void>(static_cast<int32_t>(ErrorCode::ERROR_BEATMAP_PARSE),
+                        lastError.empty() ? "All .osu files failed to import" : lastError);
 }
 
 /// 解析单个 .osu、构建 Beatmap、序列化为 .mma 并写入 assets/beatmaps/（单难度导入核心）
@@ -684,14 +750,14 @@ void MainMenuState::renderImGuiPanel() {
             ImVec4(Theme::CYAN_R, Theme::CYAN_G, Theme::CYAN_B, 1.0f));
         ImGui::SetWindowFontScale(1.0f);
         if (ImGui::Button("IMPORT", ImVec2(importBtnWidth, importBtnHeight))) {
-            // 打开系统文件对话框，筛选 .osz 谱面集
-            std::string oszPath = platform::FileDialog::openFile(
-                "Select osu! Beatmap Set",                   // 对话框标题
-                "osu! Beatmap Archives",                     // 文件类型描述
-                "osz"                                        // 扩展名过滤
+            // 多选 .osz 谱面集（Ctrl/Shift 批量）
+            auto oszPaths = platform::FileDialog::openFiles(
+                "Select osu! Beatmap Set(s)",
+                "osu! Beatmap Archives",
+                "osz"
             );
-            if (!oszPath.empty()) {                          // 用户未取消选择
-                importOszFile(oszPath);                      // 进入 osz→osu→mma 导入链
+            if (!oszPaths.empty()) {
+                importOszFiles(oszPaths);
             }
         }
         ImGui::PopStyleColor(4);

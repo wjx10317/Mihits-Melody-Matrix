@@ -155,12 +155,23 @@ std::string MmaSerializer::readSourceHash(const std::string& filePath) {
     while (std::getline(ifs, line) && lineCount < 10) {
         ++lineCount;
         // 去除 UTF-8 BOM
-        if (!line.empty() && line[0] == '\xEF' && line.size() >= 3) {
+        if (line.size() >= 3 && static_cast<unsigned char>(line[0]) == 0xEF &&
+            static_cast<unsigned char>(line[1]) == 0xBB &&
+            static_cast<unsigned char>(line[2]) == 0xBF) {
             line = line.substr(3);
         }
         // 匹配 # source_hash=xxxx
         if (line.rfind("# source_hash=", 0) == 0) {
-            return line.substr(15); // 15 = strlen("# source_hash=")
+            std::string hash = line.substr(14);  // strlen("# source_hash=") == 14
+            // Windows getline 可能残留 \r；去空白避免与 sha256 字符串对不上 → erase 失败
+            while (!hash.empty() && (hash.back() == '\r' || hash.back() == '\n' ||
+                                     hash.back() == ' ' || hash.back() == '\t')) {
+                hash.pop_back();
+            }
+            while (!hash.empty() && (hash.front() == ' ' || hash.front() == '\t')) {
+                hash.erase(hash.begin());
+            }
+            return hash;
         }
     }
     return "";  // 未找到 source_hash

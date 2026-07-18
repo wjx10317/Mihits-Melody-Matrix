@@ -5,6 +5,7 @@
 //
 //  用途：osu 转换期（OsuParser）与运行时（PlayingState）共用同一套
 //  滚动时序/可达性公式，避免 gameplay 层与 beatmap 层循环依赖。
+//  闭环：arrange 后 Parser 用最终 gridCol 重模拟；PlayingState 用同一 note.col。
 //
 //  核心概念：
 //    - 活跃列窗：宽度 kScrollActiveCols（4），在 totalCols 上滑动

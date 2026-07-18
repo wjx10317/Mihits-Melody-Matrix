@@ -100,7 +100,8 @@ std::vector<std::string> FileDialog::openFiles(const std::string& title,
     ofn.lpstrFile = fileBuf.data();      // 多选结果缓冲区
     ofn.nMaxFile = static_cast<DWORD>(fileBuf.size());  // 缓冲区大小
     ofn.lpstrTitle = wTitle.c_str();     // 对话框标题
-    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR | OFN_ALLOWMULTISELECT;  // 允许多选
+    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR |
+                OFN_ALLOWMULTISELECT | OFN_EXPLORER;  // Explorer 风格多选
 
     std::vector<std::string> results;  // UTF-8 路径结果列表
 

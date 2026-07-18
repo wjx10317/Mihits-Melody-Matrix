@@ -273,22 +273,35 @@ void TextureCache::preloadRange(const std::vector<std::string>& paths, int start
 }
 
 void TextureCache::unloadDistant(const std::vector<std::string>& paths, int centerIndex, int radius) {
-    std::unordered_set<std::string> keepPaths;
+    // 只卸载 paths 中远离 center 的条目；绝不能清掉 cache 里其它纹理
+    // （note 皮肤也走 TextureCache，误删会导致 NoteRenderer 悬空指针 → 纯黑）。
+    if (paths.empty()) {
+        return;
+    }
+
     const int lo = std::max(0, centerIndex - radius);
     const int hi = std::min(static_cast<int>(paths.size()) - 1, centerIndex + radius);
+
+    std::unordered_set<std::string> keepKeys;
+    keepKeys.reserve(static_cast<size_t>(std::max(0, hi - lo + 1)));
     for (int i = lo; i <= hi; ++i) {
-        keepPaths.insert(normalizeKey(paths[static_cast<size_t>(i)]));
+        keepKeys.insert(normalizeKey(paths[static_cast<size_t>(i)]));
+    }
+
+    std::unordered_set<std::string> revokeKeys;
+    for (int i = 0; i < static_cast<int>(paths.size()); ++i) {
+        if (i >= lo && i <= hi) {
+            continue;
+        }
+        const std::string key = normalizeKey(paths[static_cast<size_t>(i)]);
+        if (key.empty() || keepKeys.count(key) != 0) {
+            continue;
+        }
+        revokeKeys.insert(key);
     }
 
     std::lock_guard lock(m_mutex);
-    std::vector<std::string> toRevoke;
-    toRevoke.reserve(m_cache.size());
-    for (const auto& entry : m_cache) {
-        if (keepPaths.count(entry.first) == 0) {
-            toRevoke.push_back(entry.first);
-        }
-    }
-    for (const auto& key : toRevoke) {
+    for (const auto& key : revokeKeys) {
         revokePath(key);
     }
 }
