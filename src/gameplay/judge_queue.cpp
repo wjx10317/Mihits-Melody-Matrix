@@ -53,7 +53,7 @@ void JudgeQueue::setStrategy(std::unique_ptr<IJudgeStrategy> strategy) {
     m_strategy = strategy ? std::move(strategy) : std::make_unique<StableJudgeStrategy>();
 }
 
-/// Hold 尾部时序判定：与 Tap 共用 300/100/50 窗口
+/// 提前松手相对 holdEnd 的时序窗（与 Tap 相同 Stable 公式）
 HoldReleaseResult JudgeQueue::judgeHoldTailTiming(int64_t dt, float od) const {
     const int32_t w300 = m_strategy->hit300Window(od);
     const int32_t w100 = m_strategy->hit100Window(od);
@@ -65,15 +65,13 @@ HoldReleaseResult JudgeQueue::judgeHoldTailTiming(int64_t dt, float od) const {
     return HoldReleaseResult::Miss;
 }
 
-/// 提交 Hold 尾部判定：计算结果、推进队列、触发 onHoldTail
-HoldReleaseResult JudgeQueue::commitHoldTail(int32_t column, int64_t releaseTimeMs, float od) {
+/// 提交 Hold 尾部判定：固定结果、推进队列、触发 onHoldTail
+HoldReleaseResult JudgeQueue::commitHoldTail(int32_t column, HoldReleaseResult result,
+                                             int64_t releaseTimeMs) {
     auto& hold = m_activeHolds[column];
     if (!hold.holding) {
         return HoldReleaseResult::Ignored;
     }
-
-    const int64_t dt = releaseTimeMs - hold.holdEndTimeMs;
-    const HoldReleaseResult result = judgeHoldTailTiming(dt, od);
 
     HoldTailEvent evt;
     evt.col = hold.col;
@@ -94,14 +92,14 @@ HoldReleaseResult JudgeQueue::commitHoldTail(int32_t column, int64_t releaseTime
     return result;
 }
 
-/// 每帧更新：Hold 尾部超时自动 Miss；Tap 过期自动 Miss
+/// 每帧更新：按住到 holdEnd 自动 300；Tap 过期自动 Miss
 void JudgeQueue::update(int64_t nowMs, float od) {
     const int64_t miss = m_strategy->missThreshold(od);
 
     for (int32_t c = 0; c < m_columnCount; ++c) {
         auto& hold = m_activeHolds[c];
-        if (hold.holding && nowMs > hold.holdEndTimeMs + miss) {
-            commitHoldTail(c, nowMs, od);
+        if (hold.holding && nowMs >= hold.holdEndTimeMs) {
+            commitHoldTail(c, HoldReleaseResult::Hit300, hold.holdEndTimeMs);
         }
     }
 
@@ -190,12 +188,20 @@ JudgmentResult JudgeQueue::onKeyPress(int64_t pressTimeMs, int32_t column, float
     return JudgmentResult::Ignored;
 }
 
-/// 列上按键释放：提交 Hold 尾部判定
+/// 列上按键释放：提前松手走 300/100/50/Miss；已到 holdEnd 则 300
 HoldReleaseResult JudgeQueue::onKeyRelease(int64_t releaseTimeMs, int32_t column, float od) {
     if (column < 0 || column >= m_columnCount) {
         return HoldReleaseResult::Ignored;
     }
-    return commitHoldTail(column, releaseTimeMs, od);
+    auto& hold = m_activeHolds[column];
+    if (!hold.holding) {
+        return HoldReleaseResult::Ignored;
+    }
+    if (releaseTimeMs >= hold.holdEndTimeMs) {
+        return commitHoldTail(column, HoldReleaseResult::Hit300, releaseTimeMs);
+    }
+    const int64_t dt = releaseTimeMs - hold.holdEndTimeMs;  // 负值：提前
+    return commitHoldTail(column, judgeHoldTailTiming(dt, od), releaseTimeMs);
 }
 
 const beatmap::Note* JudgeQueue::getActiveHold(int32_t column) const {

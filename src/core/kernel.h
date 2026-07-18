@@ -16,16 +16,17 @@
 
 #include "core/clock.h"              // 音频驱动歌曲时钟
 #include "core/state_manager.h"      // 游戏状态机管理
+#include "input/gameplay_input.h"    // Raw / SDL 游玩按键适配器
 #include "renderer/renderer.h"       // OpenGL 谱面/背景渲染
 #include "ui/ui_manager.h"           // ImGui UI 层
 #include "util/event_manager.h"      // 应用内事件总线
 
+#include <cstdint>
 #include <memory>   // 智能指针等（头文件预留）
 #include <string>   // init() 窗口标题参数
 #include <vector>   // supportedResolutions() 返回列表
 
 struct SDL_Window;                              // SDL 窗口前向声明，避免头文件拉入 SDL.h
-typedef struct SDL_KeyboardEvent SDL_KeyboardEvent;  // 键盘事件前向声明
 typedef void* SDL_GLContext;                   // OpenGL 上下文句柄类型
 
 namespace melody_matrix::core {
@@ -153,11 +154,12 @@ private:
     void syncPlayingClock();
 
     /**
-     * @brief 将按键事件分派给 PlayingState（带事件 timestamp 歌曲时间）
-     * @param keyEvent SDL 键盘事件
+     * @brief 将适配器产出的按键分派给 PlayingState（HostClock → 歌曲时间）
+     * @param sdlKey SDL 键码（与 PlayingState::KEY_CODES 一致）
      * @param pressed true 按下，false 释放
+     * @param hostMs 适配器取样的 HostClock 毫秒
      */
-    void dispatchGameplayKeyEvent(const SDL_KeyboardEvent& keyEvent, bool pressed);
+    void dispatchGameplayKey(int32_t sdlKey, bool pressed, int64_t hostMs);
 
     /**
      * @brief 根据分辨率应用无边框/有边框窗口模式
@@ -170,6 +172,7 @@ private:
     util::EventManager m_eventManager;  ///< 应用内事件分发
     renderer::Renderer m_renderer;      ///< OpenGL 渲染器
     ui::UIManager m_uiManager;          ///< ImGui 管理器
+    std::unique_ptr<input::IGameplayInput> m_gameplayInput;  ///< Raw 或 SDL，互斥
 
     // ── 窗口 ──
     SDL_Window* m_window = nullptr;       ///< SDL 主窗口

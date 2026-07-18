@@ -6,6 +6,7 @@
 #pragma once
 
 #include "core/game_state_base.h"
+#include <cstdint>
 #include <string>
 
 namespace melody_matrix::core {
@@ -34,6 +35,12 @@ public:
     int totalNotes = 0;      ///< 音符总数
     bool playerDied = false; ///< 是否因 HP 归零失败
     std::string songTitle;   ///< 歌曲标题
+
+    /// 本局击打偏移（press−note，早负晚正）中位数与偏移建议
+    int hitOffsetSampleCount = 0;
+    int64_t hitOffsetMedianMs = 0;
+    int64_t currentTimingOffsetMs = 0;
+    int64_t recommendedTimingOffsetMs = 0;
 
 private:
     /// 绘制 ImGui 结算面板（分数 / 准确度 / 判定 / 评级 / 按钮）

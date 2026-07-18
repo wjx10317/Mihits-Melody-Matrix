@@ -15,9 +15,8 @@
 #include "kernel.h"                         // Kernel 类及子系统成员
 #include "game_state.h"                     // GameState 枚举，用于状态判断
 #include "core/states/playing_state.h"      // PlayingState：游玩按键与音频时钟同步
-#include "platform/config.h"                // config.ini 读写：分辨率、全屏、visual lead
+#include "platform/config.h"                // config.ini 读写：分辨率、全屏等
 #include "core/states/song_select_state.h"  // SongSelectState：ESC 是否被弹窗消费
-#include "time/host_clock.h"                // HostClock：与 Clock 同域的按键时刻
 #include "util/logger.h"                    // MM_LOG_INFO / WARN / FATAL 日志宏
 #include "util/exceptions.h"                // 异常类型（日志/错误处理预留）
 #include "renderer/texture_cache.h"         // 主线程 GL 纹理上传队列
@@ -77,22 +76,15 @@ static void buildResolutionList() {
 // ══════════════════════════════════════════════════════
 
 /**
- * @brief 将键盘事件分派给 PlayingState（HostClock 换算歌曲时间）
- * @param keyEvent SDL 键盘事件（仅用 keysym；不用 event.timestamp）
- * @param pressed 按下或释放
+ * @brief 将适配器产出的按键分派给 PlayingState（HostClock → 歌曲时间）
  */
-void Kernel::dispatchGameplayKeyEvent(const SDL_KeyboardEvent& keyEvent, bool pressed) {
-    // 非 Playing 状态不处理游玩按键
+void Kernel::dispatchGameplayKey(int32_t sdlKey, bool pressed, int64_t hostMs) {
     if (m_stateManager.currentState() != GameState::Playing) return;
     auto* playing = m_stateManager.getStateAs<PlayingState>(GameState::Playing);
     if (!playing) return;
 
-    // 在 poll 阶段立即判定。歌曲时间只用 HostClock（与 Clock 同域）。
-    // 已删除 SDL timestamp / expandSdlEventTimestamp 路径。
-    // 后续：改为按键瞬间 Host 戳（Raw Input）。
-    const int64_t hostMs = time::HostClock::nowMs();
     const int64_t eventSongTimeMs = m_clock.songTimeAtHostMs(hostMs);
-    playing->handleKeyEvent(static_cast<int32_t>(keyEvent.keysym.sym), pressed, eventSongTimeMs);
+    playing->handleKeyEvent(sdlKey, pressed, eventSongTimeMs);
 }
 
 /**
@@ -291,7 +283,8 @@ bool Kernel::init(const std::string& title, int /*width*/, int /*height*/) {
         return false;
     }
 
-    SDL_GL_SetSwapInterval(1);  // 开启 VSync，SwapWindow 与显示器刷新同步
+    // SDL_GL_SetSwapInterval(1);  // 开启 VSync，SwapWindow 与显示器刷新同步
+    SDL_GL_SetSwapInterval(0);  // 临时关闭垂直同步（排查输入/判定延迟）
 
     glEnable(GL_BLEND);                              // 启用 alpha 混合（谱面/UI）
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
@@ -308,6 +301,9 @@ bool Kernel::init(const std::string& title, int /*width*/, int /*height*/) {
         applyWindowMode();  // 窗口模式：应用无边框/有边框策略
     }
 
+    // 游玩判定输入：优先 Raw，失败回退 SDL（与 playhead 回退模型一致）
+    m_gameplayInput = input::createGameplayInput(m_window);
+
     m_initialized = true;
     return true;
 }
@@ -319,7 +315,7 @@ bool Kernel::init(const std::string& title, int /*width*/, int /*height*/) {
 /**
  * @brief 固定步长更新 + 可变步长渲染主循环
  *
- * 每帧：同步时钟 → 累积 fixed update（每步先 poll 输入再 update）→ 清屏 → 带 visual lead 渲染谱面
+ * 每帧：同步时钟 → 累积 fixed update（每步先 poll 输入再 update）→ 清屏 → 按歌曲时间渲染谱面
  * → ImGui → SwapBuffers。
  */
 void Kernel::run() {
@@ -400,14 +396,9 @@ void Kernel::run() {
 
         renderer::TextureCache::instance().processPendingUploads(8);
 
-        // 视觉超前：补偿 VSync/扫描延迟，使 note 中心与判定时刻对齐
-        const int64_t songNowMs = m_clock.interpolatedNowMs();  // 当前插值歌曲时间
-        const int64_t configLeadMs = platform::Config::getInt(
-            platform::Config::KEY_VISUAL_LEAD, 16);  // 用户可配置的 visual lead
-        const int64_t frameLeadMs = static_cast<int64_t>(frameTime * 500.0 + 0.5);  // 半帧时间补偿
-        const int64_t visualTimeMs = songNowMs + configLeadMs + frameLeadMs;  // 渲染用超前时间
-
-        m_renderer.renderFrame(visualTimeMs);  // OpenGL 谱面/背景渲染
+        // 渲染时刻与歌曲钟一致（不再叠加 visual lead / 半帧提前量）
+        const int64_t songNowMs = m_clock.interpolatedNowMs();
+        m_renderer.renderFrame(songNowMs);
 
         m_uiManager.setRenderFrameTimeMs(static_cast<float>(frameTime * 1000.0));
 
@@ -443,6 +434,11 @@ void Kernel::shutdown() {
     renderer::TextureCache::instance().shutdown();
     m_stateManager = StateManager();  // 重置状态机（触发各状态析构）
     m_eventManager.clear();   // 清空事件订阅
+
+    if (m_gameplayInput) {
+        m_gameplayInput->shutdown();
+        m_gameplayInput.reset();
+    }
 
     if (m_glContext) {
         SDL_GL_DeleteContext(m_glContext);  // 销毁 GL 上下文
@@ -519,60 +515,63 @@ void Kernel::setFullscreen(bool fullscreen) {
 // ══════════════════════════════════════════════════════
 
 /**
- * @brief 轮询 SDL 事件：ImGui 输入、退出、ESC 状态切换、游玩按键
+ * @brief 轮询 SDL 事件：ImGui、退出、ESC；游玩判定交给唯一 active 适配器
  */
 void Kernel::pumpInputEvents() {
-    SDL_Event event;  // 单次 poll 取出的 SDL 事件
-    while (SDL_PollEvent(&event)) {  // 排空本帧事件队列
-        m_uiManager.processEvent(&event);  // 先交给 ImGui 处理输入
+    const input::GameplayKeySink sink = [this](int32_t sdlKey, bool pressed, int64_t hostMs) {
+        dispatchGameplayKey(sdlKey, pressed, hostMs);
+    };
+
+    // Raw：冲刷 WndProc 同步入队的按键；SDL 适配器 poll 为空操作
+    if (m_gameplayInput) {
+        m_gameplayInput->poll(sink);
+    }
+
+    SDL_Event event;
+    while (SDL_PollEvent(&event)) {
+        m_uiManager.processEvent(&event);
+
+        if (m_gameplayInput) {
+            m_gameplayInput->onSdlEvent(event, sink);
+        }
 
         switch (event.type) {
         case SDL_QUIT:
-            m_running = false;  // 用户点击关闭或 Alt+F4
+            m_running = false;
             break;
         case SDL_KEYDOWN:
-            // 忽略按键 repeat，仅处理首次按下
-            if (!event.key.repeat) {
-                dispatchGameplayKeyEvent(event.key, true);  // 游玩判定用按下事件
-            }
-            // ESC 全局状态切换
             if (event.key.keysym.sym == SDLK_ESCAPE) {
-                auto current = m_stateManager.currentState();  // 当前活动状态
+                auto current = m_stateManager.currentState();
                 if (current == GameState::MainMenu) {
-                    m_running = false;  // 主菜单 ESC → 退出程序
+                    m_running = false;
                 } else if (current == GameState::Playing) {
-                    m_stateManager.transitionTo(GameState::Paused);  // 游玩 → 暂停
+                    m_stateManager.transitionTo(GameState::Paused);
                 } else if (current == GameState::Paused) {
-                    m_stateManager.transitionTo(GameState::Playing);  // 暂停 → 恢复游玩
+                    m_stateManager.transitionTo(GameState::Playing);
                 } else if (current == GameState::SongSelect) {
                     auto* ss = m_stateManager.getStateAs<SongSelectState>(GameState::SongSelect);
-                    // 选曲界面若弹窗消费 ESC 则不返回主菜单
                     if (ss && ss->shouldConsumeEscape()) {
                         // SongSelect 消费 ESC（关闭弹窗），不切换状态
                     } else {
-                        m_stateManager.transitionTo(GameState::MainMenu);  // 返回主菜单
+                        m_stateManager.transitionTo(GameState::MainMenu);
                     }
                 }
             }
             break;
-        case SDL_KEYUP:
-            dispatchGameplayKeyEvent(event.key, false);  // 游玩判定用释放事件
-            break;
         case SDL_WINDOWEVENT:
             if (event.window.event == SDL_WINDOWEVENT_CLOSE) {
-                m_running = false;  // 窗口关闭按钮
+                m_running = false;
             } else if (event.window.event == SDL_WINDOWEVENT_RESIZED
                        || event.window.event == SDL_WINDOWEVENT_SIZE_CHANGED) {
-                // 非全屏时跟踪用户拖拽 resize 后的客户端尺寸
                 if (!m_fullscreen) {
-                    m_windowWidth = event.window.data1;   // 新客户端宽
-                    m_windowHeight = event.window.data2;  // 新客户端高
+                    m_windowWidth = event.window.data1;
+                    m_windowHeight = event.window.data2;
                 }
-                m_uiManager.syncUiScale(false);  // 窗口尺寸变化时按需重载 UI 缩放
+                m_uiManager.syncUiScale(false);
             }
             break;
         default:
-            break;  // 其他事件类型忽略
+            break;
         }
     }
 }

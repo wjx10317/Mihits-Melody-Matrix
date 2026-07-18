@@ -19,13 +19,13 @@
 | 歌曲钟 | `core::Clock` 仍为权威歌曲时间；外推改用 HostClock，与按键同时间域 |
 | 耦合 | 本轮只动文档 + `src/time/*` + `clock.*` + `kernel` 按键一处；不改 PlayingState / AudioEngine / 判定 |
 
-### 1.2 非目标（本轮明确不做）
+### 1.2 非目标（输入里程碑仍不做）
 
-- WASAPI `IAudioClock` / `IAudioClock2` 读听感位置
 - 应用内自动校准到 ±2～3ms
-- Raw Input 替换 SDL 按键时间戳
+- C3 亚毫秒内部时间域（见 §6.1）
+- `WH_KEYBOARD_LL` / 手柄判定路径
 - 改判定窗口、miniaudio 播放/混音路径
-- 把 QPC / WASAPI 泄漏进 `JudgeQueue`、UI、谱面解析
+- 把 QPC / WASAPI / Raw 泄漏进 `JudgeQueue`、UI、谱面解析
 
 ---
 
@@ -33,12 +33,14 @@
 
 ```
 Kernel::pumpInputEvents()
-  └─ dispatchGameplayKeyEvent()
-       ├─ HostClock::nowMs()                    ← 主机钟（处理时刻；日后改按键瞬间）
-       └─ Clock::songTimeAtHostMs(hostMs)
-            = anchorAudioMs + (hostMs - anchorHostMs) + userOffset
-            └─ PlayingState::handleKeyEvent → JudgeQueue
-                 └─ dt = pressTimeMs - note.time
+  └─ active IGameplayInput（二选一，初始化时选定）
+       ├─ RawInputAdapter（Win，优先）← WM_INPUT 收包瞬间 HostClock
+       └─ 回退 SdlPollInputAdapter ← SDL_PollEvent 处理瞬间 HostClock
+            └─ dispatchGameplayKey(key, pressed, hostMs)
+                 └─ Clock::songTimeAtHostMs(hostMs)
+                      = anchorAudioMs + (hostMs - anchorHostMs) + userOffset
+                      └─ PlayingState::handleKeyEvent → JudgeQueue
+                           └─ dt = pressTimeMs - note.time
 
 PlayingState::syncClockFromAudio() / Kernel::syncPlayingClock()
   └─ IAudioPlayhead::positionMs()
@@ -55,7 +57,7 @@ PlayingState::update() / 渲染
 **要点**
 
 - 歌曲时间经 **AudioPlayhead** 同步；C1 实现仍是 write cursor，不是喇叭真实发声位置。
-- 按键与插值共用 HostClock 域；按键为本轮处理时刻，日后改按键瞬间。
+- 按键与插值共用 HostClock 域；判定输入为 Raw / SDL 两适配器，Raw 初始化失败回退 SDL（互斥，非双开去重）。
 - miniaudio 继续负责解码、混音、播放；C2 用 WASAPI 设备钟替换 Playhead 实现。
 
 ---
@@ -66,7 +68,7 @@ PlayingState::update() / 渲染
 |----|------|------|----------------|
 | A. 主机时间域 | SDL 毫秒戳与高精度钟混用会算错 dt | 平台 API 泄漏进业务 | **方案 B 纠错**：Clock 与按键统一 HostClock |
 | B. write cursor ≠ 听感 | 判定偏早/偏晚数～数十 ms | cursor 是缓冲位置，非 DAC | C1 已收口到 Playhead；听感真理 → **C2 WASAPI** |
-| C. 输入戳精度 | 处理时刻 ≠ 按键瞬间 | SDL poll + 毫秒戳 | 否 → 后续 Raw Input + Host 戳 |
+| C. 输入戳精度 | 处理时刻 ≠ 按键瞬间 | SDL poll + Host 戳 | 输入里程碑：Raw 适配器 + 失败回退 SDL |
 | D. cursor 台阶 | anchor δ 可达 ~10ms | 整数 ms + 稀疏刷新 | 降级为可选优化，非主路径 |
 
 ---
@@ -135,8 +137,17 @@ WASAPI 只补「设备时钟」；二者不是二选一。
 | **C1 Playhead** | `MiniaudioCursorPlayhead` + Playing 经 Playhead 同步 | **已落地** |
 | **C2 WASAPI** | `WasapiPlayhead`（IAudioClock2/QPC 外推）+ cursor 回退 + 逐帧 song-ph 窗口统计 | **已落地** |
 | **C3 亚毫秒** | 内部帧/ns 时间域；日志/UI 再转 ms（消除整数 ms 网格残差） | **计划封存（近期不实施）** |
-| **输入** | Raw Input + 按键瞬间 Host 戳 | 未开始 |
+| **输入** | Raw / SDL 双适配器；优先 Raw（按键瞬间 Host），init 失败回退 SDL | **已落地** |
 | **校准** | 短窗估计固定延迟 → 自动 offset | 未开始 |
+
+#### 输入适配器约定
+
+- `IGameplayInput`：`RawInputAdapter` 与 `SdlPollInputAdapter` 可替换；进程内 Playing 判定只挂接一个。
+- 初始化：`try Raw.init` → 失败则 `SdlPoll`；非 Win 直接 SDL。日志 `backend=raw|sdl`。
+- Raw：在 HWND 子类化回调里**同步** `GetRawInputData`（不可经 `SDL_SYSWMEVENT` 延后），入队后由 `poll()` 交付；失败回退 SDL。
+- 选定 Raw 时：SDL KEY 仍可供 ImGui/菜单，但不进判定；禁止双路径判定后再去重。
+- UI/ESC 状态机仍走 SDL 事件泵。
+- 自测：`verify_gameplay_input`（回退 / Raw 优选 / SendInput / 连发抑制）。
 
 旧「方案一 PCM frame anchor / 方案二软对齐」→ **附录 A**；可作为 Playhead 精度优化的可选项，**不再作为主路径**。
 
@@ -206,6 +217,7 @@ WASAPI 只补「设备时钟」；二者不是二选一。
 | 2026-07-17 | **主路径改为 HostClock + AudioPlayhead**；本轮先文档，再方案 B；WASAPI/校准后续 |
 | 2026-07-18 | C2：WASAPI + QPC 外推落地；`song-ph` 逐帧窗口统计验证整数 ms 残差 |
 | 2026-07-18 | **C3 亚毫秒计划封存**：近期不实施；见 §6.1 |
+| 2026-07-18 | **输入**：Raw 与 SDL_PollEvent 为两适配器；Raw init 失败回退 SDL（同 playhead 回退模型） |
 
 ---
 

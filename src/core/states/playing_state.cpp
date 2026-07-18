@@ -127,6 +127,9 @@ void PlayingState::resetGameplay() {
     m_lastTransitionEndMs = 0;
 
     m_autoplay = false;                                      // mod 在 initGameplay 中按 m_modIds 重设
+    m_osuMod = false;
+    m_osuHeldColumn[0] = m_osuHeldColumn[1] = -1;
+    m_hitOffsetSamples.clear();
     m_timingOffsetMs = 0;                                    // initGameplay 会从 Config 重读
     m_offsetBarEnabled = false;
     m_offsetBarMarks.clear();
@@ -246,11 +249,16 @@ void PlayingState::initGameplay() {
     // ── 应用模组（由 SongSelect 传入 mod id 列表）──
     bool noFailEnabled = false;
     m_autoplay = false;
+    m_osuMod = false;
+    m_osuHeldColumn[0] = m_osuHeldColumn[1] = -1;
+    m_hitOffsetSamples.clear();
     for (const auto& id : m_modIds) {                        // 遍历启用的 mod
         if (id == "nofail") {
             noFailEnabled = true;
         } else if (id == "autoplay") {
             m_autoplay = true;                               // 自动按键，锁定玩家输入
+        } else if (id == "osu" || id == "zx") {              // zx 为旧 id 兼容
+            m_osuMod = true;
         }
     }
     if (noFailEnabled) {
@@ -261,6 +269,9 @@ void PlayingState::initGameplay() {
     }
     if (m_autoplay) {
         MM_LOG_INFO("Playing", "Autoplay mod enabled");
+    }
+    if (m_osuMod) {
+        MM_LOG_INFO("Playing", "osu mod enabled (Z/X hit any active column)");
     }
 
     // ── 读取偏移条 / 调试 HUD 配置 ──
@@ -643,7 +654,7 @@ GameState PlayingState::update(float dt) {
     // ── 状态过渡：进入结算 ──
     if (m_songFinished || m_playerDied) {
         auto* result = kernel.stateManager().getStateAs<ResultState>(GameState::Result);
-        if (result) {                                        // 写入结算数据
+        if (result) {
             result->score = static_cast<int>(m_scoreManager.totalScore());
             result->maxCombo = m_comboManager.max();
             result->hit300Count = m_hit300Count;
@@ -653,8 +664,25 @@ GameState PlayingState::update(float dt) {
             result->totalNotes = m_totalNotes;
             result->playerDied = m_playerDied;
             result->songTitle = m_beatmap.meta.title;
+
+            // 击打偏移中位数 → 推荐 timing offset（当前 offset + 中位数）
+            result->hitOffsetSampleCount = static_cast<int>(m_hitOffsetSamples.size());
+            result->currentTimingOffsetMs = m_timingOffsetMs;
+            result->hitOffsetMedianMs = 0;
+            result->recommendedTimingOffsetMs = m_timingOffsetMs;
+            if (!m_hitOffsetSamples.empty()) {
+                std::vector<int64_t> sorted = m_hitOffsetSamples;
+                std::sort(sorted.begin(), sorted.end());
+                const size_t mid = sorted.size() / 2;
+                if (sorted.size() % 2 == 0) {
+                    result->hitOffsetMedianMs = (sorted[mid - 1] + sorted[mid]) / 2;
+                } else {
+                    result->hitOffsetMedianMs = sorted[mid];
+                }
+                result->recommendedTimingOffsetMs = m_timingOffsetMs + result->hitOffsetMedianMs;
+            }
         }
-        return GameState::Result;                            // 请求切换到 Result
+        return GameState::Result;
     }
 
     kernel.renderer().setGameplayRendering(m_matrixVisible); // 控制本帧是否画 note 矩阵
@@ -666,16 +694,17 @@ GameState PlayingState::update(float dt) {
 //  输入 / 按键映射
 // ══════════════════════════════════════════════════════════════════════════════
 
-/// 根据当前滚动窗口与总列数生成 D/F/J/K → 列映射
+/// 根据当前滚动窗口与总列数生成按键 → 列映射（默认 DFJK；osu mod 不按列绑键）
 std::vector<PlayingState::KeyColumnMapping> PlayingState::getKeyMapping() const {
     int32_t totalCols = m_formationCtrl.currentCols();
     if (totalCols <= 0) totalCols = 4;
 
     std::vector<KeyColumnMapping> mapping;
 
-    // 动态映射：用 KEY_COUNT 循环，不硬编码偏移
     int32_t startCol = (totalCols <= KEY_COUNT) ? 0 : m_scrollWindow.startCol;
     int32_t mapCount = std::min(static_cast<int32_t>(KEY_COUNT), totalCols);
+
+    // osu mod：映射仅供 Autoplay/列索引；玩家判定走全活跃列，不按 DFJK
     for (int32_t i = 0; i < mapCount; ++i) {
         mapping.push_back({KEY_CODES[i], startCol + i});
     }
@@ -683,14 +712,39 @@ std::vector<PlayingState::KeyColumnMapping> PlayingState::getKeyMapping() const 
     return mapping;
 }
 
-/// 根据列号查找对应按键索引
+/// 在候选列中选 |dt| 最小且已进入 50 窗的队首 note
+int32_t PlayingState::pickBestColumnForPress(const std::vector<int32_t>& columns,
+                                             int64_t judgeTimeMs, float od) const {
+    const int32_t w50 = static_cast<int32_t>(std::max(0.0f, 200.0f - 10.0f * od));
+    int32_t bestCol = -1;
+    int64_t bestAbs = INT64_MAX;
+
+    for (int32_t column : columns) {
+        if (column < 0 || column >= m_judgeQueue.columnCount()) continue;
+        if (m_judgeQueue.getActiveHold(column)) continue;
+
+        const auto& colQ = m_judgeQueue.columnQueue(column);
+        if (colQ.finished()) continue;
+
+        const int64_t noteTime = colQ.front().time;
+        const int64_t dt = judgeTimeMs - noteTime;
+        if (dt < -static_cast<int64_t>(w50)) continue;
+        if (dt > static_cast<int64_t>(w50)) continue;
+
+        const int64_t absDt = std::abs(dt);
+        if (absDt < bestAbs) {
+            bestAbs = absDt;
+            bestCol = column;
+        }
+    }
+    return bestCol;
+}
+
+/// 根据列号查找对应按键索引（用于 HUD / Autoplay 高亮）
 int PlayingState::keyIndexForColumn(int32_t column) const {
     auto mapping = getKeyMapping();
-    for (const auto& m : mapping) {
-        if (m.column != column) continue;
-        for (int k = 0; k < KEY_COUNT; ++k) {
-            if (m.sdlKey == KEY_CODES[k]) return k;
-        }
+    for (int k = 0; k < static_cast<int>(mapping.size()); ++k) {
+        if (mapping[k].column == column) return k;
     }
     return -1;
 }
@@ -730,11 +784,8 @@ void PlayingState::processAutoplay(int64_t nowMs, float od) {
         const int keyIdx = keyIndexForColumn(c);
 
         const auto* activeHold = m_judgeQueue.getActiveHold(c);
-        if (activeHold && nowMs >= activeHold->holdEnd) {
-            m_judgeQueue.onKeyRelease(activeHold->holdEnd, c, od);
-            continue;
-        }
         if (activeHold) {
+            // Hold 尾：按住到 holdEnd 由 JudgeQueue::update 自动 300，无需松手尾判
             if (keyIdx >= 0) m_autoKeyDown[keyIdx] = true;
             continue;
         }
@@ -814,8 +865,8 @@ void PlayingState::checkAndTriggerScroll(int64_t nowMs) {
         const float ar = m_beatmap.difficulty.ar;
         const int64_t scrollTrigger =
             beatmap::scrollTriggerMs(earliestNoteTime, m_lastTransitionEndMs, ar);  // 最早可触发时刻
-        const int64_t blockedStart = beatmap::scrollStartMsFromWindowHolds(
-            windowStart, windowEnd, earliestNoteTime, scrollTrigger, od, m_beatmap.notes);  // Hold 阻塞推迟
+        const int64_t blockedStart = beatmap::scrollStartMsFromWindowNotes(
+            windowStart, windowEnd, earliestNoteTime, scrollTrigger, od, m_beatmap.notes);  // 前向 Tap/Hold
         if (nowMs < blockedStart) {                          // 尚未到允许滚动时刻
             return;
         }
@@ -897,43 +948,96 @@ void PlayingState::completeScroll() {
 
 /// 处理单条键盘事件（SDL KEYDOWN/UP → 列映射 → JudgeQueue，由 Kernel 在同步时钟后调用）
 void PlayingState::handleKeyEvent(int32_t key, bool pressed, int64_t eventTimeMs) {
-    if (!m_gameplayInitialized || m_leadInActive) return;    // 未就绪或前导阶段忽略
-    if (m_autoplay) return;                                  // Autoplay 锁定玩家输入
+    if (!m_gameplayInitialized || m_leadInActive) return;
+    if (m_autoplay) return;
 
-    const int64_t judgeEventTimeMs = toJudgeSongTimeMs(eventTimeMs);  // 应用 timing offset
+    const int64_t judgeEventTimeMs = toJudgeSongTimeMs(eventTimeMs);
+    const float od = m_beatmap.difficulty.od;
 
-    // 更新按键显示状态（即使暂时不判定，避免 HUD 与物理按键脱节）
+    // ── osu mod：Z/X 均可打全部活跃列（顺序谱）；无列底按键特效 ──
+    if (m_osuMod) {
+        if (key != SDLK_z && key != SDLK_x) return;
+        const int osuSlot = (key == SDLK_z) ? 0 : 1;
+        // 侧边提示用：0=Z 1=X
+        if (osuSlot == 0) m_curKeyDown[0] = pressed;
+        else m_curKeyDown[1] = pressed;
+
+        if (isFormationJudgmentBlocked(eventTimeMs) || m_scrollWindow.scrolling) {
+            return;
+        }
+
+        std::vector<int32_t> columns;
+        for (int32_t c = m_scrollWindow.startCol; c <= m_scrollWindow.endCol; ++c) {
+            columns.push_back(c);
+        }
+        if (columns.empty()) return;
+
+        if (pressed) {
+            const int32_t column = pickBestColumnForPress(columns, judgeEventTimeMs, od);
+            if (column < 0) return;
+
+            int64_t noteTime = 0;
+            int32_t noteRow = 0;
+            bool isTapNote = true;
+            if (column < m_judgeQueue.columnCount()) {
+                const auto& colQ = m_judgeQueue.columnQueue(column);
+                if (!colQ.finished()) {
+                    noteTime = colQ.front().time;
+                    noteRow = colQ.front().row;
+                    isTapNote = !colQ.front().isHold();
+                }
+            }
+            auto result = m_judgeQueue.onKeyPress(judgeEventTimeMs, column, od);
+            if (result != gameplay::JudgmentResult::Ignored) {
+                m_osuHeldColumn[osuSlot] = column;
+            }
+            MM_LOG_DEBUG("Playing", "osu KeyDown: key=" + std::string(key == SDLK_z ? "Z" : "X") +
+                         " col=" + std::to_string(column) +
+                         " judgeTimeMs=" + std::to_string(judgeEventTimeMs) +
+                         " result=" + std::to_string(static_cast<int>(result)));
+            handlePressResult(result, column, noteRow, judgeEventTimeMs, noteTime, isTapNote);
+        } else {
+            const int32_t column = m_osuHeldColumn[osuSlot];
+            m_osuHeldColumn[osuSlot] = -1;
+            if (column >= 0) {
+                m_judgeQueue.onKeyRelease(judgeEventTimeMs, column, od);
+            }
+        }
+        return;
+    }
+
+    // ── 默认 DFJK：一键一列 ──
     int keyIndex = -1;
-    for (int k = 0; k < KEY_COUNT; ++k) {                    // 匹配 D/F/J/K
+    for (int k = 0; k < KEY_COUNT; ++k) {
         if (key == KEY_CODES[k]) {
             keyIndex = k;
-            m_curKeyDown[k] = pressed;                       // 供 ImGui 按键高亮
+            m_curKeyDown[k] = pressed;
             break;
         }
     }
-    if (keyIndex < 0) return;                                // 非游玩键忽略
+    if (keyIndex < 0) return;
 
-    auto mapping = getKeyMapping();                          // 当前滚动窗口下的列映射
-    int32_t column = -1;
     if (isFormationJudgmentBlocked(eventTimeMs) || m_scrollWindow.scrolling) {
-        return;                                              // 滚动/变阵锁判定时不送 JudgeQueue
+        return;
     }
+
+    auto mapping = getKeyMapping();
+    int32_t column = -1;
     for (const auto& m : mapping) {
         if (m.sdlKey == key) {
-            column = m.column;                               // SDL 键 → 谱面列
+            column = m.column;
             break;
         }
     }
-    if (column < 0) return;                                  // 映射失败
+    if (column < 0) return;
 
-    const float od = m_beatmap.difficulty.od;
-    if (pressed) {                                           // 按键按下 → Tap/Hold 头判定
+    if (pressed) {
         int64_t noteTime = 0;
         int32_t noteRow = 0;
         bool isTapNote = true;
         if (column >= 0 && column < m_judgeQueue.columnCount()) {
             const auto& colQ = m_judgeQueue.columnQueue(column);
-            if (!colQ.finished()) {                          // 取队首 note 信息（特效/偏移条用）
+            if (!colQ.finished()) {
                 noteTime = colQ.front().time;
                 noteRow = colQ.front().row;
                 isTapNote = !colQ.front().isHold();
@@ -945,7 +1049,7 @@ void PlayingState::handleKeyEvent(int32_t key, bool pressed, int64_t eventTimeMs
                      " judgeTimeMs=" + std::to_string(judgeEventTimeMs) +
                      " result=" + std::to_string(static_cast<int>(result)));
         handlePressResult(result, column, noteRow, judgeEventTimeMs, noteTime, isTapNote);
-    } else {                                                 // 按键释放 → Hold 尾判定
+    } else {
         m_judgeQueue.onKeyRelease(judgeEventTimeMs, column, od);
         MM_LOG_DEBUG("Playing", "KeyUp: col=" + std::to_string(column) +
                      " eventTimeMs=" + std::to_string(eventTimeMs) +
@@ -996,7 +1100,15 @@ void PlayingState::handlePressResult(gameplay::JudgmentResult result, int32_t co
     m_lastHitDebug.timing = pressTime - noteTime;
     m_lastHitDebug.result = result;
 
-    if (isTapNote &&                                          // Hold 头不播 cell 闪光（Hold 持续按住）
+    // 汇总本局击打偏移（不含 Miss / Ignored）
+    if (result == gameplay::JudgmentResult::Hit300 ||
+        result == gameplay::JudgmentResult::Hit100 ||
+        result == gameplay::JudgmentResult::Hit50) {
+        m_hitOffsetSamples.push_back(pressTime - noteTime);
+    }
+
+    // osu mod：不显示列上按键/击打特效
+    if (!m_osuMod && isTapNote &&
         (result == gameplay::JudgmentResult::Hit300 ||
          result == gameplay::JudgmentResult::Hit100 ||
          result == gameplay::JudgmentResult::Hit50)) {
@@ -1178,7 +1290,6 @@ void PlayingState::renderImGuiOverlay() {
     if (m_debugHudEnabled) {
         auto& kernel = Kernel::instance();
         const int64_t songNowMs = kernel.clock().interpolatedNowMs();
-        const int64_t visualLeadMs = platform::Config::getInt(platform::Config::KEY_VISUAL_LEAD, 16);
         const int64_t playheadMs = playheadPositionMs();
         const int64_t cursorMs = m_audio.positionMs();
         const int64_t cursorSm = smoothedCursorMs();
@@ -1215,8 +1326,8 @@ void PlayingState::renderImGuiOverlay() {
         ImGui::Text("SONG %lld ms | PLAYHEAD %lld (%s) | CURSOR %lld (sm %lld) | PH-CU %+lld",
                     songNowMs, playheadMs, playheadBackend, cursorMs, cursorSm,
                     playheadMs - cursorSm);
-        ImGui::Text("TIMING OFF %+lld ms | VIS LEAD %lld ms | SCROLL %s | FORM next %lld",
-                    m_timingOffsetMs, visualLeadMs,
+        ImGui::Text("TIMING OFF %+lld ms | SCROLL %s | FORM next %lld",
+                    m_timingOffsetMs,
                     m_scrollWindow.scrolling ? "YES" : "no",
                     nextFormationTime == INT64_MAX ? -1LL : nextFormationTime);
         ImGui::Text("LAST HIT %s | judge %lld | note %lld | timing %+lld ms",
@@ -1441,8 +1552,34 @@ void PlayingState::renderImGuiOverlay() {
         ImGui::End();
     }
 
+    // ── osu mod：侧边 Z/X 提示（无列底按键、无列高亮）──
+    if (m_osuMod) {
+        const float W = ImGui::GetIO().DisplaySize.x;
+        const float H = ImGui::GetIO().DisplaySize.y;
+        const float keyW = 56.0f * uiScale;
+        const float keyH = 56.0f * uiScale;
+        const float gap = 12.0f * uiScale;
+        const float sideX = 24.0f * uiScale;
+        const float startY = H * 0.5f - keyH - gap * 0.5f;
+        ImDrawList* dl = ImGui::GetForegroundDrawList();
+        const char* labels[2] = {"Z", "X"};
+        for (int i = 0; i < 2; ++i) {
+            const bool pressed = m_curKeyDown[i];
+            const float y = startY + i * (keyH + gap);
+            ImU32 bg = pressed ? IM_COL32(0, 255, 245, 200) : IM_COL32(20, 20, 40, 180);
+            ImU32 border = pressed ? IM_COL32(255, 255, 255, 255) : IM_COL32(50, 50, 70, 200);
+            ImU32 textCol = pressed ? IM_COL32(10, 20, 35, 255) : IM_COL32(140, 140, 170, 220);
+            dl->AddRectFilled(ImVec2(sideX, y), ImVec2(sideX + keyW, y + keyH), bg, 8.0f * uiScale);
+            dl->AddRect(ImVec2(sideX, y), ImVec2(sideX + keyW, y + keyH), border, 8.0f * uiScale, 0,
+                        pressed ? 3.0f * uiScale : 1.5f * uiScale);
+            ImVec2 ts = ImGui::CalcTextSize(labels[i]);
+            dl->AddText(ImVec2(sideX + (keyW - ts.x) * 0.5f, y + (keyH - ts.y) * 0.5f), textCol, labels[i]);
+        }
+        (void)W;
+    }
+
     // ── 按键列高亮：类似节奏医生的判定区反馈，按住时整列发亮 ──
-    {
+    if (!m_osuMod) {
         auto mapping = getKeyMapping();
         const float W = ImGui::GetIO().DisplaySize.x;
         const float H = ImGui::GetIO().DisplaySize.y;
@@ -1462,8 +1599,8 @@ void PlayingState::renderImGuiOverlay() {
         ImDrawList* dl = ImGui::GetForegroundDrawList();
         for (const auto& m : mapping) {
             bool pressed = false;
-            for (int k = 0; k < KEY_COUNT; ++k) {
-                if (m.sdlKey == KEY_CODES[k] && isKeyVisuallyDown(k)) {
+            for (int k = 0; k < static_cast<int>(mapping.size()); ++k) {
+                if (mapping[k].sdlKey == m.sdlKey && isKeyVisuallyDown(k)) {
                     pressed = true;
                     break;
                 }
@@ -1486,8 +1623,8 @@ void PlayingState::renderImGuiOverlay() {
         }
     }
 
-    // ── 按键提示：在对应列底部显示按键标签 ──
-    {
+    // ── 按键提示：在对应列底部显示按键标签（osu mod 改用侧边提示，跳过）──
+    if (!m_osuMod) {
         auto mapping = getKeyMapping();
 
         // 计算网格参数（与 Renderer 一致）
@@ -1522,8 +1659,8 @@ void PlayingState::renderImGuiOverlay() {
 
             // 检查该键是否按下
             bool pressed = false;
-            for (int k = 0; k < KEY_COUNT; ++k) {
-                if (m.sdlKey == KEY_CODES[k] && isKeyVisuallyDown(k)) {
+            for (int k = 0; k < static_cast<int>(mapping.size()); ++k) {
+                if (mapping[k].sdlKey == m.sdlKey && isKeyVisuallyDown(k)) {
                     pressed = true;
                     break;
                 }

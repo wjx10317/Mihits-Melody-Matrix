@@ -92,7 +92,6 @@ public:
     static constexpr const char* KEY_VOLUME_SFX    = "audio.sfx_volume";          // 音效音量
     static constexpr const char* KEY_OFFSET        = "gameplay.offset_ms";        // 全局偏移（毫秒）
     static constexpr const char* KEY_TIMING_OFFSET = "gameplay.timing_offset_ms"; // 判定偏移
-    static constexpr const char* KEY_VISUAL_LEAD   = "gameplay.visual_lead_ms";  // 视觉提前量
     static constexpr const char* KEY_DEBUG_HUD   = "gameplay.debug_hud";          // 调试 HUD 开关
     static constexpr const char* KEY_RESOLUTION_W  = "video.width";               // 窗口宽度
     static constexpr const char* KEY_RESOLUTION_H  = "video.height";              // 窗口高度

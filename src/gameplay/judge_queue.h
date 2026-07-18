@@ -31,13 +31,13 @@ struct NoteMissEvent {
     int32_t col;            ///< 音符列索引
 };
 
-/// Hold 尾部释放判定结果（与 Tap 共用 Stable 300/100/50 窗口）
+/// Hold 尾部释放判定结果
 enum class HoldReleaseResult : uint8_t {
     Ignored = 0,   ///< 该列没有活跃 Hold
-    Hit300  = 1,   ///< 尾部在 300 窗口内松手
-    Hit100  = 2,   ///< 尾部在 100 窗口内松手
-    Hit50   = 3,   ///< 尾部在 50 窗口内松手
-    Miss    = 4,   ///< 尾部超出 50 窗口或超时
+    Hit300  = 1,   ///< 按住至 holdEnd，或提前松手落在 300 窗
+    Hit100  = 2,   ///< 提前松手落在 100 窗
+    Hit50   = 3,   ///< 提前松手落在 50 窗
+    Miss    = 4,   ///< 提前松手超出 50 窗
 };
 
 /// Hold 尾部判定事件
@@ -117,8 +117,9 @@ public:
     std::function<void(const HoldTailEvent&)> onHoldTail;
 
 private:
-    HoldReleaseResult judgeHoldTailTiming(int64_t dt, float od) const;  ///< Hold 尾部窗口判定
-    HoldReleaseResult commitHoldTail(int32_t column, int64_t releaseTimeMs, float od);  ///< 提交尾部并推进
+    HoldReleaseResult judgeHoldTailTiming(int64_t dt, float od) const;  ///< 提前松手的 300/100/50 窗
+    HoldReleaseResult commitHoldTail(int32_t column, HoldReleaseResult result,
+                                     int64_t releaseTimeMs);  ///< 提交尾部并推进
     void commitHit(int32_t column, JudgmentResult result, int64_t pressTimeMs);  ///< Tap 击中提交
     void emitMiss(int32_t column);  ///< 过期 Miss 提交
 

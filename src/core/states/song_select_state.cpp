@@ -82,6 +82,7 @@ void SongSelectState::onEnter() {
     if (m_mods.empty()) {                                      // 初始化可选 mod
         m_mods.push_back({"NoFail", "nofail", false, true});
         m_mods.push_back({"Autoplay", "autoplay", false, true});
+        m_mods.push_back({"osu mod", "osu", false, true});  // Z/X 全列判定（osu 转换谱测试）
     }
 
     if (!m_groups.empty() && m_selectedGroup < 0) {          // 首次进入随机选歌

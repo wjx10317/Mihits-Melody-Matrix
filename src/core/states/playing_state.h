@@ -42,10 +42,10 @@ public:
     /// 立即处理一条键盘事件。eventTimeMs 是事件发生时换算出的歌曲时间。
     ///
     /// 按键→判定链路:
-    ///   SDL KEYDOWN/UP → Kernel::syncPlayingClock → dispatchGameplayKeyEvent
+    ///   IGameplayInput → Kernel::dispatchGameplayKey → handleKeyEvent
     ///     → HostClock::nowMs() → Clock::songTimeAtHostMs()
     ///     → handleKeyEvent → JudgeQueue
-    /// 判定时刻 = 歌曲时间 − timingOffsetMs；音符渲染另加 visualLead 补偿显示延迟。
+    /// 判定时刻 = 歌曲时间 − timingOffsetMs；音符渲染与歌曲钟同刻（无 visual lead）。
     /// 不使用 SDL_Event.timestamp；后续改为 Raw Input 按键瞬间 Host 戳。
     void handleKeyEvent(int32_t key, bool pressed, int64_t eventTimeMs);
 
@@ -91,6 +91,10 @@ private:
     /// 根据当前滚动窗口与列数生成按键映射
     std::vector<KeyColumnMapping> getKeyMapping() const;
 
+    /// ZX mod：在候选列中选 |press−note| 最小且落在 50 窗内的列；无则 -1
+    int32_t pickBestColumnForPress(const std::vector<int32_t>& columns,
+                                   int64_t judgeTimeMs, float od) const;
+
     /// 处理按键判定结果：更新分数/连击/HP/特效/偏移条
     void handlePressResult(gameplay::JudgmentResult result, int32_t column, int32_t row,
                            int64_t pressTime, int64_t noteTime, bool isTapNote = true);
@@ -130,7 +134,10 @@ private:
 
     // ── Autoplay 模组 ──
     bool m_autoplay = false;
+    bool m_osuMod = false;              ///< osu mod：Z/X 均可判定全部活跃列（顺序谱测试）
+    int32_t m_osuHeldColumn[2] = {-1, -1}; ///< [0]=Z [1]=X 当前按住的列（Hold 释放用）
     int64_t m_timingOffsetMs = 0;  ///< 正值表示音频听感偏晚，判定时间向前补偿
+    std::vector<int64_t> m_hitOffsetSamples; ///< 本局击打偏移样本（press−note，早负晚正）
     bool m_debugHudEnabled = false;
     int64_t m_lastPlayheadSampleHostMs = 0;  ///< HostClock：上次窗口汇总日志时刻
     static constexpr int64_t PLAYHEAD_SAMPLE_INTERVAL_MS = 500;

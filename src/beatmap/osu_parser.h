@@ -145,8 +145,7 @@ private:
     static int blockingConflictIndexBefore(const std::vector<ConvertedNote>& notes,
                                            size_t before, int64_t cutoffMs);
     /// 遍历 noteIndex 之前所有未丢弃 note，取最大的 blockingLatestHit。
-    /// 用于确保变换开始时所有前向 note（含 Hold 的释放窗口）都已判定完毕，
-    /// 避免变换期间 note 仍在屏幕上导致渲染出界/无击打空间。
+    /// Tap=time+hit50，Hold=holdEnd（与 noteBlocksUntilMs / 运行时 Hold 自动 300 对齐）。
     static int64_t maxBlockingLatestHitBefore(const std::vector<ConvertedNote>& notes, size_t before);
     bool isDenseRhythmAround(const std::vector<ConvertedNote>& notes, size_t index) const;
     bool hasStableFormationTarget(const std::vector<ConvertedNote>& notes, size_t index,
@@ -160,12 +159,13 @@ private:
     int chooseScrollActiveStart(const std::vector<ConvertedNote>& notes, size_t noteIndex,
                                 const MatrixShape& shape, int currentStart, int targetCol) const;
 
-    /// 滚动最早可开始时刻：lastTransitionEnd、approach 触发点、当前窗内 Hold 尾部的最大值。
+    /// 滚动最早可开始时刻：trigger + 窗内前向 Tap/Hold 的 noteBlocksUntilMs。
     int64_t scrollStartMsForNote(const std::vector<ConvertedNote>& notes, size_t noteIndex,
                                  const MatrixShape& holdShape, int holdWindowStart,
                                  int64_t lastTransitionEnd) const;
 
-    /// 解析器侧解决滚动冲突：当前窗 Hold 阻塞 + 动画时长内够不到目标 note 则丢弃。
+    /// 解析器侧解决滚动冲突：前向阻塞导致装不下则降级/丢前向；不丢目标 note。
+    /// 装不下或目标列不在新窗 → 返回 false（本次不滚），目标保留。
     bool resolveScrollConflict(std::vector<ConvertedNote>& notes, size_t noteIndex,
                                const MatrixShape& holdShape, int holdWindowStart,
                                const MatrixShape& targetShape, int nextActiveStart,

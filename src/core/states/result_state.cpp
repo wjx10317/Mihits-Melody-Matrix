@@ -10,12 +10,13 @@
 #include "core/kernel.h"
 #include "core/state_manager.h"
 #include "core/states/playing_state.h"
+#include "platform/config.h"
 #include "ui/theme.h"
 #include "util/logger.h"
 
 #include "imgui.h"
 #include <cmath>
-
+#include <string>
 namespace melody_matrix::core {
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -194,6 +195,39 @@ void ResultState::renderImGuiPanel() {
     ImGui::Spacing();
     ImGui::Separator();
     ImGui::Spacing();
+
+    // ── 击打偏移中位数 → 推荐 Timing Offset ──
+    if (hitOffsetSampleCount > 0) {
+        ImGui::SetCursorPosX(startX);
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.7f, 0.7f, 0.78f, 1.0f));
+        ImGui::Text("Hit offset median: %+lld ms  (n=%d)",
+                    static_cast<long long>(hitOffsetMedianMs), hitOffsetSampleCount);
+        ImGui::SetCursorPosX(startX);
+        ImGui::Text("Timing offset: %+lld → recommend %+lld ms",
+                    static_cast<long long>(currentTimingOffsetMs),
+                    static_cast<long long>(recommendedTimingOffsetMs));
+        ImGui::PopStyleColor();
+        ImGui::Spacing();
+
+        ImGui::SetCursorPosX(startX);
+        ImGui::PushStyleColor(ImGuiCol_Button,
+            ImVec4(Theme::CYAN_R, Theme::CYAN_G, Theme::CYAN_B, 0.35f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
+            ImVec4(Theme::CYAN_R, Theme::CYAN_G, Theme::CYAN_B, 0.55f));
+        if (ImGui::Button("APPLY OFFSET", ImVec2(220.0f * s, 36.0f * s))) {
+            const int clamped = static_cast<int>(std::max<int64_t>(
+                -100, std::min<int64_t>(100, recommendedTimingOffsetMs)));
+            platform::Config::setInt(platform::Config::KEY_TIMING_OFFSET, clamped);
+            platform::Config::save();
+            currentTimingOffsetMs = clamped;
+            recommendedTimingOffsetMs = clamped;
+            MM_LOG_INFO("Result", "Applied timing offset=" + std::to_string(clamped) + " ms");
+        }
+        ImGui::PopStyleColor(2);
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+    }
 
     // ── 评级 ──
     if (!playerDied) {

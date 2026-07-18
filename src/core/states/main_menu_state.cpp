@@ -770,9 +770,7 @@ void MainMenuState::renderSettingsSidebar() {
                                     ImGuiWindowFlags_NoResize |
                                     ImGuiWindowFlags_NoMove |
                                     ImGuiWindowFlags_NoCollapse |
-                                    ImGuiWindowFlags_NoBringToFrontOnFocus |
-                                    ImGuiWindowFlags_NoScrollbar |
-                                    ImGuiWindowFlags_NoScrollWithMouse;
+                                    ImGuiWindowFlags_NoBringToFrontOnFocus;
 
     ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
@@ -969,33 +967,6 @@ void MainMenuState::renderSettingsSidebar() {
             ImVec4(0.25f, 0.25f, 0.40f, 0.9f));
         if (ImGui::SliderInt("##TimingOffset", &s_timingOffset, -100, 100, "%d ms")) {
             platform::Config::setInt(platform::Config::KEY_TIMING_OFFSET, s_timingOffset);
-            platform::Config::save();
-        }
-        ImGui::PopStyleColor(4);
-    }
-
-    ImGui::Spacing();
-
-    // 视觉超前：补偿显示管线延迟，使 note 到达屏幕中心时更接近判定时刻
-    {
-        static int s_visualLead = platform::Config::getInt(
-            platform::Config::KEY_VISUAL_LEAD, 16);
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.7f, 0.7f, 0.75f, 1.0f));
-        ImGui::Text("Visual Lead: %d ms", s_visualLead);
-        ImGui::PopStyleColor();
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.5f, 0.5f, 0.6f, 0.9f));
-        ImGui::TextWrapped("Render notes ahead to match on-screen timing (+ half frame auto).");
-        ImGui::PopStyleColor();
-        ImGui::PushStyleColor(ImGuiCol_SliderGrab,
-            ImVec4(Theme::CYAN_R, Theme::CYAN_G, Theme::CYAN_B, 0.8f));
-        ImGui::PushStyleColor(ImGuiCol_SliderGrabActive,
-            ImVec4(Theme::CYAN_R, Theme::CYAN_G, Theme::CYAN_B, 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_FrameBg,
-            ImVec4(0.18f, 0.18f, 0.30f, 0.8f));
-        ImGui::PushStyleColor(ImGuiCol_FrameBgHovered,
-            ImVec4(0.25f, 0.25f, 0.40f, 0.9f));
-        if (ImGui::SliderInt("##VisualLead", &s_visualLead, 0, 50, "%d ms")) {
-            platform::Config::setInt(platform::Config::KEY_VISUAL_LEAD, s_visualLead);
             platform::Config::save();
         }
         ImGui::PopStyleColor(4);

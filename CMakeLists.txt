@@ -94,3 +94,38 @@ if(MM_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)
 endif()
+
+# ────────────────────── Input adapter verify tool ────────────────
+add_executable(verify_gameplay_input
+    tools/verify_gameplay_input.cpp
+    src/input/gameplay_input_factory.cpp
+    src/input/sdl_poll_input.cpp
+    src/input/raw_input_win.cpp
+    src/input/raw_input_stub.cpp
+    src/time/host_clock_win.cpp
+    src/time/host_clock_stub.cpp
+    src/util/logger.cpp
+)
+target_include_directories(verify_gameplay_input PRIVATE
+    "${CMAKE_SOURCE_DIR}/src"
+    "${CMAKE_SOURCE_DIR}/third_party"
+)
+if(EXISTS "${CMAKE_SOURCE_DIR}/third_party/SDL2-2.30.8/include/SDL.h")
+    target_include_directories(verify_gameplay_input PRIVATE
+        "${CMAKE_SOURCE_DIR}/third_party/SDL2-2.30.8/include"
+    )
+endif()
+target_link_libraries(verify_gameplay_input PRIVATE SDL2::SDL2 SDL2::SDL2main)
+if(WIN32)
+    target_link_libraries(verify_gameplay_input PRIVATE user32)
+endif()
+set_target_properties(verify_gameplay_input PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
+)
+if(EXISTS "${CMAKE_SOURCE_DIR}/third_party/SDL2-2.30.8/lib/x64/SDL2.dll")
+    add_custom_command(TARGET verify_gameplay_input POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_SOURCE_DIR}/third_party/SDL2-2.30.8/lib/x64/SDL2.dll"
+            "$<TARGET_FILE_DIR:verify_gameplay_input>/SDL2.dll"
+    )
+endif()
