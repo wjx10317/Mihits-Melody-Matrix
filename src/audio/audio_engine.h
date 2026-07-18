@@ -123,7 +123,14 @@ public:
     /// 每帧驱动淡入淡出与预览循环（主循环必须调用）
     void update(float dt);
 
+    /// 仅供同模块 Playhead 适配；返回内部 ma_engine*（可能为空）
+    ma_engine* rawEngine() const { return m_engine; }
+
     bool isPlaying() const;
+
+    /// 查询当前 BGM/预览的 PCM cursor 与采样率（无活动声音返回 false）
+    bool queryPlaybackCursor(int64_t& outFrames, int32_t& outSampleRate) const;
+
     int64_t positionMs() const;
     int64_t durationMs() const;
     void seekTo(int64_t positionMs);

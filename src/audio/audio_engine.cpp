@@ -599,18 +599,30 @@ bool AudioEngine::isPlaying() const {
     return false;
 }
 
-int64_t AudioEngine::positionMs() const {
+bool AudioEngine::queryPlaybackCursor(int64_t& outFrames, int32_t& outSampleRate) const {
+    outFrames = 0;
+    outSampleRate = 0;
     for (const auto& snd : m_activeSounds) {
         if (snd.sound && !snd.isFadingOut) {
-            // PCM 帧整数运算 + 四舍五入，避免 float 秒数截断误差
             ma_uint64 cursorFrames = 0;
             ma_sound_get_cursor_in_pcm_frames(snd.sound, &cursorFrames);
-            ma_uint32 sampleRate = ma_engine_get_sample_rate(m_engine);
-            if (sampleRate == 0) sampleRate = 48000;  // 回退默认采样率
-            return static_cast<int64_t>((cursorFrames * 1000 + sampleRate / 2) / sampleRate);
+            ma_uint32 sampleRate = m_engine ? ma_engine_get_sample_rate(m_engine) : 0;
+            if (sampleRate == 0) sampleRate = 48000;
+            outFrames = static_cast<int64_t>(cursorFrames);
+            outSampleRate = static_cast<int32_t>(sampleRate);
+            return true;
         }
     }
-    return 0;  // 无活动声音
+    return false;
+}
+
+int64_t AudioEngine::positionMs() const {
+    int64_t frames = 0;
+    int32_t sampleRate = 0;
+    if (!queryPlaybackCursor(frames, sampleRate) || sampleRate <= 0) {
+        return 0;
+    }
+    return (frames * 1000 + sampleRate / 2) / sampleRate;
 }
 
 int64_t AudioEngine::durationMs() const {

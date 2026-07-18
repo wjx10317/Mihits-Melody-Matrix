@@ -5,6 +5,7 @@
 //   - 创建 ImGui 上下文并绑定 SDL2 + OpenGL3 后端
 //   - 每帧驱动 NewFrame → Render 流程
 //   - 应用深霓虹主题
+//   - 分辨率变化时重载字体并缩放 ImGuiStyle
 // ============================================================
 #include "ui/ui_manager.h"  // UIManager 类声明
 #include "ui/theme.h"         // 深霓虹主题
@@ -17,7 +18,26 @@
 #include "imgui_impl_sdl2.h"        // ImGui SDL2 后端
 #include "imgui_impl_opengl3.h"     // ImGui OpenGL3 后端
 
+#include <cmath>
+
 namespace melody_matrix::ui {  // UI 子命名空间
+
+namespace {
+
+float scaleFromWindowHeight(SDL_Window* window) {
+    int winH = 0;
+    if (window) {
+        int winW = 0;
+        SDL_GetWindowSize(window, &winW, &winH);
+    }
+    if (winH <= 0) {
+        const float displayH = ImGui::GetIO().DisplaySize.y;
+        winH = displayH > 0.0f ? static_cast<int>(displayH) : 1080;
+    }
+    return static_cast<float>(winH) / 1080.0f;
+}
+
+} // namespace
 
 // ══════════════════════════════════════════════════════════════════════════════
 //  初始化 / 关闭
@@ -32,6 +52,8 @@ bool UIManager::init(SDL_Window* window, SDL_GLContext glContext) {
 
     MM_LOG_INFO("UIManager", "Initializing ImGui...");  // 记录开始初始化
 
+    m_window = window;
+
     // ── ImGui 上下文 ──
     IMGUI_CHECKVERSION();           // 校验 ImGui 头文件与库版本一致
     ImGui::CreateContext();         // 创建 ImGui 上下文
@@ -40,11 +62,9 @@ bool UIManager::init(SDL_Window* window, SDL_GLContext glContext) {
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;  // 启用键盘导航
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;   // 启用手柄导航
     io.IniFilename = nullptr; // 禁用 .ini 状态文件，避免窗口尺寸/位置被缓存
+    io.FontGlobalScale = 1.0f;
 
-    int winW = 0;
-    int winH = 0;
-    SDL_GetWindowSize(window, &winW, &winH);
-    const float fontScale = winH > 0 ? static_cast<float>(winH) / 1080.0f : 1.0f;
+    const float fontScale = scaleFromWindowHeight(window);
     Theme::loadFonts(fontScale);
 
     // ── SDL2 + OpenGL3 后端 ──
@@ -59,6 +79,8 @@ bool UIManager::init(SDL_Window* window, SDL_GLContext glContext) {
 
     // ── 应用主题 ──
     Theme::apply();  // 设置深霓虹配色与圆角间距
+    Theme::applyScaledStyle(fontScale);
+    m_lastUiScale = fontScale;
 
     m_frameStatsOverlay.init(window);
 
@@ -71,6 +93,7 @@ bool UIManager::init(SDL_Window* window, SDL_GLContext glContext) {
     MM_LOG_INFO("UIManager", "  Window size: " + std::to_string(w) + "x" + std::to_string(h));  // 窗口尺寸
     MM_LOG_INFO("UIManager", "  DisplaySize: " + std::to_string((int)io.DisplaySize.x) + "x" + std::to_string((int)io.DisplaySize.y));  // ImGui 显示尺寸
     MM_LOG_INFO("UIManager", "  Fonts loaded: " + std::to_string(io.Fonts->Fonts.size()));  // 已加载字体数量
+    MM_LOG_INFO("UIManager", "  UI scale: " + std::to_string(fontScale));
     return true;  // 初始化成功
 }
 
@@ -81,7 +104,29 @@ void UIManager::shutdown() {
     ImGui_ImplSDL2_Shutdown();     // 关闭 SDL2 后端
     ImGui::DestroyContext();       // 销毁 ImGui 上下文
     m_initialized = false;           // 清除初始化标志
+    m_window = nullptr;
+    m_lastUiScale = -1.0f;
     MM_LOG_INFO("UIManager", "ImGui shut down");  // 记录关闭完成
+}
+
+void UIManager::syncUiScale(bool force) {
+    if (!m_initialized) {
+        return;
+    }
+
+    const float scale = scaleFromWindowHeight(m_window);
+    if (!force && m_lastUiScale > 0.0f && std::abs(scale - m_lastUiScale) < 0.01f) {
+        return;
+    }
+
+    MM_LOG_INFO("UIManager", "UI scale " + std::to_string(m_lastUiScale) + " -> " + std::to_string(scale));
+
+    ImGui::GetIO().FontGlobalScale = 1.0f;
+    ImGui_ImplOpenGL3_DestroyFontsTexture();
+    Theme::loadFonts(scale);
+    Theme::applyScaledStyle(scale);
+    ImGui_ImplOpenGL3_CreateFontsTexture();
+    m_lastUiScale = scale;
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -91,9 +136,11 @@ void UIManager::shutdown() {
 /// 开始新的 ImGui 帧
 void UIManager::newFrame() {
     if (!m_initialized) return;           // 未初始化则跳过
-    ImGui_ImplOpenGL3_NewFrame();         // OpenGL3 后端 NewFrame
-    ImGui_ImplSDL2_NewFrame();            // SDL2 后端 NewFrame
-    ImGui::NewFrame();                    // ImGui 核心 NewFrame
+    // DisplaySize 先更新，再按需重载字体；OpenGL NewFrame 会补建字体纹理
+    ImGui_ImplSDL2_NewFrame();
+    syncUiScale(false);
+    ImGui_ImplOpenGL3_NewFrame();
+    ImGui::NewFrame();
 }
 
 /// 结束 ImGui 帧并提交 OpenGL 绘制

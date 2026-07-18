@@ -17,6 +17,7 @@
 #include "core/states/playing_state.h"      // PlayingState：游玩按键与音频时钟同步
 #include "platform/config.h"                // config.ini 读写：分辨率、全屏、visual lead
 #include "core/states/song_select_state.h"  // SongSelectState：ESC 是否被弹窗消费
+#include "time/host_clock.h"                // HostClock：与 Clock 同域的按键时刻
 #include "util/logger.h"                    // MM_LOG_INFO / WARN / FATAL 日志宏
 #include "util/exceptions.h"                // 异常类型（日志/错误处理预留）
 #include "renderer/texture_cache.h"         // 主线程 GL 纹理上传队列
@@ -72,49 +73,26 @@ static void buildResolutionList() {
 }
 
 // ══════════════════════════════════════════════════════
-//  SDL 事件 timestamp 扩展（32 位 → 64 位）
-// ══════════════════════════════════════════════════════
-
-/**
- * @brief 将 SDL 32 位 event.timestamp 扩展为与 SDL_GetTicks64 对齐的 64 位值
- * @param eventTimestamp SDL 事件中的 Uint32 timestamp
- * @return 扩展后的 64 位 tick，可用于 songTimeAtTickMs
- *
- * SDL 事件 timestamp 会回绕；通过与当前 tick 对齐最近邻消除歧义。
- */
-static uint64_t expandSdlEventTimestamp(Uint32 eventTimestamp) {
-    const uint64_t now = SDL_GetTicks64();              // 当前 64 位 SDL 毫秒 tick
-    const uint64_t base = now & ~0xffffffffULL;         // 高 32 位对齐到 now 所在周期
-    uint64_t candidate = base | static_cast<uint64_t>(eventTimestamp);  // 拼接低 32 位事件 tick
-    // candidate 比 now 超前过多 → 回绕到上一周期
-    if (candidate > now + 0x80000000ULL) {
-        candidate -= 0x100000000ULL;
-    // candidate 比 now 落后过多 → 回绕到下一周期
-    } else if (candidate + 0x80000000ULL < now) {
-        candidate += 0x100000000ULL;
-    }
-    return candidate;  // 与 SDL_GetTicks64 同域的 64 位事件时刻
-}
-
-// ══════════════════════════════════════════════════════
 //  游玩输入与时钟同步
 // ══════════════════════════════════════════════════════
 
 /**
- * @brief 将键盘事件分派给 PlayingState，使用事件 timestamp 计算判定歌曲时间
- * @param keyEvent SDL 键盘事件
+ * @brief 将键盘事件分派给 PlayingState（HostClock 换算歌曲时间）
+ * @param keyEvent SDL 键盘事件（仅用 keysym；不用 event.timestamp）
  * @param pressed 按下或释放
  */
 void Kernel::dispatchGameplayKeyEvent(const SDL_KeyboardEvent& keyEvent, bool pressed) {
     // 非 Playing 状态不处理游玩按键
     if (m_stateManager.currentState() != GameState::Playing) return;
-    auto* playing = m_stateManager.getStateAs<PlayingState>(GameState::Playing);  // 获取 PlayingState 实例
-    if (!playing) return;  // 未注册则忽略
+    auto* playing = m_stateManager.getStateAs<PlayingState>(GameState::Playing);
+    if (!playing) return;
 
-    // 在 poll 阶段立即判定，避免等到同 tick 内更晚的 240Hz update 才处理按键
-    const uint64_t eventTickMs = expandSdlEventTimestamp(keyEvent.timestamp);  // 事件时刻 SDL tick
-    const int64_t eventSongTimeMs = m_clock.songTimeAtTickMs(eventTickMs);     // 换算为歌曲时间
-    playing->handleKeyEvent(static_cast<int32_t>(keyEvent.keysym.sym), pressed, eventSongTimeMs);  // 分派给判定逻辑
+    // 在 poll 阶段立即判定。歌曲时间只用 HostClock（与 Clock 同域）。
+    // 已删除 SDL timestamp / expandSdlEventTimestamp 路径。
+    // 后续：改为按键瞬间 Host 戳（Raw Input）。
+    const int64_t hostMs = time::HostClock::nowMs();
+    const int64_t eventSongTimeMs = m_clock.songTimeAtHostMs(hostMs);
+    playing->handleKeyEvent(static_cast<int32_t>(keyEvent.keysym.sym), pressed, eventSongTimeMs);
 }
 
 /**
@@ -499,6 +477,8 @@ void Kernel::setResolution(int width, int height) {
     platform::Config::setInt(platform::Config::KEY_RESOLUTION_H, height);
     platform::Config::save();  // 持久化到磁盘
 
+    m_uiManager.syncUiScale(true);  // 立即按新窗口高度重载字体/样式
+
     MM_LOG_INFO("Kernel", "Resolution set to " + std::to_string(width) + "x" + std::to_string(height));
 }
 
@@ -528,6 +508,8 @@ void Kernel::setFullscreen(bool fullscreen) {
 
     platform::Config::setInt(platform::Config::KEY_FULLSCREEN, fullscreen ? 1 : 0);
     platform::Config::save();
+
+    m_uiManager.syncUiScale(true);  // 全屏切换后同步 UI 缩放
 
     MM_LOG_INFO("Kernel", std::string("Fullscreen: ") + (fullscreen ? "on" : "off"));
 }
@@ -579,12 +561,14 @@ void Kernel::pumpInputEvents() {
         case SDL_WINDOWEVENT:
             if (event.window.event == SDL_WINDOWEVENT_CLOSE) {
                 m_running = false;  // 窗口关闭按钮
-            } else if (event.window.event == SDL_WINDOWEVENT_RESIZED) {
+            } else if (event.window.event == SDL_WINDOWEVENT_RESIZED
+                       || event.window.event == SDL_WINDOWEVENT_SIZE_CHANGED) {
                 // 非全屏时跟踪用户拖拽 resize 后的客户端尺寸
                 if (!m_fullscreen) {
                     m_windowWidth = event.window.data1;   // 新客户端宽
                     m_windowHeight = event.window.data2;  // 新客户端高
                 }
+                m_uiManager.syncUiScale(false);  // 窗口尺寸变化时按需重载 UI 缩放
             }
             break;
         default:

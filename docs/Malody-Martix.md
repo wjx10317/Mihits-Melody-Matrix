@@ -40,7 +40,7 @@ miniaudio 的 `ma_engine` 更适合 BGM 流式 + seek（选歌预览）、多路
 
 ③ 输入：`SDL_PollEvent`（KEYDOWN/UP）、`SDL_GetKeyboardState`、`SDL_StopTextInput/StartTextInput`（防 IME 吞键）
 
-④ 时间（辅助）：`SDL_GetTicks64` 供 `Clock` 插值；事件 timestamp 扩 32→64 位对齐按键时刻
+④ 时间（辅助）：`time::HostClock`（Win=QPC）供 `Clock` 外推与按键同域；**不再**用 `SDL_GetTicks64` / 事件 timestamp 做判定时钟
 
 ⑤ ImGui：`imgui_impl_sdl2` + `imgui_impl_opengl3`
 

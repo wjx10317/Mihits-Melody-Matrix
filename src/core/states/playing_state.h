@@ -8,6 +8,7 @@
 
 #include "core/game_state_base.h"
 #include "audio/audio_engine.h"
+#include "time/audio_playhead.h"
 #include "gameplay/judge_queue.h"
 #include "gameplay/score_manager.h"
 #include "gameplay/combo_manager.h"
@@ -42,9 +43,10 @@ public:
     ///
     /// 按键→判定链路:
     ///   SDL KEYDOWN/UP → Kernel::syncPlayingClock → dispatchGameplayKeyEvent
-    ///     → Clock::songTimeAtTickMs(SDL event timestamp)  // 与 interpolatedNowMs 同用 SDL tick
+    ///     → HostClock::nowMs() → Clock::songTimeAtHostMs()
     ///     → handleKeyEvent → JudgeQueue
     /// 判定时刻 = 歌曲时间 − timingOffsetMs；音符渲染另加 visualLead 补偿显示延迟。
+    /// 不使用 SDL_Event.timestamp；后续改为 Raw Input 按键瞬间 Host 戳。
     void handleKeyEvent(int32_t key, bool pressed, int64_t eventTimeMs);
 
     /// 设置要播放的谱面文件
@@ -53,8 +55,11 @@ public:
     /// 标记在下一次 onEnter() 时应重新初始化游戏
     void markNeedsReinit() { m_needsReinit = true; }
 
-    /// 从音频 cursor 同步时钟（主循环处理输入前调用，保证按键 timestamp 换算准确）
+    /// 从 AudioPlayhead 同步时钟（主循环处理输入前调用）
     void syncClockFromAudio();
+
+    /// 当前 Playhead 歌曲位置（ms）；initGameplay 成功后 m_playhead 必有效
+    int64_t playheadPositionMs() const;
 
     /// 清除渲染资源（在非 Playing 状态下退出时调用）
     void cleanupRenderer();
@@ -74,6 +79,9 @@ private:
     void renderHUD();
     /// 渲染 ImGui 覆盖层（前导倒计时、分数、偏移条、调试 HUD）
     void renderImGuiOverlay();
+
+    /// 周期性采样：同快照 song/playhead + 窗口内逐帧 min/max（防假 -1）
+    void samplePlayheadLog(int64_t songNowMs, int64_t playheadMs);
 
     /// SDL 按键到谱面列的映射（随滚动窗口动态变化）
     struct KeyColumnMapping {
@@ -105,6 +113,7 @@ private:
 
     // ── 游戏子系统 ──
     audio::AudioEngine m_audio;
+    std::unique_ptr<time::IAudioPlayhead> m_playhead;  ///< C1: MiniaudioCursor；C2: Wasapi
     gameplay::JudgeQueue m_judgeQueue;
     gameplay::ScoreManager m_scoreManager;
     gameplay::ComboManager m_comboManager;
@@ -123,6 +132,32 @@ private:
     bool m_autoplay = false;
     int64_t m_timingOffsetMs = 0;  ///< 正值表示音频听感偏晚，判定时间向前补偿
     bool m_debugHudEnabled = false;
+    int64_t m_lastPlayheadSampleHostMs = 0;  ///< HostClock：上次窗口汇总日志时刻
+    static constexpr int64_t PLAYHEAD_SAMPLE_INTERVAL_MS = 500;
+
+    /// 逐帧 song-ph 窗口统计（验证残差是否真 ≤1ms，而非 500ms 抽样假象）
+    struct PlayheadWindowStats {
+        int64_t samples = 0;
+        int64_t songPhMin = 0;
+        int64_t songPhMax = 0;
+        int64_t absMax = 0;
+        int64_t outliers = 0;       ///< |song-ph| > 1
+        int64_t phStepMax = 0;      ///< 相邻帧 playhead 最大跳变（台阶探针）
+        int64_t lastPlayheadMs = 0;
+        bool hasLastPlayhead = false;
+    };
+    PlayheadWindowStats m_playheadWindowStats;
+
+    /// 仅用于诊断：把 write-cursor 的 period 台阶用墙钟抹平，避免 ph-cu 假锯齿
+    struct CursorSmooth {
+        int64_t lastRawMs = 0;
+        int64_t hostAtRawMs = 0;
+        bool has = false;
+    };
+    CursorSmooth m_cursorSmooth;
+
+    /// raw cursor + 停滞期间 Host 外推（诊断用，不进判定）
+    int64_t smoothedCursorMs();
 
     struct HitTimingDebug {
         int64_t judgeMs = 0;

@@ -86,8 +86,9 @@ void ResultState::renderImGuiPanel() {
 
     ImGui::Begin("##ResultScreen", nullptr, flags);
 
+    const float s = Theme::displayScale();
     float centerX = displaySize.x * 0.5f;
-    float contentWidth = 600.0f;
+    float contentWidth = 600.0f * s;
     float startX = centerX - contentWidth * 0.5f;
 
     // ── 标题 ──
@@ -215,9 +216,9 @@ void ResultState::renderImGuiPanel() {
     ImGui::Spacing();
 
     // ── 操作按钮 ──
-    float btnWidth = 200;
-    float btnHeight = 44;
-    float btnTotalWidth = btnWidth * 2 + 20;
+    float btnWidth = 200.0f * s;
+    float btnHeight = 44.0f * s;
+    float btnTotalWidth = btnWidth * 2 + 20.0f * s;
     float btnStartX = centerX - btnTotalWidth * 0.5f;
 
     ImGui::SetCursorPosX(btnStartX);

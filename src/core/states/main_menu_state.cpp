@@ -597,17 +597,18 @@ void MainMenuState::renderImGuiPanel() {
 
     ImGui::Begin("##MainMenu", nullptr, flags);
 
+    const float s = Theme::displayScale();
     ImVec2 center(displaySize.x * 0.5f, displaySize.y * 0.35f);
 
     // ── 标题 ──
-    ImGui::SetCursorPos(ImVec2(center.x - 200, center.y - 80));
+    ImGui::SetCursorPos(ImVec2(center.x - 200.0f * s, center.y - 80.0f * s));
     ImGui::PushStyleColor(ImGuiCol_Text,
         ImVec4(Theme::CYAN_R, Theme::CYAN_G, Theme::CYAN_B, 1.0f));
     ImGui::SetWindowFontScale(3.0f);
     ImGui::Text("MELODY");
     ImGui::PopStyleColor();
 
-    ImGui::SetCursorPos(ImVec2(center.x - 120, center.y - 20));
+    ImGui::SetCursorPos(ImVec2(center.x - 120.0f * s, center.y - 20.0f * s));
     ImGui::PushStyleColor(ImGuiCol_Text,
         ImVec4(Theme::PURP_R, Theme::PURP_G, Theme::PURP_B, 1.0f));
     ImGui::SetWindowFontScale(3.0f);
@@ -616,17 +617,17 @@ void MainMenuState::renderImGuiPanel() {
     ImGui::SetWindowFontScale(1.0f);
 
     // ── 副标题 ──
-    ImGui::SetCursorPos(ImVec2(center.x - 100, center.y + 40));
+    ImGui::SetCursorPos(ImVec2(center.x - 100.0f * s, center.y + 40.0f * s));
     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.55f, 0.55f, 0.65f, 1.0f));
     ImGui::Text("A rhythm game experience");
     ImGui::PopStyleColor();
 
     // ── 按钮 ──
-    float btnWidth = 280;
-    float btnHeight = 50;
+    float btnWidth = 280.0f * s;
+    float btnHeight = 50.0f * s;
     float btnX = center.x - btnWidth / 2;
 
-    ImGui::SetCursorPos(ImVec2(btnX, center.y + 100));
+    ImGui::SetCursorPos(ImVec2(btnX, center.y + 100.0f * s));
     ImGui::PushStyleColor(ImGuiCol_Button,
         ImVec4(Theme::CYAN_R, Theme::CYAN_G, Theme::CYAN_B, 0.25f));
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
@@ -639,7 +640,7 @@ void MainMenuState::renderImGuiPanel() {
     }
     ImGui::PopStyleColor(3);
 
-    ImGui::SetCursorPos(ImVec2(btnX, center.y + 170));
+    ImGui::SetCursorPos(ImVec2(btnX, center.y + 170.0f * s));
     ImGui::PushStyleColor(ImGuiCol_Button,
         ImVec4(Theme::PURP_R, Theme::PURP_G, Theme::PURP_B, 0.25f));
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
@@ -651,7 +652,7 @@ void MainMenuState::renderImGuiPanel() {
     }
     ImGui::PopStyleColor(3);
 
-    ImGui::SetCursorPos(ImVec2(btnX, center.y + 240));
+    ImGui::SetCursorPos(ImVec2(btnX, center.y + 240.0f * s));
     ImGui::PushStyleColor(ImGuiCol_Button,
         ImVec4(Theme::PINK_R, Theme::PINK_G, Theme::PINK_B, 0.25f));
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
@@ -667,10 +668,10 @@ void MainMenuState::renderImGuiPanel() {
 
     // ── 右上角 IMPORT 按钮 ──
     {
-        float importBtnWidth = 120;
-        float importBtnHeight = 36;
-        float importX = displaySize.x - importBtnWidth - 20;
-        float importY = 16;
+        float importBtnWidth = 120.0f * s;
+        float importBtnHeight = 36.0f * s;
+        float importX = displaySize.x - importBtnWidth - 20.0f * s;
+        float importY = 16.0f * s;
 
         ImGui::SetCursorPos(ImVec2(importX, importY));
         ImGui::PushStyleColor(ImGuiCol_Button,
@@ -698,8 +699,8 @@ void MainMenuState::renderImGuiPanel() {
 
     // ── 导入结果消息（右上角 IMPORT 按钮下方）──
     if (!m_importMessage.empty() && m_importMessageTimer > 0.0f) {
-        float msgX = displaySize.x - 340;
-        float msgY = 60;
+        float msgX = displaySize.x - 340.0f * s;
+        float msgY = 60.0f * s;
         float alpha = std::min(1.0f, m_importMessageTimer); // 淡出
 
         ImGui::SetCursorPos(ImVec2(msgX, msgY));
@@ -714,7 +715,7 @@ void MainMenuState::renderImGuiPanel() {
     }
 
     // ── 页脚版本号 ──
-    ImGui::SetCursorPos(ImVec2(center.x - 60, displaySize.y - 40));
+    ImGui::SetCursorPos(ImVec2(center.x - 60.0f * s, displaySize.y - 40.0f * s));
     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.4f, 0.4f, 0.5f, 0.6f));
     ImGui::Text("v0.1 alpha");
     ImGui::PopStyleColor();
@@ -728,7 +729,7 @@ void MainMenuState::renderSettingsOverlay() {
     float t = m_settingsSlideProgress;
 
     float eased = 1.0f - std::pow(1.0f - t, 3.0f);
-    float sidebarWidth = 420.0f;
+    float sidebarWidth = 420.0f * ui::Theme::displayScale();
     float sidebarRight = sidebarWidth * eased;
 
     ImGui::SetNextWindowPos(ImVec2(sidebarRight, 0), ImGuiCond_Always);
@@ -755,7 +756,8 @@ void MainMenuState::renderSettingsSidebar() {
     using namespace ui;
 
     ImVec2 displaySize = ImGui::GetIO().DisplaySize;
-    float sidebarWidth = 420.0f;
+    const float s = Theme::displayScale();
+    float sidebarWidth = 420.0f * s;
 
     float t = m_settingsSlideProgress;
     float eased = 1.0f - std::pow(1.0f - t, 3.0f);
@@ -774,7 +776,7 @@ void MainMenuState::renderSettingsSidebar() {
 
     ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(28, 24));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(28.0f * s, 24.0f * s));
     ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.133f, 0.133f, 0.227f, 1.0f));
     ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(Theme::CYAN_R, Theme::CYAN_G, Theme::CYAN_B, 0.6f));
 
@@ -855,7 +857,7 @@ void MainMenuState::renderSettingsSidebar() {
             ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.7f, 0.7f, 0.75f, 1.0f));
         }
 
-        if (ImGui::Button(label, ImVec2(sidebarWidth - 60, 38))) {
+        if (ImGui::Button(label, ImVec2(sidebarWidth - 60.0f * s, 38.0f * s))) {
             m_pendingResolutionW = resos[i].width;
             m_pendingResolutionH = resos[i].height;
             m_selectedResolutionIndex = i;
@@ -898,7 +900,7 @@ void MainMenuState::renderSettingsSidebar() {
         ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.7f, 0.7f, 0.75f, 1.0f));
     }
     if (ImGui::Button(currentFullscreen ? "FULLSCREEN: ON" : "FULLSCREEN: OFF",
-                       ImVec2(sidebarWidth - 60, 38))) {
+                       ImVec2(sidebarWidth - 60.0f * s, 38.0f * s))) {
         m_pendingFullscreen = !currentFullscreen;
         m_hasPendingFullscreen = true;
         if (!currentFullscreen) {
@@ -1019,7 +1021,7 @@ void MainMenuState::renderSettingsSidebar() {
             ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.7f, 0.7f, 0.75f, 1.0f));
         }
         if (ImGui::Button(debugHud ? "DEBUG HUD: ON" : "DEBUG HUD: OFF",
-                          ImVec2(sidebarWidth - 60, 38))) {
+                          ImVec2(sidebarWidth - 60.0f * s, 38.0f * s))) {
             platform::Config::setInt(platform::Config::KEY_DEBUG_HUD, debugHud ? 0 : 1);
             platform::Config::save();
         }
@@ -1046,7 +1048,7 @@ void MainMenuState::renderSettingsSidebar() {
             ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.7f, 0.7f, 0.75f, 1.0f));
         }
         if (ImGui::Button(offsetBarEnabled ? "OFFSET BAR: ON" : "OFFSET BAR: OFF",
-                          ImVec2(sidebarWidth - 60, 38))) {
+                          ImVec2(sidebarWidth - 60.0f * s, 38.0f * s))) {
             platform::Config::setInt(platform::Config::KEY_OFFSET_BAR, offsetBarEnabled ? 0 : 1);
             platform::Config::save();
         }
@@ -1059,7 +1061,7 @@ void MainMenuState::renderSettingsSidebar() {
     ImGui::Spacing();
 
     // Close button
-    float closeBtnY = displaySize.y - 80;
+    float closeBtnY = displaySize.y - 80.0f * s;
     ImGui::SetCursorPosY(closeBtnY);
     ImGui::PushStyleColor(ImGuiCol_Button,
         ImVec4(Theme::PINK_R, Theme::PINK_G, Theme::PINK_B, 0.3f));
@@ -1068,7 +1070,7 @@ void MainMenuState::renderSettingsSidebar() {
     ImGui::PushStyleColor(ImGuiCol_Text,
         ImVec4(Theme::PINK_R, Theme::PINK_G, Theme::PINK_B, 1.0f));
     ImGui::SetWindowFontScale(1.2f);
-    if (ImGui::Button("CLOSE", ImVec2(sidebarWidth - 60, 42))) {
+    if (ImGui::Button("CLOSE", ImVec2(sidebarWidth - 60.0f * s, 42.0f * s))) {
         m_settingsOpen = false;
     }
     ImGui::PopStyleColor(3);

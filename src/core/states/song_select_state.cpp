@@ -1174,7 +1174,7 @@ void SongSelectState::renderRightPanel(float panelX, float panelWidth, float pan
         float textY = headerPos.y + thumbPad;
 
         dl->AddText(ImGui::GetFont(),
-            (isSelectedGroup ? 20.0f : 17.0f) * m_ly.scale * ImGui::GetIO().FontGlobalScale,
+            (isSelectedGroup ? 20.0f : 17.0f) * m_ly.scale,
             ImVec2(textX, textY),
             isSelectedGroup ? IM_COL32(0, 255, 245, 255) : IM_COL32(240, 240, 250, 255),
             group.title.c_str());
@@ -1185,7 +1185,7 @@ void SongSelectState::renderRightPanel(float panelX, float panelWidth, float pan
         char subText[128];
         snprintf(subText, sizeof(subText), "%s  |  %d sets", group.artist.c_str(),
                  static_cast<int>(group.sets.size()));
-        dl->AddText(ImGui::GetFont(), 14.0f * m_ly.scale * ImGui::GetIO().FontGlobalScale,
+        dl->AddText(ImGui::GetFont(), 14.0f * m_ly.scale,
             ImVec2(textX, subY),
             IM_COL32(140, 140, 165, 255),
             subText);
@@ -1201,7 +1201,7 @@ void SongSelectState::renderRightPanel(float panelX, float panelWidth, float pan
                 snprintf(rangeText, sizeof(rangeText), "%.1f~%.1f", minDiff, maxDiff);
             }
             float rangeX = headerPos.x + headerWidth - headerWidth * 0.15f;
-            dl->AddText(ImGui::GetFont(), 14.0f * m_ly.scale * ImGui::GetIO().FontGlobalScale,
+            dl->AddText(ImGui::GetFont(), 14.0f * m_ly.scale,
                 ImVec2(rangeX, headerPos.y + m_ly.groupHeaderH * 0.5f - m_ly.scale * 8),
                 IM_COL32(255, 200, 50, 255),
                 rangeText);
@@ -1267,8 +1267,8 @@ void SongSelectState::renderRightPanel(float panelX, float panelWidth, float pan
                 float setTextX = setDrawPos.x + m_ly.setItemH * 0.3f;
                 float setTextY = setDrawPos.y + (m_ly.setItemH - m_ly.setItemH * 0.35f) * 0.5f;
 
-                // 难度名称
-                dl->AddText(ImGui::GetFont(), 15.0f * m_ly.scale * ImGui::GetIO().FontGlobalScale,
+                // 难度名称（AddText 字号按布局缩放；atlas 已按分辨率烘焙）
+                dl->AddText(ImGui::GetFont(), 15.0f * m_ly.scale,
                     ImVec2(setTextX, setTextY),
                     isSelectedSet ? IM_COL32(0, 255, 245, 255) : IM_COL32(200, 200, 215, 255),
                     set.version.c_str());
@@ -1277,7 +1277,7 @@ void SongSelectState::renderRightPanel(float panelX, float panelWidth, float pan
                 char starText[32];
                 snprintf(starText, sizeof(starText), "%.1f", set.difficulty);
                 float starX = setDrawPos.x + setWidth - setWidth * 0.12f;
-                dl->AddText(ImGui::GetFont(), 14.0f * m_ly.scale * ImGui::GetIO().FontGlobalScale,
+                dl->AddText(ImGui::GetFont(), 14.0f * m_ly.scale,
                     ImVec2(starX, setTextY),
                     IM_COL32(255, 200, 50, 255),
                     starText);
@@ -1333,7 +1333,8 @@ void SongSelectState::renderRightPanel(float panelX, float panelWidth, float pan
         ImGui::SameLine(0, m_ly.scale * 10);
         ImGui::SetCursorPosY(startBtnY + (startBtnHeight - m_ly.scale * 20) * 0.5f);
         ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.85f, 0.85f, 0.9f, 1.0f));
-        ImGui::SetWindowFontScale(1.2f * m_ly.scale);
+        // 字号已由 UIManager 按分辨率烘焙进 atlas，勿再乘 m_ly.scale
+        ImGui::SetWindowFontScale(1.2f);
         ImGui::Text("Mihits");
         ImGui::SetWindowFontScale(1.0f);
         ImGui::PopStyleColor();
@@ -1439,7 +1440,8 @@ void SongSelectState::renderModPopup() {
 
     ImGui::PushStyleColor(ImGuiCol_Text,
         ImVec4(ui::Theme::CYAN_R, ui::Theme::CYAN_G, ui::Theme::CYAN_B, 1.0f));
-    ImGui::SetWindowFontScale(1.6f * m_ly.scale);
+    // 字号已由 UIManager 按分辨率烘焙进 atlas，勿再乘 m_ly.scale
+    ImGui::SetWindowFontScale(1.6f);
     ImGui::Text("MODS");
     ImGui::PopStyleColor();
     ImGui::SetWindowFontScale(1.0f);

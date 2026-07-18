@@ -21,6 +21,9 @@
 namespace melody_matrix::ui {  // UI 子命名空间
 
 namespace {
+ImGuiStyle s_baseStyle{};
+bool s_haveBaseStyle = false;
+
 
 std::string resolveAssetPath(const char* relativePath) {
     const std::vector<std::string> prefixes = {
@@ -254,6 +257,27 @@ void Theme::apply() {
     colors[ImGuiCol_ModalWindowDimBg]      = ImVec4(0, 0, 0, 0.6f);     // 模态窗口遮罩
 
     MM_LOG_INFO("Theme", "Deep neon theme applied");  // 记录主题应用完成
+
+    // 保存未缩放基准，供分辨率切换后 applyScaledStyle 使用
+    s_baseStyle = style;
+    s_haveBaseStyle = true;
+}
+
+void Theme::applyScaledStyle(float displayScale) {
+    if (!s_haveBaseStyle) {
+        return;
+    }
+    ImGuiStyle& style = ImGui::GetStyle();
+    style = s_baseStyle;
+    const float s = std::max(0.75f, displayScale);
+    if (std::abs(s - 1.0f) > 0.001f) {
+        style.ScaleAllSizes(s);
+    }
+}
+
+float Theme::displayScale() {
+    const float h = ImGui::GetIO().DisplaySize.y;
+    return h > 0.0f ? h / 1080.0f : 1.0f;
 }
 
 } // namespace melody_matrix::ui

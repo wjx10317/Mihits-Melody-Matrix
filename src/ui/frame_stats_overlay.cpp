@@ -32,6 +32,7 @@ void FrameStatsOverlay::render() const {
     }
 
     ImGuiIO& io = ImGui::GetIO();
+    // 相对 1080p 缩放：布局与字号都跟当前分辨率走
     const float scale = io.DisplaySize.y > 0.0f ? io.DisplaySize.y / 1080.0f : 1.0f;
     const float pad = 12.0f * scale;
     const float boxW = 112.0f * scale;
@@ -43,6 +44,7 @@ void FrameStatsOverlay::render() const {
     const float yBottom = io.DisplaySize.y - pad - boxH;
     const float yTop = yBottom - gap - boxH;
 
+    // 恢复绿色调试风格
     const ImU32 fill = IM_COL32(16, 48, 28, 210);
     const ImU32 border = IM_COL32(40, 220, 100, 255);
     const ImU32 textCol = IM_COL32(180, 255, 200, 255);
@@ -61,7 +63,8 @@ void FrameStatsOverlay::render() const {
 
     ImDrawList* dl = ImGui::GetForegroundDrawList();
     ImFont* font = ImGui::GetFont();
-    const float fontSize = ImGui::GetFontSize() * 0.92f;
+    // 字号按分辨率缩放（不依赖启动时 atlas 的绝对像素）
+    const float fontSize = 16.5f * scale;
 
     auto drawBox = [&](float y, const char* text) {
         const ImVec2 p0(x0, y);

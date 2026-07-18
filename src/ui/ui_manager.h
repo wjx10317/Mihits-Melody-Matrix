@@ -36,6 +36,9 @@ public:
     /// 关闭 ImGui 并释放上下文
     void shutdown();  // 销毁 ImGui 上下文与后端
 
+    /// 按当前显示高度重载字体与样式缩放（分辨率/窗口尺寸变化后调用）
+    void syncUiScale(bool force = false);
+
     /// ImGui 是否正在捕获鼠标输入
     bool wantsMouseCapture() const;  // 查询 WantCaptureMouse
     /// ImGui 是否正在捕获键盘输入
@@ -55,6 +58,8 @@ public:
 
 private:
     bool m_initialized = false;  // 是否已完成 init()
+    SDL_Window* m_window = nullptr;
+    float m_lastUiScale = -1.0f;  // 上次应用到字体/样式的缩放；负值表示尚未同步
     FrameStatsOverlay m_frameStatsOverlay;
 };
 

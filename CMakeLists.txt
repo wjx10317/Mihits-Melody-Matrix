@@ -59,7 +59,7 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
 
 # Windows-specific: link Comdlg32 for native file dialogs (GetOpenFileName)
 if(WIN32)
-    target_link_libraries(${PROJECT_NAME} PRIVATE Comdlg32)
+    target_link_libraries(${PROJECT_NAME} PRIVATE Comdlg32 ole32 uuid)
 endif()
 
 # Post-build: copy SDL2 DLL

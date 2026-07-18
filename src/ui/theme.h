@@ -14,10 +14,17 @@ namespace melody_matrix::ui {  // UI 子命名空间
 class Theme {
 public:
     /// 加载 UI 字体（须在 CreateContext 之后、首帧 Render 之前调用）
+    /// displayScale：相对 1080p 的高度比，写入 atlas 像素尺寸
     static bool loadFonts(float displayScale = 1.0f);
 
     /// 将主题应用到当前 ImGui 上下文（须在 CreateContext 之后、首帧之前调用）
     static void apply();  // 设置 ImGuiStyle 与全部 ImGuiCol 配色
+
+    /// 从 apply() 时保存的基准样式按 displayScale 重新 ScaleAllSizes
+    static void applyScaledStyle(float displayScale);
+
+    /// 当前显示高度相对 1080p 的缩放（DisplaySize.y / 1080）
+    static float displayScale();
 
     // ── 主题颜色常量 ──
     static constexpr float BG_R = 0.102f, BG_G = 0.102f, BG_B = 0.180f;  // 背景色 #1a1a2e

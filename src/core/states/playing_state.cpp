@@ -12,6 +12,9 @@
 #include "core/kernel.h"
 #include "core/state_manager.h"
 #include "core/states/result_state.h"
+#include "audio/miniaudio_cursor_playhead.h"
+#include "audio/wasapi_playhead.h"
+#include "time/host_clock.h"
 #include "beatmap/scroll_simulation.h"
 #include "platform/config.h"
 #include "ui/theme.h"
@@ -129,6 +132,10 @@ void PlayingState::resetGameplay() {
     m_offsetBarMarks.clear();
     m_hitEffects.clear();
     m_lastHitDebug = {};
+    m_playhead.reset();
+    m_lastPlayheadSampleHostMs = 0;
+    m_playheadWindowStats = {};
+    m_cursorSmooth = {};
 
     auto& renderer = Kernel::instance().renderer();
     renderer.setGameplayRendering(false);
@@ -149,6 +156,7 @@ void PlayingState::initGameplay() {
         return;                                              // 音频失败则中止（后续无法同步时钟）
     }
     m_audio.loadSfx();                                       // 预加载击打音效
+    // Playhead 在 playSong 之后创建（见下方），以便 WASAPI epoch 对齐开播
 
     // ── 重置时钟 ──
     // 从 Result/Retry 回来时时钟可能处于暂停状态，必须重置
@@ -311,31 +319,144 @@ void PlayingState::initGameplay() {
         }
     }
 
+    // C2：优先 WASAPI 设备钟；失败回退 miniaudio cursor
+    m_playhead = audio::tryMakeWasapiPlayhead(m_audio);
+    if (!m_playhead) {
+        m_playhead = audio::makeMiniaudioCursorPlayhead(m_audio);
+        MM_LOG_INFO("Playing", "Playhead backend: miniaudio-cursor (WASAPI unavailable)");
+    } else {
+        MM_LOG_INFO("Playing", "Playhead backend: wasapi");
+    }
+    m_playhead->noteTimelineEpoch(m_audio.positionMs());
+    m_lastPlayheadSampleHostMs = 0;  // 立刻打一条首采样
+    m_playheadWindowStats = {};
+    m_cursorSmooth = {};
+    {
+        const int64_t ph = playheadPositionMs();
+        Kernel::instance().clock().syncFromAudio(ph);
+        samplePlayheadLog(Kernel::instance().clock().interpolatedNowMs(), ph);
+    }
+
     m_gameplayInitialized = true;                            // 标记完成，update 开始主循环逻辑
     m_needsReinit = false;
     MM_LOG_INFO("Playing", "Gameplay initialized - " + std::to_string(m_totalNotes) +
                 " notes, first note at " + std::to_string(m_firstNoteTimeMs) + "ms");
 }
 
-/// 从音频 cursor 同步游戏时钟（主循环处理输入前调用）
+/// 从 AudioPlayhead 同步游戏时钟（主循环处理输入前调用）
 void PlayingState::syncClockFromAudio() {
-    if (!m_gameplayInitialized) return;
-    Kernel::instance().clock().syncFromAudio(m_audio.positionMs());
+    if (!m_gameplayInitialized || !m_playhead) return;
+    const int64_t ph = m_playhead->positionMs();
+    auto& clock = Kernel::instance().clock();
+    // playhead 尚未有效时钉在 0，避免 HostClock 在 ph=0 停滞期间自由跑出 +100ms 尖峰
+    if (ph <= 0) {
+        clock.reset();
+        return;
+    }
+    clock.syncFromAudio(ph);
 }
 
-// ══════════════════════════════════════════════════════════════════════════════
-//  更新
-// ══════════════════════════════════════════════════════════════════════════════
+int64_t PlayingState::playheadPositionMs() const {
+    return m_playhead->positionMs();
+}
+
+int64_t PlayingState::smoothedCursorMs() {
+    const int64_t raw = m_audio.positionMs();
+    const int64_t host = time::HostClock::nowMs();
+    if (!m_cursorSmooth.has || raw != m_cursorSmooth.lastRawMs) {
+        m_cursorSmooth.lastRawMs = raw;
+        m_cursorSmooth.hostAtRawMs = host;
+        m_cursorSmooth.has = true;
+        return raw;
+    }
+    // write cursor 约 10ms 一跳；停滞期间按墙钟外推，ph-cu 才反映稳态偏差而非台阶
+    int64_t smooth = m_cursorSmooth.lastRawMs + (host - m_cursorSmooth.hostAtRawMs);
+    constexpr int64_t kMaxFreeRunMs = 12;  // 略大于共享 period，防止空跑太远
+    if (smooth > m_cursorSmooth.lastRawMs + kMaxFreeRunMs) {
+        smooth = m_cursorSmooth.lastRawMs + kMaxFreeRunMs;
+    }
+    if (smooth < raw) {
+        smooth = raw;
+    }
+    return smooth;
+}
+
+void PlayingState::samplePlayheadLog(int64_t songNowMs, int64_t playheadMs) {
+    // 同快照残差：调用方必须先 sync(playhead) 再读 song，且勿在中间重读 playhead
+    const int64_t songPh = songNowMs - playheadMs;
+    auto& w = m_playheadWindowStats;
+    if (w.samples == 0) {
+        w.songPhMin = songPh;
+        w.songPhMax = songPh;
+        w.absMax = songPh < 0 ? -songPh : songPh;
+    } else {
+        if (songPh < w.songPhMin) w.songPhMin = songPh;
+        if (songPh > w.songPhMax) w.songPhMax = songPh;
+        const int64_t absPh = songPh < 0 ? -songPh : songPh;
+        if (absPh > w.absMax) w.absMax = absPh;
+    }
+    if (songPh > 1 || songPh < -1) {
+        ++w.outliers;
+    }
+    if (w.hasLastPlayhead) {
+        int64_t step = playheadMs - w.lastPlayheadMs;
+        if (step < 0) step = -step;
+        if (step > w.phStepMax) w.phStepMax = step;
+    }
+    w.lastPlayheadMs = playheadMs;
+    w.hasLastPlayhead = true;
+    ++w.samples;
+
+    const int64_t hostNow = time::HostClock::nowMs();
+    if (m_lastPlayheadSampleHostMs != 0
+        && hostNow - m_lastPlayheadSampleHostMs < PLAYHEAD_SAMPLE_INTERVAL_MS) {
+        return;
+    }
+    m_lastPlayheadSampleHostMs = hostNow;
+
+    const int64_t cursorRaw = m_audio.positionMs();
+    const int64_t cursorSmooth = smoothedCursorMs();
+    const char* backend = m_playhead ? m_playhead->backendName() : "?";
+    // ph-cu：对平滑 cursor，避免 write-cursor 10ms 台阶造成假锯齿
+    // ph-cuRaw：原始对比，仅备查
+    MM_LOG_INFO("PlayheadSample",
+                "backend=%s song=%lld playhead=%lld cursor=%lld cursorSm=%lld "
+                "ph-cu=%+lld ph-cuRaw=%+lld song-ph=%+lld "
+                "win[n=%lld min=%+lld max=%+lld absMax=%lld outliers=%lld phStepMax=%lld] host=%lld",
+                backend,
+                static_cast<long long>(songNowMs),
+                static_cast<long long>(playheadMs),
+                static_cast<long long>(cursorRaw),
+                static_cast<long long>(cursorSmooth),
+                static_cast<long long>(playheadMs - cursorSmooth),
+                static_cast<long long>(playheadMs - cursorRaw),
+                static_cast<long long>(songPh),
+                static_cast<long long>(w.samples),
+                static_cast<long long>(w.songPhMin),
+                static_cast<long long>(w.songPhMax),
+                static_cast<long long>(w.absMax),
+                static_cast<long long>(w.outliers),
+                static_cast<long long>(w.phStepMax),
+                static_cast<long long>(hostNow));
+
+    // 新窗口
+    w = {};
+}
 
 /// 每帧更新：时钟、前导、判定、滚动、变阵、HP、结束检测（Playing 主循环）
 GameState PlayingState::update(float dt) {
     if (!m_gameplayInitialized) return GameState::Count;       // 未初始化则保持 Playing 状态
 
-    // ── 从音频 cursor 同步歌曲时钟 ──
+    // ── 从音频 Playhead 同步歌曲时钟（同快照读 song，避免假 song-ph=-1）──
     auto& kernel = Kernel::instance();
-    syncClockFromAudio();                                    // 保证 nowMs 与 BGM 对齐
-
-    int64_t nowMs = kernel.clock().interpolatedNowMs();      // 插值后的当前歌曲时间
+    const int64_t playheadMs = playheadPositionMs();
+    if (playheadMs <= 0) {
+        kernel.clock().reset();
+    } else {
+        kernel.clock().syncFromAudio(playheadMs);
+    }
+    int64_t nowMs = kernel.clock().interpolatedNowMs();
+    samplePlayheadLog(nowMs, playheadMs);
     const int64_t judgeNowMs = toJudgeSongTimeMs(nowMs);     // 减去用户 timing offset 的判定时间
     float od = m_beatmap.difficulty.od;                      // 总体难度，影响判定窗口
 
@@ -347,7 +468,8 @@ GameState PlayingState::update(float dt) {
             int64_t skipTarget = m_firstNoteTimeMs - SKIP_TARGET_BEFORE_MS;  // 跳到首 note 前 3s
             if (skipTarget > 0 && skipTarget > nowMs) {      // 目标在未来才 seek
                 m_audio.seekTo(skipTarget);                  // 音频跳转
-                kernel.clock().syncFromAudio(m_audio.positionMs());
+                m_playhead->noteTimelineEpoch(skipTarget);   // WASAPI 歌曲时间线重锚
+                kernel.clock().syncFromAudio(playheadPositionMs());
                 nowMs = skipTarget;
                 MM_LOG_INFO("Playing", "Skipped to " + std::to_string(skipTarget) + "ms");
             }
@@ -360,7 +482,7 @@ GameState PlayingState::update(float dt) {
         if (nowMs >= gameplayStartMs) {                      // 前导结束
             m_leadInActive = false;
             MM_LOG_INFO("Playing", "Lead-in complete, nowMs=" + std::to_string(nowMs) +
-                        " audioPos=" + std::to_string(m_audio.positionMs()) +
+                        " audioPos=" + std::to_string(playheadPositionMs()) +
                         " firstNote=" + std::to_string(m_firstNoteTimeMs) + "ms");
         }
         kernel.renderer().setGameplayRendering(false);       // 前导期间不画矩阵
@@ -508,7 +630,7 @@ GameState PlayingState::update(float dt) {
 
     // ── 歌曲结束检测 ──
     if (!m_audio.isPlaying()) {                              // BGM 已停止
-        if (m_audio.positionMs() > 0 || m_judgeQueue.finished()) {  // 曾播放过或 note 判完
+        if (playheadPositionMs() > 0 || m_judgeQueue.finished()) {  // 曾播放过或 note 判完
             m_songFinished = true;
         }
     }
@@ -972,11 +1094,42 @@ void PlayingState::renderHUD() {
 void PlayingState::renderImGuiOverlay() {
     using namespace ui;
 
-    ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar |
-                             ImGuiWindowFlags_NoResize |
-                             ImGuiWindowFlags_NoMove |
-                             ImGuiWindowFlags_NoBackground |
-                             ImGuiWindowFlags_NoInputs;
+    const float uiScale = ImGui::GetIO().DisplaySize.y > 0.0f
+        ? ImGui::GetIO().DisplaySize.y / 1080.0f : 1.0f;
+    const float pad = 12.0f * uiScale;
+
+    // HUD 浮层：禁止滚动条；文字类用 AlwaysAutoResize，避免固定高度装不下时出现滚动条边
+    const ImGuiWindowFlags hudFlags = ImGuiWindowFlags_NoTitleBar |
+                                      ImGuiWindowFlags_NoResize |
+                                      ImGuiWindowFlags_NoMove |
+                                      ImGuiWindowFlags_NoBackground |
+                                      ImGuiWindowFlags_NoInputs |
+                                      ImGuiWindowFlags_NoScrollbar |
+                                      ImGuiWindowFlags_NoScrollWithMouse |
+                                      ImGuiWindowFlags_NoCollapse |
+                                      ImGuiWindowFlags_AlwaysAutoResize |
+                                      ImGuiWindowFlags_NoSavedSettings;
+    const ImGuiWindowFlags fixedFlags = ImGuiWindowFlags_NoTitleBar |
+                                        ImGuiWindowFlags_NoResize |
+                                        ImGuiWindowFlags_NoMove |
+                                        ImGuiWindowFlags_NoBackground |
+                                        ImGuiWindowFlags_NoInputs |
+                                        ImGuiWindowFlags_NoScrollbar |
+                                        ImGuiWindowFlags_NoScrollWithMouse |
+                                        ImGuiWindowFlags_NoCollapse |
+                                        ImGuiWindowFlags_NoSavedSettings;
+
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0, 0, 0, 0));
+    ImGui::PushStyleColor(ImGuiCol_ScrollbarBg, ImVec4(0, 0, 0, 0));
+    ImGui::PushStyleColor(ImGuiCol_ScrollbarGrab, ImVec4(0, 0, 0, 0));
+
+    auto popHudChrome = []() {
+        ImGui::PopStyleColor(3);
+        ImGui::PopStyleVar(3);
+    };
 
     // ── 前导倒计时 ──
     if (m_leadInActive) {
@@ -989,10 +1142,9 @@ void PlayingState::renderImGuiOverlay() {
             int countdown = static_cast<int>(remainingMs / 1000) + 1;
             if (countdown < 1) countdown = 1;
 
-            ImGui::SetNextWindowPos(ImVec2(ImGui::GetIO().DisplaySize.x / 2 - 60,
-                                            ImGui::GetIO().DisplaySize.y / 2 - 40));
-            ImGui::SetNextWindowSize(ImVec2(120, 80));
-            ImGui::Begin("##LeadIn", nullptr, flags);
+            ImGui::SetNextWindowPos(ImVec2(ImGui::GetIO().DisplaySize.x * 0.5f - 60.0f * uiScale,
+                                            ImGui::GetIO().DisplaySize.y * 0.5f - 40.0f * uiScale));
+            ImGui::Begin("##LeadIn", nullptr, hudFlags);
             ImGui::SetWindowFontScale(3.0f);
             ImGui::PushStyleColor(ImGuiCol_Text,
                 ImVec4(Theme::CYAN_R, Theme::CYAN_G, Theme::CYAN_B, 1.0f));
@@ -1003,25 +1155,34 @@ void PlayingState::renderImGuiOverlay() {
 
             // Skip 提示（仅当第一个note距离歌曲开始超过5秒时显示）
             if (m_firstNoteTimeMs > 5000) {
-                ImGui::SetNextWindowPos(ImVec2(ImGui::GetIO().DisplaySize.x / 2 - 120,
-                                                ImGui::GetIO().DisplaySize.y / 2 + 50));
-                ImGui::SetNextWindowSize(ImVec2(240, 40));
-                ImGui::Begin("##SkipHint", nullptr, flags);
+                ImGui::SetNextWindowPos(ImVec2(ImGui::GetIO().DisplaySize.x * 0.5f - 120.0f * uiScale,
+                                                ImGui::GetIO().DisplaySize.y * 0.5f + 50.0f * uiScale));
+                ImGui::Begin("##SkipHint", nullptr, hudFlags);
                 ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.5f, 0.5f, 0.6f, 0.7f));
                 ImGui::Text("SPACE to skip");
                 ImGui::PopStyleColor();
                 ImGui::End();
             }
         }
+        popHudChrome();
         return;
     }
+
+    const float fontBase = ImGui::GetFontSize() > 0.1f ? ImGui::GetFontSize() : Theme::FONT_SIZE;
+    // 目标视觉字号 / 当前 atlas 字号 → WindowFontScale，使分辨率变化时观感一致
+    const float debugFontScale = (1.35f * Theme::FONT_SIZE * uiScale) / fontBase;
+    const float scoreFontScale = (2.0f * Theme::FONT_SIZE * uiScale) / fontBase;
+    const float comboFontScale = (1.5f * Theme::FONT_SIZE * uiScale) / fontBase;
 
     // ── Debug HUD（Settings 可开关）──
     if (m_debugHudEnabled) {
         auto& kernel = Kernel::instance();
         const int64_t songNowMs = kernel.clock().interpolatedNowMs();
         const int64_t visualLeadMs = platform::Config::getInt(platform::Config::KEY_VISUAL_LEAD, 16);
-        const int64_t audioCursorMs = m_audio.positionMs();
+        const int64_t playheadMs = playheadPositionMs();
+        const int64_t cursorMs = m_audio.positionMs();
+        const int64_t cursorSm = smoothedCursorMs();
+        const char* playheadBackend = m_playhead ? m_playhead->backendName() : "?";
 
         int64_t nextFormationTime = m_formationCtrl.nextFormationTime();
         int64_t nextScrollTime = INT64_MAX;
@@ -1047,12 +1208,13 @@ void PlayingState::renderImGuiOverlay() {
         default: break;
         }
 
-        ImGui::SetNextWindowPos(ImVec2(ImGui::GetIO().DisplaySize.x / 2 - 340, 12));
-        ImGui::SetNextWindowSize(ImVec2(680, 118));
-        ImGui::Begin("##DebugHUD", nullptr, flags);
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.85f, 0.25f, 1.0f));
-        ImGui::Text("SONG %lld ms | AUDIO %lld ms | DRIFT %+lld ms",
-                    songNowMs, audioCursorMs, songNowMs - audioCursorMs);
+        ImGui::SetNextWindowPos(ImVec2(ImGui::GetIO().DisplaySize.x * 0.5f - 340.0f * uiScale, 12.0f * uiScale));
+        ImGui::Begin("##DebugHUD", nullptr, hudFlags);
+        ImGui::SetWindowFontScale(debugFontScale);
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
+        ImGui::Text("SONG %lld ms | PLAYHEAD %lld (%s) | CURSOR %lld (sm %lld) | PH-CU %+lld",
+                    songNowMs, playheadMs, playheadBackend, cursorMs, cursorSm,
+                    playheadMs - cursorSm);
         ImGui::Text("TIMING OFF %+lld ms | VIS LEAD %lld ms | SCROLL %s | FORM next %lld",
                     m_timingOffsetMs, visualLeadMs,
                     m_scrollWindow.scrolling ? "YES" : "no",
@@ -1063,36 +1225,33 @@ void PlayingState::renderImGuiOverlay() {
                     m_lastHitDebug.noteMs,
                     m_lastHitDebug.timing);
         ImGui::PopStyleColor();
+        ImGui::SetWindowFontScale(1.0f);
         ImGui::End();
     }
 
-    // ── Top-left: Score ──
-    ImGui::SetNextWindowPos(ImVec2(20, m_debugHudEnabled ? 140.0f : 80.0f));
-    ImGui::SetNextWindowSize(ImVec2(300, 80));
-
-    ImGui::Begin("##ScoreHUD", nullptr, flags);
-    ImGui::SetWindowFontScale(2.0f);
+    // ── Top-left: Score（贴左上角，字号随分辨率）──
+    ImGui::SetNextWindowPos(ImVec2(pad, pad), ImGuiCond_Always);
+    ImGui::Begin("##ScoreHUD", nullptr, hudFlags);
+    ImGui::SetWindowFontScale(scoreFontScale);
     ImGui::PushStyleColor(ImGuiCol_Text,
         ImVec4(Theme::CYAN_R, Theme::CYAN_G, Theme::CYAN_B, 1.0f));
     ImGui::Text("%08d", static_cast<int>(m_scoreManager.totalScore()));
     ImGui::PopStyleColor();
-    ImGui::SetWindowFontScale(1.0f);
 
     if (m_comboManager.current() > 0) {
         ImGui::PushStyleColor(ImGuiCol_Text,
             ImVec4(Theme::PINK_R, Theme::PINK_G, Theme::PINK_B, 1.0f));
-        ImGui::SetWindowFontScale(1.5f);
+        ImGui::SetWindowFontScale(comboFontScale);
         ImGui::Text("%dx COMBO", m_comboManager.current());
-        ImGui::SetWindowFontScale(1.0f);
         ImGui::PopStyleColor();
     }
+    ImGui::SetWindowFontScale(1.0f);
     ImGui::End();
 
     // ── Top-right: Judgment counts ──
-    ImGui::SetNextWindowPos(ImVec2(ImGui::GetIO().DisplaySize.x - 200, 20));
-    ImGui::SetNextWindowSize(ImVec2(180, 110));
-
-    ImGui::Begin("##JudgeHUD", nullptr, flags);
+    ImGui::SetNextWindowPos(ImVec2(ImGui::GetIO().DisplaySize.x - pad, pad), ImGuiCond_Always, ImVec2(1.0f, 0.0f));
+    ImGui::Begin("##JudgeHUD", nullptr, hudFlags);
+    ImGui::SetWindowFontScale(std::max(0.85f, uiScale * (Theme::FONT_SIZE / ImGui::GetFontSize())));
     ImGui::PushStyleColor(ImGuiCol_Text,
         ImVec4(Theme::CYAN_R, Theme::CYAN_G, Theme::CYAN_B, 1.0f));
     ImGui::Text("300:  %d", m_hit300Count);
@@ -1107,21 +1266,25 @@ void PlayingState::renderImGuiOverlay() {
         ImVec4(Theme::PINK_R, Theme::PINK_G, Theme::PINK_B, 1.0f));
     ImGui::Text("Miss: %d", m_missCount);
     ImGui::PopStyleColor();
+    ImGui::SetWindowFontScale(1.0f);
     ImGui::End();
 
     // ── Bottom: HP bar ──
-    float barWidth = ImGui::GetIO().DisplaySize.x - 40;
-    ImGui::SetNextWindowPos(ImVec2(20, ImGui::GetIO().DisplaySize.y - 50));
-    ImGui::SetNextWindowSize(ImVec2(barWidth, 30));
+    const float hpMargin = 20.0f * uiScale;
+    const float hpBarH = 20.0f * uiScale;
+    const float hpWinH = 30.0f * uiScale;
+    float barWidth = ImGui::GetIO().DisplaySize.x - 2.0f * hpMargin;
+    ImGui::SetNextWindowPos(ImVec2(hpMargin, ImGui::GetIO().DisplaySize.y - 50.0f * uiScale));
+    ImGui::SetNextWindowSize(ImVec2(barWidth, hpWinH));
 
-    ImGui::Begin("##HPHUD", nullptr, flags);
+    ImGui::Begin("##HPHUD", nullptr, fixedFlags);
     float hp = m_hpManager.hp();
     ImVec4 hpColor = hp > 0.5f ?
         ImVec4(Theme::CYAN_R, Theme::CYAN_G, Theme::CYAN_B, 0.8f) :
         hp > 0.25f ? ImVec4(0.94f, 0.62f, 0.15f, 0.8f) :
                      ImVec4(Theme::PINK_R, Theme::PINK_G, Theme::PINK_B, 0.8f);
     ImGui::PushStyleColor(ImGuiCol_PlotHistogram, hpColor);
-    ImGui::ProgressBar(hp, ImVec2(barWidth - 20, 20), "");
+    ImGui::ProgressBar(hp, ImVec2(barWidth - hpMargin, hpBarH), "");
     ImGui::PopStyleColor();
     ImGui::End();
 
@@ -1136,16 +1299,17 @@ void PlayingState::renderImGuiOverlay() {
         if (hit100W <= hit300W) hit100W = hit300W + 1;
         if (hit50W <= hit100W) hit50W = hit100W + 1;
 
-        const float obW = 400.0f;
-        const float obH = 20.0f;
+        const float obW = 400.0f * uiScale;
+        const float obH = 20.0f * uiScale;
         const float scaleY = ImGui::GetIO().DisplaySize.y / renderer::GridLayout::kScreenH;
         const float matrixBottom = ImGui::GetIO().DisplaySize.y
             - renderer::GridLayout::kMargin * scaleY
             + renderer::GridLayout::kMatrixShiftY * scaleY;
         float obX = (ImGui::GetIO().DisplaySize.x - obW) * 0.5f;
-        const float keyHintY = std::min(matrixBottom + 8.0f,
-                                        ImGui::GetIO().DisplaySize.y - 58.0f - 44.0f);
-        float obY = keyHintY - obH - 10.0f;
+        const float keyH = 44.0f * uiScale;
+        const float keyHintY = std::min(matrixBottom + 8.0f * uiScale,
+                                        ImGui::GetIO().DisplaySize.y - 58.0f * uiScale - keyH);
+        float obY = keyHintY - obH - 10.0f * uiScale;
         float centerX = obX + obW * 0.5f;
         float half50 = obW * 0.5f;
         float half100 = (static_cast<float>(hit100W) / static_cast<float>(hit50W)) * half50;
@@ -1177,13 +1341,13 @@ void PlayingState::renderImGuiOverlay() {
                           IM_COL32(0, 255, 245, 200));
 
         // 中心线（0ms 位置）白色
-        dl->AddLine(ImVec2(centerX, obY - 2),
-                    ImVec2(centerX, obY + obH + 2),
-                    IM_COL32(255, 255, 255, 255), 2.0f);
+        dl->AddLine(ImVec2(centerX, obY - 2.0f * uiScale),
+                    ImVec2(centerX, obY + obH + 2.0f * uiScale),
+                    IM_COL32(255, 255, 255, 255), 2.0f * uiScale);
 
         // 边框
         dl->AddRect(ImVec2(obX, obY), ImVec2(obX + obW, obY + obH),
-                    IM_COL32(200, 200, 220, 220), 0.0f, 0, 1.0f);
+                    IM_COL32(200, 200, 220, 220), 0.0f, 0, 1.0f * uiScale);
 
         // 标记点（每次击中 note 时记录的 timing）
         for (const auto& mark : m_offsetBarMarks) {
@@ -1215,9 +1379,9 @@ void PlayingState::renderImGuiOverlay() {
             }
 
             // 标记为竖线
-            dl->AddLine(ImVec2(markX, obY - 4),
-                        ImVec2(markX, obY + obH + 4),
-                        markColor, 3.0f);
+            dl->AddLine(ImVec2(markX, obY - 4.0f * uiScale),
+                        ImVec2(markX, obY + obH + 4.0f * uiScale),
+                        markColor, 3.0f * uiScale);
         }
     }
 
@@ -1225,7 +1389,7 @@ void PlayingState::renderImGuiOverlay() {
     int popupIdx = 0;
     for (const auto& popup : m_popups) {
         float alpha = std::min(1.0f, popup.timer / (JudgePopup::DURATION * 0.3f));
-        float offsetY = (1.0f - popup.timer / JudgePopup::DURATION) * 40.0f;
+        float offsetY = (1.0f - popup.timer / JudgePopup::DURATION) * 40.0f * uiScale;
 
         // 根据列号计算水平位置（4列活跃窗口居中，与 note_renderer 的 cellX 公式对齐）
         float colX = ImGui::GetIO().DisplaySize.x / 2;
@@ -1240,11 +1404,11 @@ void PlayingState::renderImGuiOverlay() {
             colX = W * 0.5f + (popup.column - startCol - noteCenterOffset) * gw;
         }
 
-        ImGui::SetNextWindowPos(ImVec2(colX - 50, ImGui::GetIO().DisplaySize.y / 2 - 80 - offsetY));
-        ImGui::SetNextWindowSize(ImVec2(100, 40));
+        ImGui::SetNextWindowPos(ImVec2(colX, ImGui::GetIO().DisplaySize.y / 2 - 80.0f * uiScale - offsetY),
+                                ImGuiCond_Always, ImVec2(0.5f, 0.5f));
         char windowId[32];
         snprintf(windowId, sizeof(windowId), "##JudgePopup%d", popupIdx++);
-        ImGui::Begin(windowId, nullptr, flags);
+        ImGui::Begin(windowId, nullptr, hudFlags);
 
         const char* text = "";
         ImVec4 color(1, 1, 1, alpha);
@@ -1313,11 +1477,12 @@ void PlayingState::renderImGuiOverlay() {
             float top = std::max(0.0f, bottom - std::max(totalRows, 1) * gh);
 
             dl->AddRectFilled(ImVec2(left, top), ImVec2(right, bottom),
-                              IM_COL32(0, 255, 245, 42), 10.0f);
-            dl->AddRect(ImVec2(left + 3, top + 3), ImVec2(right - 3, bottom - 3),
-                        IM_COL32(0, 255, 245, 150), 10.0f, 0, 3.0f);
-            dl->AddLine(ImVec2(cellX, top + 8), ImVec2(cellX, bottom - 8),
-                        IM_COL32(255, 255, 255, 110), 2.0f);
+                              IM_COL32(0, 255, 245, 42), 10.0f * uiScale);
+            dl->AddRect(ImVec2(left + 3.0f * uiScale, top + 3.0f * uiScale),
+                        ImVec2(right - 3.0f * uiScale, bottom - 3.0f * uiScale),
+                        IM_COL32(0, 255, 245, 150), 10.0f * uiScale, 0, 3.0f * uiScale);
+            dl->AddLine(ImVec2(cellX, top + 8.0f * uiScale), ImVec2(cellX, bottom - 8.0f * uiScale),
+                        IM_COL32(255, 255, 255, 110), 2.0f * uiScale);
         }
     }
 
@@ -1335,8 +1500,8 @@ void PlayingState::renderImGuiOverlay() {
         const float gw = renderer::GridLayout::kDefaultCellW *
             (W / renderer::GridLayout::kScreenW);
         const float matrixBottom = H - margin + shiftY;
-        const float keyH = 44.0f;
-        const float keyHintY = std::min(matrixBottom + 8.0f, H - 58.0f - keyH);
+        const float keyH = 44.0f * uiScale;
+        const float keyHintY = std::min(matrixBottom + 8.0f * uiScale, H - 58.0f * uiScale - keyH);
         const int32_t startCol = m_scrollWindow.startCol;
         // 动态偏移：活跃窗口宽度算中心偏移（不再硬编码1.5）
         int32_t activeWidth = m_scrollWindow.endCol - m_scrollWindow.startCol + 1;
@@ -1345,7 +1510,7 @@ void PlayingState::renderImGuiOverlay() {
         for (const auto& m : mapping) {
             // 按键固定在屏幕中央活跃列：col=startCol+0..(activeWidth-1) 居中
             float cellX = W * 0.5f + (m.column - startCol - noteCenterOffset) * gw;
-            float keyW = std::min(gw * 0.8f, 80.0f);
+            float keyW = std::min(gw * 0.8f, 80.0f * uiScale);
             // 查找该列对应的按键标签
             const char* label = "?";
             for (int k = 0; k < KEY_COUNT; ++k) {
@@ -1369,30 +1534,34 @@ void PlayingState::renderImGuiOverlay() {
             ImGui::SetNextWindowPos(ImVec2(cellX - keyW / 2, keyHintY));
             ImGui::SetNextWindowSize(ImVec2(keyW, keyH));
 
-            ImGui::Begin(windowId, nullptr, flags);
+            ImGui::Begin(windowId, nullptr, fixedFlags);
 
             // 绘制按键背景
             ImDrawList* dl = ImGui::GetWindowDrawList();
             ImVec2 wp = ImGui::GetWindowPos();
+            const float inset = 2.0f * uiScale;
+            const float round = 6.0f * uiScale;
             ImU32 bgColor = pressed ? IM_COL32(0, 255, 245, 190) : IM_COL32(20, 20, 40, 160);
             ImU32 borderColor = pressed ? IM_COL32(255, 255, 255, 255) : IM_COL32(50, 50, 70, 180);
-            dl->AddRectFilled(ImVec2(wp.x + 2, wp.y + 2), ImVec2(wp.x + keyW - 2, wp.y + keyH - 2), bgColor, 6.0f);
-            dl->AddRect(ImVec2(wp.x + 2, wp.y + 2), ImVec2(wp.x + keyW - 2, wp.y + keyH - 2),
-                        borderColor, 6.0f, 0, pressed ? 4.0f : 1.0f);
+            dl->AddRectFilled(ImVec2(wp.x + inset, wp.y + inset),
+                              ImVec2(wp.x + keyW - inset, wp.y + keyH - inset), bgColor, round);
+            dl->AddRect(ImVec2(wp.x + inset, wp.y + inset),
+                        ImVec2(wp.x + keyW - inset, wp.y + keyH - inset),
+                        borderColor, round, 0, pressed ? 4.0f * uiScale : 1.0f * uiScale);
 
             // 按键文字
             ImU32 textColor = pressed ? IM_COL32(10, 20, 35, 255) : IM_COL32(140, 140, 170, 220);
             ImGui::SetWindowFontScale(1.6f);
             float textWidth = ImGui::CalcTextSize(label).x;
-            dl->AddText(ImVec2(wp.x + keyW / 2 - textWidth / 2, wp.y + 12), textColor, label);
+            dl->AddText(ImVec2(wp.x + keyW / 2 - textWidth / 2, wp.y + 12.0f * uiScale), textColor, label);
 
             // ── 锁判定视觉提示：滚动/非 SCALE_ONLY 变换期间显示红色叉号 ──
             const bool judgmentLocked = m_scrollWindow.scrolling ||
                 isFormationJudgmentBlocked(Kernel::instance().clock().interpolatedNowMs());
             if (judgmentLocked) {
                 ImU32 xColor = IM_COL32(255, 40, 60, 255);
-                const float xPad = 6.0f;
-                const float xThick = 3.0f;
+                const float xPad = 6.0f * uiScale;
+                const float xThick = 3.0f * uiScale;
                 dl->AddLine(ImVec2(wp.x + xPad, wp.y + xPad),
                             ImVec2(wp.x + keyW - xPad, wp.y + keyH - xPad),
                             xColor, xThick);
@@ -1406,6 +1575,7 @@ void PlayingState::renderImGuiOverlay() {
         }
     }
 
+    popHudChrome();
 } // renderImGuiOverlay()
 
 } // namespace melody_matrix::core

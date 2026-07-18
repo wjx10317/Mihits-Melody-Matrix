@@ -1,229 +1,220 @@
-# BGM 同步：cursor 台阶与 anchor 精度 — 修改评估
+# 音频时序改造总计划（HostClock / AudioPlayhead）
 
-> 背景：Tap 判定 `dt = pressTimeMs - note.time` 中，`pressTimeMs` 来自 `Clock::songTimeAtTickMs(event.timestamp)`，即 **缓存 anchor + SDL 外推到按键时刻**（非 poll 时再读当前 cursor）。  
-> 问题：anchor 绑定 **整数 ms cursor**，且仅在 `audioFrameTimeMs != prev` 时刷新；miniaudio `get_cursor` 可能 **~10ms 台阶**，导致 anchor 起点 δ 可达台阶宽度。  
-> 结论：**优先实施方案一（PCM frame anchor）**；仍不足时再上 **方案二（跳变软对齐）**。
+> 本文档覆盖并取代原「BGM 同步：cursor 台阶与 anchor 精度」主叙事。  
+> 分支：`test`（大改在此进行；`main` 保留 Stable 判定基线）。  
+> 本轮目标：**方案 B** — 文档先行 + `HostClock` 接入 `core::Clock`；**不接 WASAPI**。  
+> 源码级延迟审查全文（Canvas 同步副本）：[`音画判定延迟审查.md`](./音画判定延迟审查.md)。
 
 ---
 
-## 1. 当前实现
+## 1. 目标与非目标
 
-### 1.1 数据流（含按键）
+### 1.1 目标
+
+| 层级 | 内容 |
+|------|------|
+| 文档 | 固化跨平台时钟架构与里程碑，避免旧「PCM frame anchor」结论占满上下文 |
+| 主机钟 | `melody_matrix::time::HostClock`：跨平台单调高精度时刻（Win = QPC） |
+| 听感位 | `time::AudioPlayhead`：设备/缓冲播放位置接口（本轮仅预留） |
+| 歌曲钟 | `core::Clock` 仍为权威歌曲时间；外推改用 HostClock，与按键同时间域 |
+| 耦合 | 本轮只动文档 + `src/time/*` + `clock.*` + `kernel` 按键一处；不改 PlayingState / AudioEngine / 判定 |
+
+### 1.2 非目标（本轮明确不做）
+
+- WASAPI `IAudioClock` / `IAudioClock2` 读听感位置
+- 应用内自动校准到 ±2～3ms
+- Raw Input 替换 SDL 按键时间戳
+- 改判定窗口、miniaudio 播放/混音路径
+- 把 QPC / WASAPI 泄漏进 `JudgeQueue`、UI、谱面解析
+
+---
+
+## 2. 现状数据流
 
 ```
 Kernel::pumpInputEvents()
   └─ dispatchGameplayKeyEvent()
-       ├─ expandSdlEventTimestamp(event.timestamp) → eventTick
-       └─ Clock::songTimeAtTickMs(eventTick)
-            = anchorAudioMs + (eventTick - anchorTick) + userOffset
-            └─ PlayingState::handleKeyEvent → JudgeQueue::onKeyPress
+       ├─ HostClock::nowMs()                    ← 主机钟（处理时刻；日后改按键瞬间）
+       └─ Clock::songTimeAtHostMs(hostMs)
+            = anchorAudioMs + (hostMs - anchorHostMs) + userOffset
+            └─ PlayingState::handleKeyEvent → JudgeQueue
                  └─ dt = pressTimeMs - note.time
 
 PlayingState::syncClockFromAudio() / Kernel::syncPlayingClock()
-  └─ m_audio.positionMs()
-       └─ ma_sound_get_cursor_in_pcm_frames → 四舍五入为整数 ms
+  └─ IAudioPlayhead::positionMs()
+       ├─ C2: WasapiPlayhead ← IAudioClock（听感设备位置 + 歌曲 epoch）
+       └─ 回退: MiniaudioCursorPlayhead ← queryPlaybackCursor
             └─ Clock::syncFromAudio(ms)
-                 └─ 仅 ms 变化时刷新 anchorAudioMs / anchorTickMs
+                 └─ 前进时刷新 anchorAudioMs / anchorHostMs
 
 PlayingState::update() / 渲染
   └─ Clock::interpolatedNowMs()
-       = anchorAudioMs + (SDL_GetTicks64() - anchorTick) + userOffset
+       = anchorAudioMs + (HostClock 外推) + userOffset
 ```
 
-**要点**：按键与 `interpolatedNowMs()` **共用 anchor**，但按键用 **eventTick**，逻辑步用 **当前 tick**；二者均 **不在 poll 时读 positionMs()**。
+**要点**
 
-### 1.2 相关代码位置
+- 歌曲时间经 **AudioPlayhead** 同步；C1 实现仍是 write cursor，不是喇叭真实发声位置。
+- 按键与插值共用 HostClock 域；按键为本轮处理时刻，日后改按键瞬间。
+- miniaudio 继续负责解码、混音、播放；C2 用 WASAPI 设备钟替换 Playhead 实现。
 
-| 文件 | 职责 |
-|------|------|
-| `src/audio/audio_engine.cpp` | `positionMs()`：PCM frames → 整数 ms |
-| `src/core/clock.cpp` | `syncFromAudio()`、`songTimeAtTickMs()`、`interpolatedNowMs()` |
-| `src/core/kernel.cpp` | `dispatchGameplayKeyEvent()`、`syncPlayingClock()` |
-| `src/core/states/playing_state.cpp` | `syncClockFromAudio()`、`handleKeyEvent()` |
-| `src/gameplay/judge_queue.cpp` | `onKeyPress()`：`dt = pressTimeMs - note.time` |
+---
 
-### 1.3 误差来源（可忽略 vs 待修）
+## 3. 问题分层
 
-| 来源 | 量级 | 处理 |
+| 层 | 现象 | 根因 | 本轮是否解决 |
+|----|------|------|----------------|
+| A. 主机时间域 | SDL 毫秒戳与高精度钟混用会算错 dt | 平台 API 泄漏进业务 | **方案 B 纠错**：Clock 与按键统一 HostClock |
+| B. write cursor ≠ 听感 | 判定偏早/偏晚数～数十 ms | cursor 是缓冲位置，非 DAC | C1 已收口到 Playhead；听感真理 → **C2 WASAPI** |
+| C. 输入戳精度 | 处理时刻 ≠ 按键瞬间 | SDL poll + 毫秒戳 | 否 → 后续 Raw Input + Host 戳 |
+| D. cursor 台阶 | anchor δ 可达 ~10ms | 整数 ms + 稀疏刷新 | 降级为可选优化，非主路径 |
+
+---
+
+## 4. 模块边界（减少耦合）
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  JudgeQueue / PlayingState / UI                         │
+│  只认 int64_t 歌曲 ms；不 include Windows / WASAPI      │
+└───────────────────────────┬─────────────────────────────┘
+                            │
+┌───────────────────────────▼─────────────────────────────┐
+│  core::Clock（歌曲钟）                                    │
+│  syncFromAudio(ms) ← 锚点来自音频层                      │
+│  外推 / songTimeAtHostMs ← 只用 time::HostClock          │
+└─────────────┬───────────────────────────┬───────────────┘
+              │                           │
+┌─────────────▼──────────┐   ┌────────────▼────────────────┐
+│ time::HostClock        │   │ time::IAudioPlayhead         │
+│ nowMs() / nowNs()      │   │ positionFrames / Ms          │
+│ Win: QPC               │   │ C1: MiniaudioCursorPlayhead  │
+│ 其它: steady_clock     │   │ C2: WasapiPlayhead（IAudioClock）│
+└────────────────────────┘   └────────────┬─────────────────┘
+                                          │
+                             ┌────────────▼────────────────┐
+                             │ audio::AudioEngine            │
+                             │ 播放 / queryPlaybackCursor   │
+                             └─────────────────────────────┘
+```
+
+| 名称 | 命名空间 | 职责 | 禁止 |
+|------|----------|------|------|
+| **HostClock** | `melody_matrix::time` | 主机单调高精度时刻 | 头文件不 `#include <windows.h>`；不进判定逻辑 |
+| **IAudioPlayhead** | `melody_matrix::time` | 「播到哪了」的抽象 | 实现细节不进 JudgeQueue |
+| **MiniaudioCursorPlayhead** | `melody_matrix::audio` | C1 write-cursor 适配 | 勿当作听感真理 |
+| **Clock** | `melody_matrix::core` | 歌曲时间权威 | 不直接调 QPC / WASAPI |
+| **AudioEngine** | `melody_matrix::audio` | 播放引擎 | 不承担最终听感校准 |
+
+**miniaudio 仍有用**：播 BGM/SFX、解码、混音、跨平台设备。  
+WASAPI 只补「设备时钟」；二者不是二选一。
+
+---
+
+## 5. 方案 B 自检纠错（必读）
+
+若 Clock 用 HostClock 外推，而按键仍传 `SDL_Event.timestamp`：
+
+→ **两个时间域相减** → `songTimeAtHostMs` 错误 → 判定崩溃式偏移。
+
+**纠错后的方案 B（已落地）**
+
+1. `Clock` 锚点 **只存 HostClock ms**（`m_anchorHostMs`）；**已删除** SDL_GetTicks64 / `expandSdlEventTimestamp` 判定路径。
+2. `Kernel::dispatchGameplayKeyEvent` 传入 `HostClock::nowMs()`（本轮用**处理时刻**；日后改为按键瞬间戳）。
+3. API 更名为 `songTimeAtHostMs`；不再保留「SDL tick」命名或备用实现。
+4. C1：`PlayingState` 经 `MiniaudioCursorPlayhead` → `syncFromAudio`；C2 再换 WASAPI 实现。
+
+---
+
+## 6. 里程碑
+
+| 阶段 | 内容 | 状态 |
 |------|------|------|
-| PCM → ms 四舍五入 | ~±0.5ms | **可忽略** |
-| SDL tick 量化 | 1ms | 接受 |
-| cursor 整数 ms + 稀疏刷新 anchor | **0～~10ms** δ | **本文档方案一/二** |
-| 外推段 SDL ≈ 音频同速 | 稳态 ~0 | 现有设计合理，不改 |
+| **0 文档** | 本文覆盖旧 cursor 文档 | **已落地** |
+| **B 主机钟** | `src/time` HostClock + Clock 外推 + Kernel 同域按键戳；删除 SDL 判定时钟 | **已落地** |
+| **C1 Playhead** | `MiniaudioCursorPlayhead` + Playing 经 Playhead 同步 | **已落地** |
+| **C2 WASAPI** | `WasapiPlayhead`（IAudioClock2/QPC 外推）+ cursor 回退 + 逐帧 song-ph 窗口统计 | **已落地** |
+| **C3 亚毫秒** | 内部帧/ns 时间域；日志/UI 再转 ms（消除整数 ms 网格残差） | **计划封存（近期不实施）** |
+| **输入** | Raw Input + 按键瞬间 Host 戳 | 未开始 |
+| **校准** | 短窗估计固定延迟 → 自动 offset | 未开始 |
+
+旧「方案一 PCM frame anchor / 方案二软对齐」→ **附录 A**；可作为 Playhead 精度优化的可选项，**不再作为主路径**。
+
+### 6.1 C3 亚毫秒 — 计划封存（2026-07-18）
+
+**决策：** 近期不实现。当前整数 ms + WASAPI/QPC 外推残差约 ±1ms，判定够用；C3 仅作远期备忘，不进入当前迭代排期。
+
+**若将来解封，范围概要（勿提前动工）：**
+
+| 项 | 内容 |
+|----|------|
+| 目标 | 去掉 `song-ph` 的整数 ms 网格残差；内部统一帧或 ns |
+| 触点 | `Clock` / `IAudioPlayhead` / 按键→歌曲时间换算；判定队列内部 |
+| 边界 | 日志与 HUD 仍可显示 ms；谱面文件时间仍为 ms |
+| 非目标 | 不替代 Raw Input、自动校准、端到端回环验收 |
+
+**解封条件（建议）：** 有线参考设备上，整数 ms 残差已被证明是达标瓶颈，且输入/校准路径已就绪或并行推进。
 
 ---
 
-## 2. 问题机制简述
+## 7. 方案 B 改动清单与验收
 
-| 现象 | 原因 |
+### 7.1 允许改动的文件
+
+| 路径 | 动作 |
 |------|------|
-| anchor 绑在 1000ms，真实可能 1000～1009ms | cursor 台阶 + 整数 ms |
-| 外推本身不「攒 10ms 误差」 | SDL 与 BGM 同速时，δ 为 **常值偏差** 直到下次校正 |
-| 240Hz poll 无法消除台阶 | `get_cursor` 可能连读相同 frames，与 poll 频率无关 |
+| `docs/音频时钟-cursor台阶优化.md` | 本文件（覆盖） |
+| `src/time/host_clock.h` | 新增 |
+| `src/time/host_clock_win.cpp` | 新增（QPC） |
+| `src/time/host_clock_stub.cpp` | 新增（非 Win） |
+| `src/time/audio_playhead.h` | 新增（接口预留） |
+| `src/time/audio_playhead_stub.cpp` | 新增（不被调用） |
+| `src/core/clock.h` / `clock.cpp` | 外推改 HostClock；注释改时间域说明 |
+| `src/core/kernel.cpp` | 按键改传 `HostClock::nowMs()` |
+
+### 7.2 禁止改动（本轮）
+
+`playing_state.*`、`audio_engine.*`、`judge_*`、`score_*`、`hp_*`、UI、谱面解析。
+
+### 7.3 验收标准
+
+- [ ] 工程编译通过（Win 走 QPC；其它平台 stub 可链）
+- [ ] 进游玩可判定；Autoplay 正常；暂停/恢复/reset 时钟不飞
+- [ ] `git diff` 文件集 ⊆ §7.1
+- [ ] 业务代码无直接 `QueryPerformanceCounter` / WASAPI 调用
 
 ---
 
-## 3. 错误 / 不建议做法 — 禁止
+## 8. 禁止项（沿用并扩展）
 
 | 做法 | 后果 |
 |------|------|
-| 每次 `syncFromAudio` 都重置 anchor（ms 未变也重置 `anchorTick`） | 插值被停滞 cursor 拽回，时钟 **落后 ~半个 cursor 周期**（`clock.cpp` 注释） |
-| 按键改用 `interpolatedNowMs()`（poll 时刻） | 丢失 `event.timestamp`，晚处理时 **人为偏大** |
-| 仅提高 poll / fixed update 到 1000Hz | cursor API 不变则无效，CPU 浪费 |
-| 按键时现读 `positionMs()` 当作 pressTime | 得到 poll 时刻 cursor，**非按键瞬间** |
+| cursor 未前进时每次 `syncFromAudio` 都重置 anchorTick | 插值被停滞 cursor 拽回，时钟落后约半个周期 |
+| 按键改用 `interpolatedNowMs()`（poll 时刻）冒充按键瞬间 | 晚处理时 dt 人为偏大 |
+| 按键时现读 `positionMs()` 当 pressTime | 得到 poll 时刻 cursor，非按键瞬间 |
+| 业务层直接写 QPC / WASAPI | 多平台与模块边界崩溃 |
+| 仅提高 poll 到 1000Hz 指望消除 cursor 台阶 | cursor API 不变则无效 |
 
 ---
 
-## 4. 方案一：PCM frame anchor（优先）
-
-### 4.1 思路
-
-- anchor 存 **PCM 帧** + `sampleRate`，不再用 **整数 ms 是否变化** 作为唯一刷新条件。
-- **`cursorFrames != prevFrames` 即刷新 anchor**（240Hz sync 下，frames 常比 ms 更细）。
-- `songTimeAtTickMs` / `interpolatedNowMs` 在 **帧域外推**，**最后再** 换算 ms 供判定。
-
-```
-anchorFrames + (tick - anchorTick) * sampleRate / 1000  →  ms（四舍五入）
-```
-
-### 4.2 需新增 / 修改的接口
-
-**`audio_engine.h` / `.cpp`**
-
-```cpp
-struct AudioPosition {
-    ma_uint64 frames = 0;
-    ma_uint32 sampleRate = 48000;
-};
-AudioPosition positionFrames() const;  // 读 cursorFrames + sr
-// positionMs() 可改为由 frames 导出，保持对外兼容
-```
-
-**`clock.h` / `.cpp`**
-
-```cpp
-void syncFromAudioFrames(ma_uint64 frames, ma_uint32 sampleRate);
-// 内部：frames != prevFrames 时更新 m_anchorFrames / m_anchorTickMs / m_sampleRate
-// songTimeAtTickMs / interpolatedNowMs：帧外推 → ms
-```
-
-**`playing_state.cpp`**
-
-```cpp
-void PlayingState::syncClockFromAudio() {
-    auto pos = m_audio.positionFrames();
-    kernel.clock().syncFromAudioFrames(pos.frames, pos.sampleRate);
-}
-```
-
-### 4.3 改动量估算
-
-| 文件 | 变更 |
-|------|------|
-| `src/audio/audio_engine.h` | +`AudioPosition`、`positionFrames()` |
-| `src/audio/audio_engine.cpp` | +`positionFrames()`，`positionMs()` 可复用 frames |
-| `src/core/clock.h` | +frame 成员、`syncFromAudioFrames()` |
-| `src/core/clock.cpp` | 重写 anchor 刷新与 `songTimeAtTickMs` / `interpolatedNowMs` |
-| `src/core/states/playing_state.cpp` | `syncClockFromAudio()` 改调 frames |
-| `src/gameplay/judge_queue.cpp` | **0 行**（仍收 ms） |
-| `src/core/kernel.cpp` | **0 行**（按键路径不变） |
-
-合计约 **60～90 行**。
-
-### 4.4 预期收益与风险
-
-| 项 | 说明 |
-|----|------|
-| 预期收益 | Tap `dt` 的 anchor δ 从 **~10ms 量级** 降到 **~1～2ms（或 miniaudio 实际 frame 步长）** |
-| 改坏概率 | **~15～25%**（seek/pause/resume 与 frame 锚定边界） |
-
-### 4.5 与按键链的关系
-
-- `dispatchGameplayKeyEvent` **仍只调** `songTimeAtTickMs(eventTick)`，**不改**。
-- 改进的是 anchor 精度与刷新频率，**不是** 判定公式。
-
----
-
-## 5. 方案二：cursor 跳变软对齐（进阶，依赖方案一）
-
-### 5.1 思路
-
-方案一实施后，若 miniaudio 仍 **一次跳多 ms**，硬写 anchor 可能与 **SDL 外推** 差数 ms，造成时钟 **可视抖动** 或 **dt 阶跃**。
-
-在 **frames 变化** 时：
-
-```cpp
-const int64_t extrapolatedMs = framesToMs(anchorFrames + elapsedFrames);
-const int64_t cursorMs       = framesToMs(newFrames);
-const int64_t drift          = cursorMs - extrapolatedMs;
-
-if (std::abs(drift) <= kSoftAlignMs) {   // 建议 2～3ms
-    // 小漂移：保留外推连续性，anchor 用外推反算 frames
-    m_anchorFrames = msToFrames(extrapolatedMs);
-} else {
-    // 大跳：seek / 卡顿 / 长时间失步，硬跟 cursor
-    m_anchorFrames = newFrames;
-}
-m_anchorTickMs = SDL_GetTicks64();
-```
-
-### 5.2 改动量估算
-
-| 文件 | 变更 |
-|------|------|
-| `src/core/clock.cpp` | `syncFromAudioFrames` 内 +15～25 行 |
-| 其他 | **0 行**（若方案一已落地） |
-
-### 5.3 预期收益与风险
-
-| 项 | 说明 |
-|----|------|
-| 预期收益 | 台阶跳变时 **减少 anchor 硬切**；高 OD Perfect 边缘更稳 |
-| 改坏概率 | **~10～15%**（`kSoftAlignMs` 需实测；过大则贴近旧行为，过小则软对齐无效） |
-| 依赖 | **必须在方案一之后**；单独做意义不大 |
-
-### 5.4 可选扩展（非必须）
-
-- **双样本线性插值**：存最近两次 `(frames, tick)`，按键时在样本间插值。仅当方案一+二仍不足时考虑（复杂度高，见会话讨论方案 C）。
-
----
-
-## 6. 收益评估（综合）
-
-| 项 | 方案一 | 方案一 + 二 |
-|----|--------|-------------|
-| Tap dt anchor δ | ~1～2ms 典型 | 跳变瞬间更平滑 |
-| 工程风险 | 低～中 | 中 |
-| JudgeQueue / 按键调用栈 | 不变 | 不变 |
-
-**综合：方案一 ROI 高，建议先做；方案二按 A/B 实测再定。**
-
----
-
-## 7. 若仍要实施：推荐步骤
-
-### 7.1 方案一
-
-1. 实现 `positionFrames()` + `syncFromAudioFrames()`。
-2. 保留 `syncFromAudio(int64_t ms)` 为薄封装（可选，便于 Debug HUD）。
-3. 单元 / 手动测试：
-   - [ ] 正常开局 → 首 note Tap，`dt` 分布（Debug HUD / 日志）
-   - [ ] Skip 前导（空格 seek）
-   - [ ] 暂停 → 恢复
-   - [ ] Retry / 重进 PlayingState
-   - [ ] 高 OD（8～10）Perfect 边缘手感
-   - [ ] `songTimeAtTickMs(event)` vs `interpolatedNowMs()` 同 tick 一致性
-
-### 7.2 方案二（方案一通过后）
-
-1. 增加 `kSoftAlignMs`（建议先 3，config 可配）。
-2. A/B：跳变附近 `dt` 是否仍有 **~5ms 阶跃**。
-3. 与 `timing_offset_ms` 回归测试。
-
----
-
-## 8. 决策记录
+## 9. 决策记录
 
 | 日期 | 结论 |
 |------|------|
-| 2026-07-09 | 文档化；**待实施**方案一（PCM frame anchor）；方案二备查 |
+| 2026-07-09 | 旧文档：优先 PCM frame anchor（已降级，见附录） |
+| 2026-07-17 | 判定改为 Stable 300/100/50，基线提交 `main`；大改在 `test` |
+| 2026-07-17 | **主路径改为 HostClock + AudioPlayhead**；本轮先文档，再方案 B；WASAPI/校准后续 |
+| 2026-07-18 | C2：WASAPI + QPC 外推落地；`song-ph` 逐帧窗口统计验证整数 ms 残差 |
+| 2026-07-18 | **C3 亚毫秒计划封存**：近期不实施；见 §6.1 |
+
+---
+
+## 附录 A — 历史：cursor 台阶与 PCM frame anchor（降级备查）
+
+原问题：anchor 绑整数 ms cursor，miniaudio `get_cursor` 可能 ~10ms 台阶，导致 anchor 起点 δ 偏大。
+
+原「方案一」：`positionFrames()` + `syncFromAudioFrames`，帧域刷新与外推。  
+原「方案二」：cursor 跳变时软对齐，减少硬切抖动。
+
+**现评价**：在 write-cursor 体系内可减小台阶误差，但**不能**解决听感位置与自动校准；且易与 HostClock 改造抢主叙事。  
+若 HostClock + WASAPI Playhead 落地后 cursor 台阶仍明显，可再评估是否在 Playhead 的 miniaudio 适配层做帧域优化。

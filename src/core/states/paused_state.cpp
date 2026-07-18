@@ -90,17 +90,18 @@ void PausedState::renderImGuiOverlay() {
     ImGui::PopStyleColor();
 
     // ── 居中对话框 ──
+    const float s = Theme::displayScale();
     ImVec2 center = ImVec2(ImGui::GetIO().DisplaySize.x / 2,
                             ImGui::GetIO().DisplaySize.y / 2);
     ImGui::SetNextWindowPos(center, ImGuiCond_Always, ImVec2(0.5f, 0.5f));
-    ImGui::SetNextWindowSize(ImVec2(360, 280));
+    ImGui::SetNextWindowSize(ImVec2(360.0f * s, 280.0f * s));
 
     ImGuiWindowFlags dialogFlags = ImGuiWindowFlags_NoTitleBar |
                                    ImGuiWindowFlags_NoResize |
                                    ImGuiWindowFlags_NoMove |
                                    ImGuiWindowFlags_NoCollapse;
 
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(24, 20));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(24.0f * s, 20.0f * s));
     ImGui::Begin("##PauseDialog", nullptr, dialogFlags);
 
     // 标题
@@ -119,7 +120,7 @@ void PausedState::renderImGuiOverlay() {
         ImVec4(Theme::CYAN_R, Theme::CYAN_G, Theme::CYAN_B, 0.3f));
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
         ImVec4(Theme::CYAN_R, Theme::CYAN_G, Theme::CYAN_B, 0.5f));
-    if (ImGui::Button("RESUME", ImVec2(300, 44))) {
+    if (ImGui::Button("RESUME", ImVec2(300.0f * s, 44.0f * s))) {
         m_action = PausedAction::Resume;
     }
     ImGui::PopStyleColor(2);
@@ -130,7 +131,7 @@ void PausedState::renderImGuiOverlay() {
         ImVec4(Theme::PURP_R, Theme::PURP_G, Theme::PURP_B, 0.3f));
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
         ImVec4(Theme::PURP_R, Theme::PURP_G, Theme::PURP_B, 0.5f));
-    if (ImGui::Button("RETRY", ImVec2(300, 44))) {
+    if (ImGui::Button("RETRY", ImVec2(300.0f * s, 44.0f * s))) {
         m_action = PausedAction::Retry;
     }
     ImGui::PopStyleColor(2);
@@ -141,7 +142,7 @@ void PausedState::renderImGuiOverlay() {
         ImVec4(Theme::PINK_R, Theme::PINK_G, Theme::PINK_B, 0.3f));
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
         ImVec4(Theme::PINK_R, Theme::PINK_G, Theme::PINK_B, 0.5f));
-    if (ImGui::Button("QUIT", ImVec2(300, 44))) {
+    if (ImGui::Button("QUIT", ImVec2(300.0f * s, 44.0f * s))) {
         m_action = PausedAction::Quit;
     }
     ImGui::PopStyleColor(2);
