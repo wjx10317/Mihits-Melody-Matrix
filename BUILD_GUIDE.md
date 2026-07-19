@@ -23,9 +23,9 @@
 1. **打开 Visual Studio Developer Command Prompt**:
    - 开始菜单 → Visual Studio 2022 → **Developer Command Prompt for VS 2022**
 
-2. **执行以下命令**:
+2. **进入仓库根目录后执行**（任意解压/克隆路径均可）:
    ```batch
-   cd D:\colin\Melody-Matrix
+   cd /d <本仓库根目录>
    if exist build-ninja rmdir /s /q build-ninja
    mkdir build-ninja
    cd build-ninja
@@ -37,28 +37,32 @@
 
 4. **验证输出**:
    ```
-   D:\colin\Melody-Matrix\build-ninja\melody_matrix.exe
+   <仓库根>\build-ninja\melody_matrix.exe
    ```
+   （VS 生成器则为 `build-vs\bin\Debug\melody_matrix.exe`）
 
 ---
 
 ### 方法2：使用提供的批处理脚本
 
-1. **打开脚本文件**:
-   - 文件位置: `D:\colin\Melody-Matrix\build_complete.bat`
+1. **在仓库根目录运行**（脚本已按自身路径定位，勿依赖旧的 `D:\colin\...` 硬编码）:
+   - `build_vs.bat` / `build_simple.bat`（Visual Studio 生成器）
+   - `build_now.bat` / `build_complete.bat`（Ninja）
 
-2. **右键点击脚本** → **以管理员身份运行**
+2. **双击或在终端中运行脚本**（需已安装 VS 2022）
 
 3. **等待构建完成**
+
+> 注意：GitHub 下载的是**源码**，不是可执行包；需先构建。谱面已不进仓库，请在游戏内导入 `.osz`。
 
 ---
 
 ## 预期结果
 
 ### ✅ 构建成功
-- 输出文件: `D:\colin\Melody-Matrix\build-ninja\melody_matrix.exe`
-- 无编译错误
-- 可能有少量警告（可忽略）
+- 输出文件: `<仓库根>\build-ninja\melody_matrix.exe`（或 `build-vs\bin\Debug\...`）
+- 同目录应有 `SDL2.dll`、`assets\`、`res\`
+- 无编译错误；可能有少量警告（可忽略）
 
 ### ❌ 构建失败
 如果构建失败，请：
@@ -69,8 +73,17 @@
 
 ## 常见问题
 
+### Q: 下载 ZIP 后没有 .exe？
+**A**: 仓库是源码。先跑 `build_vs.bat`（或按上面步骤 CMake 构建），再运行生成目录里的 `melody_matrix.exe`。
+
+### Q: 构建脚本找不到工程？
+**A**: 旧脚本曾写死 `D:\colin\Melody-Matrix`。请使用仓库内已修复的 bat（以 `%~dp0` 定位），或先 `cd` 到你解压后的根目录。
+
+### Q: 能启动但没有歌？
+**A**: `assets/beatmaps` 不随仓库分发，请在主菜单导入 `.osz`。
+
 ### Q: CMake 找不到 Ninja？
-**A**: 确保使用 Visual Studio Developer Command Prompt，它会自动设置 Ninja 路径。
+**A**: 确保使用 Visual Studio Developer Command Prompt，它会自动设置 Ninja 路径；或改用 `build_vs.bat`。
 
 ### Q: 编译失败，提示 "cannot open input file"？
 **A**: 可能是文件被锁定。关闭所有 IDE 和编辑器，然后重新构建。
@@ -83,5 +96,6 @@
 ## 下一步
 
 构建成功后，您可以：
-1. 运行游戏: `cd D:\colin\Melody-Matrix\build-ninja && melody_matrix.exe`
-2. 如果有运行时错误，请告诉我，我会继续修复
+1. 运行游戏: `cd /d <仓库根>\build-vs\bin\Debug`（或 `build-ninja`）后执行 `melody_matrix.exe`
+2. 导入谱面后再游玩
+3. 如果有运行时错误，请告诉我具体报错或日志
