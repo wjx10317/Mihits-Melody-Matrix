@@ -46,7 +46,7 @@
 ### 方法2：使用构建脚本（推荐）
 
 在仓库根目录双击或运行 **`build.bat`**（需已安装 VS 2022）。  
-成功后运行：`build-vs\bin\Debug\melody_matrix.exe`
+成功后会把 `melody_matrix.exe` 与 `SDL2.dll` 复制到仓库根目录，直接运行根目录的 `melody_matrix.exe` 即可。
 
 > 注意：GitHub 下载的是**源码**，不是可执行包；需先构建。谱面已不进仓库，请在游戏内导入 `.osz`。
 
@@ -55,8 +55,8 @@
 ## 预期结果
 
 ### ✅ 构建成功
-- 输出文件: `<仓库根>\build-ninja\melody_matrix.exe`（或 `build-vs\bin\Debug\...`）
-- 同目录应有 `SDL2.dll`、`assets\`、`res\`
+- 输出文件: `<仓库根>\melody_matrix.exe` 与 `SDL2.dll`（由 `build.bat` 从 `build-vs\bin\Debug\` 复制）
+- 根目录已有 `assets\`、`res\` 供直接运行
 - 无编译错误；可能有少量警告（可忽略）
 
 ### ❌ 构建失败
@@ -69,7 +69,7 @@
 ## 常见问题
 
 ### Q: 下载 ZIP 后没有 .exe？
-**A**: 仓库是源码。先跑根目录的 `build.bat`，再运行 `build-vs\bin\Debug\melody_matrix.exe`。
+**A**: 仓库是源码。先跑根目录的 `build.bat`，再运行根目录生成的 `melody_matrix.exe`。
 
 ### Q: 构建脚本找不到工程？
 **A**: 请在仓库根目录运行 `build.bat`（脚本以自身路径定位工程根）。
@@ -88,6 +88,6 @@
 ## 下一步
 
 构建成功后，您可以：
-1. 运行游戏: `cd /d <仓库根>\build-vs\bin\Debug` 后执行 `melody_matrix.exe`
+1. 运行游戏: 在仓库根目录执行 `melody_matrix.exe`
 2. 导入谱面后再游玩
 3. 如果有运行时错误，请告诉我具体报错或日志

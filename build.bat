@@ -1,39 +1,77 @@
 @echo off
-REM Melody Matrix — 唯一构建入口（VS 2022 + CMake）
-setlocal
+REM Melody Matrix - single build entry (VS 2022 + CMake)
+setlocal EnableExtensions
 cd /d "%~dp0"
+set "ROOT=%CD%"
 
-call "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat" >nul 2>&1
+set "VCVARS=C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat"
+if not exist "%VCVARS%" (
+    echo [ERROR] VS 2022 vcvars64.bat not found.
+    echo Install Visual Studio 2022 with Desktop development with C++.
+    exit /b 1
+)
+call "%VCVARS%"
 if errorlevel 1 (
-    echo [ERROR] 无法设置 MSVC 环境，请安装 Visual Studio 2022（含 C++ 与 CMake）。
+    echo [ERROR] Failed to initialize MSVC environment.
     exit /b 1
 )
 
 set "CMAKE_EXE=C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe"
 if not exist "%CMAKE_EXE%" (
-    echo [ERROR] 未找到 CMake: "%CMAKE_EXE%"
+    echo [ERROR] CMake not found:
+    echo   %CMAKE_EXE%
     exit /b 1
 )
 
-if not exist build-vs mkdir build-vs
-cd build-vs
+if not exist "%ROOT%\build-vs" mkdir "%ROOT%\build-vs"
+pushd "%ROOT%\build-vs"
 
-echo [1/2] CMake configure...
-"%CMAKE_EXE%" -G "Visual Studio 17 2022" -A x64 ..
+echo [1/3] CMake configure...
+"%CMAKE_EXE%" -G "Visual Studio 17 2022" -A x64 "%ROOT%"
 if errorlevel 1 (
-    echo [ERROR] CMake 配置失败
+    echo [ERROR] CMake configure failed.
+    popd
     exit /b 1
 )
 
-echo [2/2] Build Debug...
-"%CMAKE_EXE%" --build . --config Debug --target melody_matrix -j 8
+echo [2/3] Build Debug...
+"%CMAKE_EXE%" --build . --config Debug --target melody_matrix --parallel 8
 if errorlevel 1 (
-    echo [ERROR] 编译失败
+    echo [ERROR] Build failed.
+    popd
     exit /b 1
 )
 
+set "OUT=%ROOT%\build-vs\bin\Debug"
+if not exist "%OUT%\melody_matrix.exe" (
+    echo [ERROR] Missing output: "%OUT%\melody_matrix.exe"
+    popd
+    exit /b 1
+)
+if not exist "%OUT%\SDL2.dll" (
+    echo [ERROR] Missing output: "%OUT%\SDL2.dll"
+    popd
+    exit /b 1
+)
+
+echo [3/3] Copy exe and SDL2.dll to repo root...
+copy /Y "%OUT%\melody_matrix.exe" "%ROOT%\melody_matrix.exe" >nul
+if errorlevel 1 (
+    echo [ERROR] Failed to copy melody_matrix.exe
+    popd
+    exit /b 1
+)
+copy /Y "%OUT%\SDL2.dll" "%ROOT%\SDL2.dll" >nul
+if errorlevel 1 (
+    echo [ERROR] Failed to copy SDL2.dll
+    popd
+    exit /b 1
+)
+
+popd
 echo.
 echo BUILD SUCCESS
-echo 运行: "%~dp0build-vs\bin\Debug\melody_matrix.exe"
-echo 说明: 仓库不含谱面，请在游戏内导入 .osz
+echo Run: "%ROOT%\melody_matrix.exe"
+echo Note: beatmaps are not in repo; import .osz in-game.
 endlocal
+exit /b 0
