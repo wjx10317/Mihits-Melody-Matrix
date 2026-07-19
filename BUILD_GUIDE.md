@@ -43,15 +43,10 @@
 
 ---
 
-### 方法2：使用提供的批处理脚本
+### 方法2：使用构建脚本（推荐）
 
-1. **在仓库根目录运行**（脚本已按自身路径定位，勿依赖旧的 `D:\colin\...` 硬编码）:
-   - `build_vs.bat` / `build_simple.bat`（Visual Studio 生成器）
-   - `build_now.bat` / `build_complete.bat`（Ninja）
-
-2. **双击或在终端中运行脚本**（需已安装 VS 2022）
-
-3. **等待构建完成**
+在仓库根目录双击或运行 **`build.bat`**（需已安装 VS 2022）。  
+成功后运行：`build-vs\bin\Debug\melody_matrix.exe`
 
 > 注意：GitHub 下载的是**源码**，不是可执行包；需先构建。谱面已不进仓库，请在游戏内导入 `.osz`。
 
@@ -74,16 +69,13 @@
 ## 常见问题
 
 ### Q: 下载 ZIP 后没有 .exe？
-**A**: 仓库是源码。先跑 `build_vs.bat`（或按上面步骤 CMake 构建），再运行生成目录里的 `melody_matrix.exe`。
+**A**: 仓库是源码。先跑根目录的 `build.bat`，再运行 `build-vs\bin\Debug\melody_matrix.exe`。
 
 ### Q: 构建脚本找不到工程？
-**A**: 旧脚本曾写死 `D:\colin\Melody-Matrix`。请使用仓库内已修复的 bat（以 `%~dp0` 定位），或先 `cd` 到你解压后的根目录。
+**A**: 请在仓库根目录运行 `build.bat`（脚本以自身路径定位工程根）。
 
 ### Q: 能启动但没有歌？
 **A**: `assets/beatmaps` 不随仓库分发，请在主菜单导入 `.osz`。
-
-### Q: CMake 找不到 Ninja？
-**A**: 确保使用 Visual Studio Developer Command Prompt，它会自动设置 Ninja 路径；或改用 `build_vs.bat`。
 
 ### Q: 编译失败，提示 "cannot open input file"？
 **A**: 可能是文件被锁定。关闭所有 IDE 和编辑器，然后重新构建。
@@ -96,6 +88,6 @@
 ## 下一步
 
 构建成功后，您可以：
-1. 运行游戏: `cd /d <仓库根>\build-vs\bin\Debug`（或 `build-ninja`）后执行 `melody_matrix.exe`
+1. 运行游戏: `cd /d <仓库根>\build-vs\bin\Debug` 后执行 `melody_matrix.exe`
 2. 导入谱面后再游玩
 3. 如果有运行时错误，请告诉我具体报错或日志
