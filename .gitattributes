@@ -1,0 +1,73 @@
+# 文本自动检测；不强制统一 EOL，避免打乱已有 Windows 源码
+* text=auto
+
+# 二进制资源：不做文本 diff / 合并
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.bmp binary
+*.ico binary
+*.ttf binary
+*.otf binary
+*.mp3 binary
+*.ogg binary
+*.wav binary
+*.avi binary
+*.mp4 binary
+*.dll binary
+*.lib binary
+*.exe binary
+*.pdb binary
+
+# git archive 导出时排除大体积 / 非构建必需内容
+assets/beatmaps/ export-ignore
+tests/ export-ignore
+scripts/ export-ignore
+docs/ export-ignore
+
+# third_party：与 .gitignore 对齐的 export-ignore
+third_party/Catch2/ export-ignore
+third_party/glad/ export-ignore
+third_party/**/docs/ export-ignore
+third_party/**/doc/ export-ignore
+third_party/**/examples/ export-ignore
+third_party/**/example/ export-ignore
+third_party/**/tests/ export-ignore
+third_party/**/test/ export-ignore
+third_party/**/.github/ export-ignore
+third_party/**/fuzzing/ export-ignore
+third_party/**/website/ export-ignore
+third_party/**/resources/ export-ignore
+third_party/glm/doc/ export-ignore
+third_party/glm/test/ export-ignore
+third_party/glm/util/ export-ignore
+third_party/glm/manual.md export-ignore
+third_party/glm/readme.md export-ignore
+third_party/imgui/examples/ export-ignore
+third_party/imgui/docs/ export-ignore
+third_party/imgui/misc/ export-ignore
+third_party/miniaudio/examples/ export-ignore
+third_party/miniaudio/extras/ export-ignore
+third_party/miniaudio/website/ export-ignore
+third_party/miniaudio/resources/ export-ignore
+third_party/miniaudio/research/ export-ignore
+third_party/miniaudio/tools/ export-ignore
+third_party/SDL2-2.30.8/lib/x86/ export-ignore
+third_party/SDL2-2.30.8/docs/ export-ignore
+
+# ImGui 未使用的后端（archive 时排除；白名单由仓库索引控制）
+third_party/imgui/backends/imgui_impl_allegro5.* export-ignore
+third_party/imgui/backends/imgui_impl_android.* export-ignore
+third_party/imgui/backends/imgui_impl_dx*.* export-ignore
+third_party/imgui/backends/imgui_impl_glfw.* export-ignore
+third_party/imgui/backends/imgui_impl_glut.* export-ignore
+third_party/imgui/backends/imgui_impl_metal.* export-ignore
+third_party/imgui/backends/imgui_impl_opengl2.* export-ignore
+third_party/imgui/backends/imgui_impl_osx.* export-ignore
+third_party/imgui/backends/imgui_impl_sdl3.* export-ignore
+third_party/imgui/backends/imgui_impl_sdlrenderer*.* export-ignore
+third_party/imgui/backends/imgui_impl_vulkan.* export-ignore
+third_party/imgui/backends/imgui_impl_wgpu.* export-ignore
+third_party/imgui/backends/imgui_impl_win32.* export-ignore
+third_party/imgui/backends/vulkan/ export-ignore

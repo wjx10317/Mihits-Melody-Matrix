@@ -1,49 +1,126 @@
-# Build
+# ── Build ──
 build*/
 cmake-build-*/
 out/
+generated/
+_deps/
 
-# Tests & Scripts (not part of repo source)
+# ── Tests & Scripts（本地工具，不进仓库）──
 tests/
 scripts/
 
-# IDE
+# ── IDE / Editor ──
 .vs/
 .vscode/
+.idea/
+.trae/
+.workbuddy/
+.cursor/
 *.user
 *.suo
 *.sln
 *.vcxproj*
-.idea/
 *.swp
 *~
 
-# Compiled binaries (keep SDL2.dll and melody_matrix.exe — committed as release)
+# ── Compiled / link artifacts ──
+*.exe
+*.dll
 *.pdb
 *.ilk
+*.exp
 *.lib
 *.a
 *.so
 *.dylib
 *.obj
 *.o
+# 构建/运行所需：仅保留 x64 SDL2
+!third_party/SDL2-2.30.8/lib/x64/SDL2.dll
+!third_party/SDL2-2.30.8/lib/x64/SDL2.lib
+!third_party/SDL2-2.30.8/lib/x64/SDL2main.lib
 
-# Generated
-generated/
-
-# Runtime
+# ── Runtime（本机生成）──
 logs/
 temp/
+*.log
+config.ini
 
-# OS
+# ── OS ──
 .DS_Store
 Thumbs.db
+desktop.ini
 
-# Design documents (kept locally only)
+# ── Local-only docs ──
 *设计文档*.md
 
-# WorkBuddy (local data, not project data)
-.workbuddy/
+# ── 谱面内容（体积大，走游戏内导入；仓库只留目录占位）──
+assets/beatmaps/**
+!assets/beatmaps/.gitkeep
 
-# Dependencies (vendored, keep them — comment out if you want them out)
-# third_party/ is kept in-repo by design
+# ══════════════════════════════════════════════════════════
+# third_party 瘦身：只保留本机 Windows x64 构建必需文件
+# ══════════════════════════════════════════════════════════
+
+# 通用：文档 / 示例 / 测试 / CI / 杂项
+third_party/**/docs/
+third_party/**/doc/
+third_party/**/examples/
+third_party/**/example/
+third_party/**/tests/
+third_party/**/test/
+third_party/**/.github/
+third_party/**/.ci/
+third_party/**/fuzzing/
+third_party/**/.conan/
+third_party/**/website/
+third_party/**/resources/
+
+# GLM：只保留头文件树 + CMake
+third_party/glm/doc/
+third_party/glm/test/
+third_party/glm/util/
+third_party/glm/*.pdf
+third_party/glm/manual.md
+third_party/glm/readme.md
+
+# Catch2：单测默认关闭；需要时本地拉取，不进仓库
+third_party/Catch2/
+
+# ImGui：去掉未用后端 / 示例 / 杂项（保留 SDL2 + OpenGL3）
+third_party/imgui/examples/
+third_party/imgui/misc/
+third_party/imgui/docs/
+third_party/imgui/.editorconfig
+third_party/imgui/.gitattributes
+third_party/imgui/.gitignore
+third_party/imgui/backends/**
+!third_party/imgui/backends/imgui_impl_sdl2.cpp
+!third_party/imgui/backends/imgui_impl_sdl2.h
+!third_party/imgui/backends/imgui_impl_opengl3.cpp
+!third_party/imgui/backends/imgui_impl_opengl3.h
+!third_party/imgui/backends/imgui_impl_opengl3_loader.h
+
+# miniaudio：单头 + 许可证即可
+third_party/miniaudio/examples/
+third_party/miniaudio/extras/
+third_party/miniaudio/tests/
+third_party/miniaudio/research/
+third_party/miniaudio/tools/
+third_party/miniaudio/website/
+third_party/miniaudio/resources/
+third_party/miniaudio/.gitmodules
+third_party/miniaudio/CHANGES.md
+third_party/miniaudio/CONTRIBUTING.md
+third_party/miniaudio/README.md
+
+# glad：当前构建走 cmake/glad_placeholder；完整 glad2（含数 MB XML）不进仓库
+third_party/glad/
+
+# SDL2：仅保留 Windows x64 开发包
+third_party/SDL2-2.30.8/lib/x86/
+third_party/SDL2-2.30.8/docs/
+third_party/SDL2-2.30.8/*.txt
+!third_party/SDL2-2.30.8/LICENSE.txt
+!third_party/SDL2-2.30.8/COPYING.txt
+!third_party/SDL2-2.30.8/README-SDL.txt
