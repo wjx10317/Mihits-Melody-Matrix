@@ -586,8 +586,21 @@ void SongSelectState::deleteBeatmapGroup(int groupIndex) {
     }
 
     const auto& group = m_groups[groupIndex];
-    m_audio.stop();
-    m_lastPreviewAudioPath.clear();
+
+    // 仅当删除的是当前预览曲时才停播；否则保留预览，避免无关键重开。
+    bool deletingPlayingPreview = false;
+    if (!m_lastPreviewAudioPath.empty()) {
+        for (const auto& set : group.sets) {
+            if (set.audioFilePath == m_lastPreviewAudioPath) {
+                deletingPlayingPreview = true;
+                break;
+            }
+        }
+    }
+    if (deletingPlayingPreview) {
+        m_audio.stop();  // 释放文件句柄，便于随后删除目录
+        m_lastPreviewAudioPath.clear();
+    }
 
     std::vector<std::string> imagePaths;
     std::vector<std::string> sourceHashes;
@@ -607,6 +620,11 @@ void SongSelectState::deleteBeatmapGroup(int groupIndex) {
 
     if (group.sets.empty()) {
         m_groups.erase(m_groups.begin() + groupIndex);
+        if (groupIndex < m_selectedGroup) {
+            --m_selectedGroup;
+        } else if (groupIndex == m_selectedGroup) {
+            // 选中组被删：交由 fixSelectionAfterDelete 钳制
+        }
         releaseDeletedBeatmapAssets(imagePaths, sourceHashes);
         fixSelectionAfterDelete();
         return;
@@ -649,6 +667,9 @@ void SongSelectState::deleteBeatmapGroup(int groupIndex) {
     MM_LOG_INFO("SongSelect", "Deleted beatmap group: %s - %s",
                 group.artist.c_str(), group.title.c_str());
     m_groups.erase(m_groups.begin() + groupIndex);
+    if (groupIndex < m_selectedGroup) {
+        --m_selectedGroup;  // 前面的组被删，选中索引前移以保持同一首歌
+    }
     releaseDeletedBeatmapAssets(imagePaths, sourceHashes);
     fixSelectionAfterDelete();
     m_audio.playSfx(audio::SfxType::MenuClick);
@@ -666,8 +687,34 @@ void SongSelectState::deleteBeatmapSet(int groupIndex, int setIndex) {
     }
 
     const std::string path = group.sets[setIndex].filePath;
-    m_audio.stop();
-    m_lastPreviewAudioPath.clear();
+    const std::string deletedAudioPath = group.sets[setIndex].audioFilePath;
+
+    // 同曲其它难度仍引用该音频时继续播；仅当预览曲再无入口时才停。
+    bool audioStillReferenced = false;
+    if (!m_lastPreviewAudioPath.empty() && deletedAudioPath == m_lastPreviewAudioPath) {
+        for (int i = 0; i < static_cast<int>(group.sets.size()); ++i) {
+            if (i != setIndex && group.sets[i].audioFilePath == m_lastPreviewAudioPath) {
+                audioStillReferenced = true;
+                break;
+            }
+        }
+        if (!audioStillReferenced) {
+            for (int g = 0; g < static_cast<int>(m_groups.size()); ++g) {
+                if (g == groupIndex) continue;
+                for (const auto& set : m_groups[g].sets) {
+                    if (set.audioFilePath == m_lastPreviewAudioPath) {
+                        audioStillReferenced = true;
+                        break;
+                    }
+                }
+                if (audioStillReferenced) break;
+            }
+        }
+        if (!audioStillReferenced) {
+            m_audio.stop();
+            m_lastPreviewAudioPath.clear();
+        }
+    }
 
     std::vector<std::string> imagePaths;
     std::vector<std::string> sourceHashes;
@@ -689,8 +736,14 @@ void SongSelectState::deleteBeatmapSet(int groupIndex, int setIndex) {
 
     MM_LOG_INFO("SongSelect", "Deleted beatmap set: %s", path.c_str());
     group.sets.erase(group.sets.begin() + setIndex);
+    if (groupIndex == m_selectedGroup && setIndex < m_selectedSet) {
+        --m_selectedSet;  // 同组内前面的难度被删，保持选中同一难度
+    }
     if (group.sets.empty()) {
         m_groups.erase(m_groups.begin() + groupIndex);
+        if (groupIndex < m_selectedGroup) {
+            --m_selectedGroup;
+        }
     }
 
     releaseDeletedBeatmapAssets(imagePaths, sourceHashes);
